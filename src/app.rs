@@ -87,8 +87,8 @@ pub enum AppEvent {
         finished: bool,
     },
     OpenInNewTab(String),
-    /// A site icon finished downloading into the favicon cache.
-    FaviconReady,
+    /// A queued site-icon download finished (`ok`: stored in the favicon cache).
+    FaviconDone { ok: bool },
     ChromeAction(String),
     SubmitUrlBar,
     OpenBookmarkPopup {
@@ -311,6 +311,9 @@ pub struct BrowserApp {
     bookmarks: BookmarkStore,
     html_cache: HtmlCache,
     page_cache: DiskPageCache,
+    /// Pending favicon downloads, fetched one at a time while no page is loading.
+    favicon_queue: std::collections::VecDeque<(String, Url)>,
+    favicon_inflight: bool,
 
     win_size: PhysicalSize<u32>,
     hidpi_scale: f32,
@@ -390,6 +393,8 @@ impl BrowserApp {
             bookmarks,
             html_cache: HtmlCache::new(8, 2 * 1024 * 1024),
             page_cache: DiskPageCache::new(crate::bookmarks::app_data_dir().map(|p| p.join("pages"))),
+            favicon_queue: std::collections::VecDeque::new(),
+            favicon_inflight: false,
             win_size: PhysicalSize::new(1280, 820),
             hidpi_scale: 1.0,
             color_scheme: ColorScheme::Light,
@@ -447,21 +452,39 @@ impl BrowserApp {
             && self.chrome_doc.get_element_by_id("url-bar") == self.chrome_doc.get_focussed_node_id()
     }
 
-    /// Starts a one-time background favicon download for `page_url`'s host if not cached yet.
-    fn request_favicon(&self, page_url: &str, declared_icon: Option<&str>) {
-        let Some((host, icon_url)) = crate::favicon::begin_fetch(page_url, declared_icon) else {
+    /// Queues a one-time favicon download for `page_url`'s host (skipped if cached or known
+    /// to have no icon). Downloads run one at a time so they never compete with page loads.
+    fn request_favicon(&mut self, page_url: &str, declared_icon: Option<&str>) {
+        if let Some(job) = crate::favicon::begin_fetch(page_url, declared_icon) {
+            self.favicon_queue.push_back(job);
+        }
+    }
+
+    fn pump_favicons(&mut self) {
+        if self.favicon_inflight || self.tabs[self.active_tab].is_loading {
+            return;
+        }
+        let Some((host, icon_url)) = self.favicon_queue.pop_front() else {
             return;
         };
-        let bus = self.bus.clone();
+        self.favicon_inflight = true;
+        let bus_ok = self.bus.clone();
+        let bus_fail = self.bus.clone();
+        let fail_host = host.clone();
         self.net_provider.fetch_document(
             Request::get(icon_url),
             AbortController::default().signal,
             move |_, bytes| {
-                if crate::favicon::store(&host, &bytes) {
-                    bus.send(AppEvent::FaviconReady);
+                let ok = crate::favicon::store(&host, &bytes);
+                if !ok {
+                    crate::favicon::mark_failed(&host);
                 }
+                bus_ok.send(AppEvent::FaviconDone { ok });
             },
-            |_| {},
+            move |_| {
+                crate::favicon::mark_failed(&fail_host);
+                bus_fail.send(AppEvent::FaviconDone { ok: false });
+            },
         );
     }
 
@@ -485,6 +508,7 @@ impl BrowserApp {
         for url in &bar_urls {
             self.request_favicon(url, None);
         }
+        self.pump_favicons();
         let mem = current_process_memory();
         // Keep whatever the user is typing (and focus) when background events rebuild the chrome.
         let typing = self.url_bar_focused().then(|| self.read_url_bar_text()).flatten();
@@ -1315,11 +1339,19 @@ impl BrowserApp {
 
         let logical_h = estimate_popup_height(nodes.len(), true);
         let html = render_bookmark_popup_html(&title, &nodes, can_go_back, eff_offset);
-        for node in nodes.iter().take(40) {
-            if let BookmarkNode::Url(item) = node {
-                self.request_favicon(&item.url, None);
-            }
+        let icon_urls: Vec<String> = nodes
+            .iter()
+            .take(40)
+            .filter_map(|n| match n {
+                BookmarkNode::Url(item) => Some(item.url.clone()),
+                BookmarkNode::Folder(_) => None,
+            })
+            .collect();
+        drop(nodes);
+        for url in &icon_urls {
+            self.request_favicon(url, None);
         }
+        self.pump_favicons();
 
         let Some(main_win) = &self.window else {
             return;
@@ -1614,7 +1646,10 @@ impl BrowserApp {
         let mut favicons_changed = false;
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
-                AppEvent::FaviconReady => favicons_changed = true,
+                AppEvent::FaviconDone { ok } => {
+                    self.favicon_inflight = false;
+                    favicons_changed |= ok;
+                }
                 AppEvent::RedrawDoc { doc_id } => {
                     if let Some(doc) = &mut self.tabs[self.active_tab].doc {
                         if doc.id() == doc_id {
@@ -1781,6 +1816,7 @@ impl BrowserApp {
             self.rebuild_chrome();
             self.refresh_popup();
         }
+        self.pump_favicons();
     }
 
     fn chrome_coords(&self, pos: PhysicalPosition<f64>) -> PointerCoords {

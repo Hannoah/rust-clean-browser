@@ -8,11 +8,15 @@ use std::sync::{Mutex, OnceLock};
 use url::Url;
 
 const ICON_PX: u32 = 64;
+/// Hosts without a usable icon are not retried for this long (`<host>.none` marker files).
+const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(3 * 24 * 3600);
 
 struct State {
     dir: Option<PathBuf>,
     /// Hosts with an icon file on disk.
     ready: HashSet<String>,
+    /// Hosts whose icon fetch failed recently (persisted as `<host>.none`).
+    failed: HashSet<String>,
     /// Hosts already fetched (or being fetched) this session; avoids retry storms.
     attempted: HashSet<String>,
 }
@@ -21,19 +25,30 @@ fn state() -> &'static Mutex<State> {
     static STATE: OnceLock<Mutex<State>> = OnceLock::new();
     STATE.get_or_init(|| {
         let dir = crate::bookmarks::app_data_dir().map(|d| d.join("favicons"));
-        let ready = dir
-            .as_ref()
-            .and_then(|d| std::fs::read_dir(d).ok())
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .filter_map(|e| e.file_name().to_str()?.strip_suffix(".png").map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let mut ready = HashSet::new();
+        let mut failed = HashSet::new();
+        for entry in dir.as_ref().and_then(|d| std::fs::read_dir(d).ok()).into_iter().flatten().flatten() {
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if let Some(host) = name.strip_suffix(".png") {
+                ready.insert(host.to_owned());
+            } else if let Some(host) = name.strip_suffix(".none") {
+                let fresh = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .is_ok_and(|t| t.elapsed().unwrap_or_default() < RETRY_AFTER);
+                if fresh {
+                    failed.insert(host.to_owned());
+                } else {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
         Mutex::new(State {
             dir,
             ready,
+            failed,
             attempted: HashSet::new(),
         })
     })
@@ -68,7 +83,7 @@ pub fn begin_fetch(page_url: &str, declared: Option<&str>) -> Option<(String, Ur
     let host = host_key(page_url)?;
     {
         let mut st = state().lock().ok()?;
-        if st.ready.contains(&host) || !st.attempted.insert(host.clone()) {
+        if st.ready.contains(&host) || st.failed.contains(&host) || !st.attempted.insert(host.clone()) {
             return None;
         }
     }
@@ -78,6 +93,18 @@ pub fn begin_fetch(page_url: &str, declared: Option<&str>) -> Option<(String, Ur
         .and_then(|href| page.join(href).ok())
         .or_else(|| page.join("/favicon.ico").ok())?;
     Some((host, icon))
+}
+
+/// Remembers (on disk) that `host` has no usable icon, so it isn't refetched every launch.
+pub fn mark_failed(host: &str) {
+    let Ok(mut st) = state().lock() else {
+        return;
+    };
+    if let Some(dir) = st.dir.clone() {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join(format!("{host}.none")), b"");
+    }
+    st.failed.insert(host.to_string());
 }
 
 /// Decodes (ICO/PNG/JPEG/GIF/WebP/BMP), resizes and stores an icon. Returns true on success.
@@ -141,5 +168,16 @@ mod tests {
         assert_eq!((saved.width(), saved.height()), (64, 64));
         let _ = std::fs::remove_file(path);
         assert!(!store("bad.test", b"not an image"));
+    }
+
+    #[test]
+    fn failed_hosts_are_not_refetched() {
+        let host = format!("fail-test-{}.test", std::process::id());
+        let page = format!("https://{host}/");
+        mark_failed(&host);
+        assert!(begin_fetch(&page, None).is_none());
+        if let Some(dir) = state().lock().unwrap().dir.clone() {
+            let _ = std::fs::remove_file(dir.join(format!("{host}.none")));
+        }
     }
 }
