@@ -1,0 +1,52 @@
+[package]
+name = "rust-browser"
+version = "0.1.0"
+edition = "2024"
+description = "Ultra-lightweight pure-Rust web browser powered by Blitz with aggressive tab memory unloading and Chrome bookmark import"
+license = "MIT"
+repository = "https://github.com/Hannoah/rust-clean-browser"
+readme = "README.md"
+
+[dependencies]
+anyrender = "0.14.0"
+anyrender_vello_cpu = { version = "0.18.0", features = ["softbuffer_window_renderer", "multithreading"] }
+arboard = "3.4.1"
+blitz-dom = "0.3.0-beta.4"
+blitz-html = "0.3.0-beta.4"
+blitz-net = { version = "0.3.0-beta.4", features = ["cache", "cookies", "http2"] }
+blitz-paint = "0.3.0-beta.4"
+blitz-traits = "0.3.0-beta.4"
+dpi = "0.1"
+encoding_rs = "0.8"
+image = { version = "0.25", default-features = false, features = ["png", "ico", "jpeg", "gif", "webp", "bmp"] }
+http = "1"
+keyboard-types = "0.8"
+kurbo = "0.13.1"
+peniko = "0.6"
+reqwest = { version = "0.13", default-features = false, features = ["gzip", "brotli", "deflate", "cookies"] }
+cookie_store = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+url = "2"
+winit = "=0.31.0-beta.3"
+wry = { version = "0.57.2", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Vendored wry with one patch: WebView2 `AllowSingleSignOnUsingOSPrimaryAccount = true`
+# (see vendor/wry/src/webview2/mod.rs, "rust-browser patch").
+[patch.crates-io]
+wry = { path = "vendor/wry" }
+# Vendored blitz-net with one patch: `Provider::with_cookie_provider` (persistent login cookies).
+blitz-net = { path = "vendor/blitz-net" }
+
+[build-dependencies]
+embed-resource = "3.0.12"

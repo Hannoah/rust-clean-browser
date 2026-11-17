@@ -1,0 +1,4 @@
+*.sh text eol=lf
+*.icns binary
+*.ico binary
+*.rgba binary
