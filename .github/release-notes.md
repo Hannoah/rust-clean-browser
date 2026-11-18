@@ -1,7 +1,13 @@
 초경량 순수 Rust 웹 브라우저 — 적은 메모리, 빠른 로딩, Chrome 북마크 연동.
 *Ultra-lightweight pure-Rust web browser — low memory, instant page loads, Chrome bookmark import.*
 
-## 이번 버전 (v0.2.0)
+## 이번 버전 (v0.2.1)
+
+- 마우스를 창 아래쪽(짧은 페이지의 빈 영역)으로 내리면 포인터가 사라지던 문제 수정
+- 내부 코드 정리(불필요한 필드·중복 코드 제거, 동작 변화 없음)
+- 릴리스 빌드 파이프라인을 최신 GitHub Actions(Node 24)로 갱신
+
+### v0.2.0
 
 - **새 앱 아이콘**: 모던한 스퀴클 디자인
 - **탭 전환 시 새로고침 감소**: 가장 최근 JS 탭 1개는 WebView를 숨겨 두어 돌아오면 즉시 표시
