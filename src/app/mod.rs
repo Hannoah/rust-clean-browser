@@ -1,0 +1,668 @@
+//! The browser application: one winit window whose top strip is a Blitz-rendered UI document
+//! ("chrome") and whose body is the active tab (a Blitz document, or a WebView in JS mode).
+//!
+//! - `navigation`: page loading, tabs, history, JS-mode WebView
+//! - `actions`: UI `data-action` clicks and the async `AppEvent` queue
+//! - `input`: keyboard shortcuts, pointer routing, frameless-window drag/resize
+//! - `popup`: bookmark folder popup window
+//! - `bus`: Blitz/wry callback adapters that post `AppEvent`s
+
+mod actions;
+mod bus;
+mod helpers;
+mod input;
+mod navigation;
+mod popup;
+
+use crate::bookmarks::{BookmarkNode, BookmarkRootKind, BookmarkStore};
+use crate::chrome_ui::{CHROME_HEIGHT, ChromeRenderState, render_chrome_html};
+use crate::cleaner::{build_reader_html, extract_title};
+use crate::favicon;
+use crate::events::{theme_to_color_scheme, winit_modifiers_to_kbt_modifiers};
+use crate::memory::current_process_memory;
+use crate::net::{CleanNetProvider, PersistentCookieJar};
+use crate::page_cache::DiskPageCache;
+use crate::tabs::{HtmlCache, Tab, short_title_for_url};
+use bus::{AppBus, BrowserNavProvider, BrowserShellProvider, ChromeEventHandler};
+use helpers::{
+    ACTION_MOD, app_icon, main_window_style, normalize_url_input, synthetic_key, wait_for_images,
+};
+
+use anyrender::{PaintScene, WindowRenderer};
+use anyrender_vello_cpu::VelloCpuWindowRenderer;
+use blitz_dom::{Document, DocumentConfig, EventDriver, FontContext, StyleThreading};
+use blitz_html::HtmlDocument;
+use blitz_paint::paint_scene;
+use blitz_traits::events::{MouseEventButtons, UiEvent};
+use blitz_traits::net::{AbortController, Request};
+use blitz_traits::shell::{ColorScheme, ShellProvider, Viewport};
+use keyboard_types::{Code, Key, Modifiers as KbtModifiers, NamedKey};
+use kurbo::{Affine, Rect};
+use peniko::Fill;
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::mpsc::{Receiver, channel};
+use std::time::Instant;
+use url::Url;
+use winit::application::ApplicationHandler;
+use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
+use winit::event::{Modifiers, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
+use winit::window::{ResizeDirection, Theme, Window, WindowAttributes, WindowId};
+use wry::{WebContext, WebView};
+
+#[derive(Debug)]
+pub enum AppEvent {
+    RedrawDoc {
+        doc_id: usize,
+    },
+    PageLoaded {
+        tab_id: u64,
+        load_seq: u64,
+        /// URL as requested (before redirects); also used as a disk-cache key.
+        requested_url: String,
+        /// False for form POST results, which must not be cached.
+        cacheable: bool,
+        final_url: String,
+        clean_html: Arc<str>,
+        is_spa_shell: bool,
+        restore_scroll_y: Option<f64>,
+    },
+    PageLoadFailed {
+        tab_id: u64,
+        load_seq: u64,
+        url: String,
+        error: String,
+    },
+    Navigate {
+        source_doc_id: usize,
+        url: Url,
+        /// Set for non-GET navigations (form POST).
+        request: Option<Request>,
+    },
+    WebViewTitleChanged {
+        tab_id: u64,
+        title: String,
+    },
+    WebViewPageLoad {
+        tab_id: u64,
+        url: String,
+        finished: bool,
+    },
+    OpenInNewTab(String),
+    /// A queued favicon fetch finished.
+    Favicon(favicon::Next),
+    /// `<link>`s of the page shown in the JS-mode WebView.
+    WebViewIcons {
+        page_url: String,
+        links: Vec<favicon::Link>,
+    },
+    ChromeAction(String),
+    OpenBookmarkPopup {
+        key: String,
+        root: BookmarkRootKind,
+        path: Vec<usize>,
+        index_offset: usize,
+        title: String,
+    },
+    PopupAction {
+        action: String,
+        new_tab: bool,
+    },
+}
+
+pub struct BrowserApp {
+    window: Option<Arc<dyn Window>>,
+    renderer: VelloCpuWindowRenderer,
+    bus: AppBus,
+    rx: Receiver<AppEvent>,
+
+    shared_font_ctx: FontContext,
+    net_provider: Arc<CleanNetProvider>,
+    nav_provider: Arc<BrowserNavProvider>,
+    shell_provider: Option<Arc<dyn ShellProvider>>,
+
+    chrome_doc: HtmlDocument,
+    tabs: Vec<Tab>,
+    active_tab: usize,
+    next_tab_id: u64,
+    bookmarks: BookmarkStore,
+    html_cache: HtmlCache,
+    page_cache: DiskPageCache,
+    /// Pending favicon downloads, fetched one at a time while no page is loading.
+    favicon_queue: VecDeque<favicon::Job>,
+    favicon_inflight: bool,
+
+    win_size: PhysicalSize<u32>,
+    hidpi_scale: f32,
+    color_scheme: ColorScheme,
+    pointer_pos: PhysicalPosition<f64>,
+    pointer_in_chrome: Option<bool>,
+    buttons: MouseEventButtons,
+    keyboard_modifiers: Modifiers,
+    chrome_focused: bool,
+    start_instant: Instant,
+    status_note: Option<String>,
+    web_context: Option<WebContext>,
+    active_webview: Option<WebView>,
+    /// The most recently left JS-mode tab's WebView, hidden but alive (tab id, view).
+    parked_webview: Option<(u64, WebView)>,
+    popup: Option<popup::BookmarkPopup>,
+    recently_closed_popup: Option<(String, Instant)>,
+    last_chrome_click_x_logical: f32,
+    /// Last chrome HTML; identical rebuilds are skipped (no re-parse / re-style).
+    last_chrome_html: String,
+    /// URLs of recently closed tabs (Ctrl+Shift+T), newest last.
+    closed_tabs: Vec<String>,
+    last_titlebar_press: Option<Instant>,
+    resize_hover: Option<ResizeDirection>,
+    maximized: bool,
+}
+
+impl BrowserApp {
+    pub fn new(
+        winit_proxy: EventLoopProxy,
+        initial_url: Option<String>,
+        bookmarks: std::thread::JoinHandle<BookmarkStore>,
+    ) -> Self {
+        let (tx, rx) = channel();
+        let bus = AppBus { tx, winit_proxy };
+        let shared_font_ctx = FontContext::default();
+        let cookie_jar = Arc::new(PersistentCookieJar::load(
+            crate::bookmarks::app_data_dir().map(|p| p.join("cookies.json")),
+        ));
+        let net_provider = Arc::new(CleanNetProvider::new(Some(Arc::new(bus.clone())), cookie_jar));
+        let nav_provider = Arc::new(BrowserNavProvider { bus: bus.clone() });
+        let bookmarks = bookmarks.join().unwrap_or_default();
+
+        let start_url = initial_url
+            .map(|u| {
+                // Local files (e.g. opened via the .html file association) become file:// URLs.
+                let path = std::path::Path::new(&u);
+                match std::path::absolute(path).ok().filter(|p| p.is_file()) {
+                    Some(abs) => Url::from_file_path(abs).map(String::from).unwrap_or(u),
+                    None => normalize_url_input(&u),
+                }
+            })
+            .unwrap_or_else(|| "rust://home".to_string());
+
+        let chrome_doc = HtmlDocument::from_html(
+            "<html></html>",
+            DocumentConfig {
+                font_ctx: Some(shared_font_ctx.clone()),
+                style_threading: StyleThreading::Sequential,
+                ..Default::default()
+            },
+        );
+
+        let mut app = Self {
+            window: None,
+            renderer: VelloCpuWindowRenderer::new(),
+            bus,
+            rx,
+            shared_font_ctx,
+            net_provider,
+            nav_provider,
+            shell_provider: None,
+            chrome_doc,
+            tabs: vec![Tab::new(1, start_url)],
+            active_tab: 0,
+            next_tab_id: 2,
+            bookmarks,
+            html_cache: HtmlCache::new(8, 2 * 1024 * 1024),
+            page_cache: DiskPageCache::new(crate::bookmarks::app_data_dir().map(|p| p.join("pages"))),
+            favicon_queue: VecDeque::new(),
+            favicon_inflight: false,
+            win_size: PhysicalSize::new(1280, 820),
+            hidpi_scale: 1.0,
+            color_scheme: ColorScheme::Light,
+            pointer_pos: PhysicalPosition::new(0.0, 0.0),
+            pointer_in_chrome: None,
+            buttons: MouseEventButtons::None,
+            keyboard_modifiers: Modifiers::default(),
+            chrome_focused: false,
+            start_instant: Instant::now(),
+            status_note: None,
+            web_context: None,
+            active_webview: None,
+            parked_webview: None,
+            popup: None,
+            recently_closed_popup: None,
+            last_chrome_click_x_logical: 24.0,
+            last_chrome_html: String::new(),
+            closed_tabs: Vec::new(),
+            last_titlebar_press: None,
+            resize_hover: None,
+            maximized: false,
+        };
+
+        app.load_active_tab(false, None);
+        app
+    }
+
+    fn anim_time(&self) -> f64 {
+        self.start_instant.elapsed().as_secs_f64()
+    }
+
+    fn mods(&self) -> KbtModifiers {
+        winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state())
+    }
+
+    fn chrome_phys_height(&self) -> u32 {
+        ((CHROME_HEIGHT as f32) * self.hidpi_scale).round() as u32
+    }
+
+    fn content_phys_size(&self) -> (u32, u32) {
+        let ch = self.chrome_phys_height();
+        (self.win_size.width.max(1), self.win_size.height.saturating_sub(ch).max(1))
+    }
+
+    fn chrome_viewport(&self) -> Viewport {
+        let ch = self.chrome_phys_height();
+        Viewport::new(self.win_size.width.max(1), ch.max(1), self.hidpi_scale, self.color_scheme)
+    }
+
+    fn content_viewport(&self, zoom: f32) -> Viewport {
+        let (cw, ch) = self.content_phys_size();
+        let mut vp = Viewport::new(cw, ch, self.hidpi_scale, self.color_scheme);
+        vp.zoom = zoom;
+        vp
+    }
+
+    /// Re-applies size / scale / colour scheme to the chrome, the page and the WebView.
+    fn sync_viewports(&mut self) {
+        let chrome_vp = self.chrome_viewport();
+        self.chrome_doc.set_viewport(chrome_vp);
+        let content_vp = self.content_viewport(self.tabs[self.active_tab].zoom);
+        if let Some(doc) = &mut self.tabs[self.active_tab].doc {
+            doc.set_viewport(content_vp);
+        }
+        if let Some(wv) = &self.active_webview {
+            let _ = wv.set_bounds(self.webview_bounds());
+        }
+        self.request_redraw();
+    }
+
+    /// Shared document setup: one font context, our net provider, single-threaded styling.
+    fn doc_config(&self, viewport: Viewport, shell: Option<Arc<dyn ShellProvider>>) -> DocumentConfig {
+        DocumentConfig {
+            viewport: Some(viewport),
+            font_ctx: Some(self.shared_font_ctx.clone()),
+            net_provider: Some(self.net_provider.clone()),
+            shell_provider: shell,
+            style_threading: StyleThreading::Sequential,
+            ..Default::default()
+        }
+    }
+
+    fn url_bar_focused(&self) -> bool {
+        self.chrome_focused
+            && self
+                .chrome_doc
+                .get_element_by_id("url-bar")
+                .is_some_and(|id| self.chrome_doc.get_focussed_node_id() == Some(id))
+    }
+
+    /// Queues a one-time icon lookup for a URL we haven't rendered (tab strip, bookmarks).
+    /// Downloads run one at a time so they never compete with page loads.
+    fn request_favicon(&mut self, page_url: &str) {
+        if let Some(job) = favicon::begin_fetch(page_url) {
+            self.favicon_queue.push_back(job);
+        }
+    }
+
+    /// Same, for a rendered page whose `<link>`s are known: uses the icon it declares.
+    fn request_favicon_known(&mut self, page_url: &str, links: &[favicon::Link]) {
+        if let Some(job) = favicon::begin_fetch_known(page_url, links) {
+            self.favicon_queue.push_back(job);
+        }
+    }
+
+    fn pump_favicons(&mut self) {
+        if self.favicon_inflight || self.tabs[self.active_tab].is_loading {
+            return;
+        }
+        let Some(job) = self.favicon_queue.pop_front() else {
+            return;
+        };
+        self.favicon_inflight = true;
+        let (bus_ok, bus_fail) = (self.bus.clone(), self.bus.clone());
+        let signal = AbortController::default().signal;
+        match job {
+            favicon::Job::Page { key, url } => {
+                let (key2, url2) = (key.clone(), url.clone());
+                self.net_provider.fetch_document(
+                    Request::get(url.clone()),
+                    signal,
+                    move |final_url, bytes| {
+                        let next = favicon::page_fetched(key, &url, &final_url, Some(&bytes));
+                        bus_ok.send(AppEvent::Favicon(favicon::Next::Then(next)));
+                    },
+                    move |_| {
+                        let next = favicon::page_fetched(key2, &url2, "", None);
+                        bus_fail.send(AppEvent::Favicon(favicon::Next::Then(next)));
+                    },
+                );
+            }
+            favicon::Job::Icon { key, url, fallback, guess } => {
+                let (key2, fallback2) = (key.clone(), fallback.clone());
+                self.net_provider.fetch_document(
+                    Request::get(url),
+                    signal,
+                    move |_, bytes| {
+                        bus_ok.send(AppEvent::Favicon(favicon::icon_fetched(key, fallback, guess, Some(&bytes))));
+                    },
+                    move |_| {
+                        bus_fail.send(AppEvent::Favicon(favicon::icon_fetched(key2, fallback2, guess, None)));
+                    },
+                );
+            }
+        }
+    }
+
+    /// Asks the JS-mode WebView for the page's `<link>`s (SPAs often add their icon late,
+    /// so this runs on load and on title changes).
+    fn query_webview_icons(&self) {
+        let Some(wv) = &self.active_webview else {
+            return;
+        };
+        let page_url = self.tabs[self.active_tab].url.clone();
+        let bus = self.bus.clone();
+        let _ = wv.evaluate_script_with_callback(
+            "Array.from(document.querySelectorAll('link[rel]'), l => ({rel: l.rel, href: l.href, sizes: l.getAttribute('sizes') || '', type: l.type || ''}))",
+            move |json| {
+                if let Ok(links) = serde_json::from_str::<Vec<favicon::Link>>(&json) {
+                    bus.send(AppEvent::WebViewIcons { page_url: page_url.clone(), links });
+                }
+            },
+        );
+    }
+
+    fn rebuild_chrome(&mut self) {
+        // Icons for open tabs and the bookmark bar (deduplicated per host, fetched once).
+        let icon_urls: Vec<String> = self
+            .tabs
+            .iter()
+            .map(|t| t.url.clone())
+            .chain(self.bookmarks.custom.iter().map(|b| b.url.clone()))
+            .chain(
+                self.bookmarks
+                    .bar
+                    .iter()
+                    .filter_map(|n| match n {
+                        BookmarkNode::Url(item) => Some(item.url.clone()),
+                        BookmarkNode::Folder(_) => None,
+                    })
+                    .take(16),
+            )
+            .collect();
+        for url in &icon_urls {
+            self.request_favicon(url);
+        }
+        self.pump_favicons();
+        // Keep whatever the user is typing (and focus) when background events rebuild the chrome.
+        let typing = self.url_bar_focused().then(|| self.read_url_bar_text()).flatten();
+        let html = render_chrome_html(&ChromeRenderState {
+            tabs: &self.tabs,
+            active_idx: self.active_tab,
+            bookmarks: &self.bookmarks,
+            working_set_mb: current_process_memory().working_set_mb,
+            blocked_count: self.net_provider.blocked_total(),
+            filter_enabled: self.net_provider.is_filter_enabled(),
+            status_note: self.status_note.as_deref(),
+            maximized: self.maximized,
+            url_override: typing.as_deref(),
+            parked_tab: self.parked_webview.as_ref().map(|(id, _)| *id),
+        });
+        self.update_window_title();
+        if html == self.last_chrome_html {
+            return;
+        }
+
+        let mut doc = HtmlDocument::from_html(&html, self.doc_config(self.chrome_viewport(), self.shell_provider.clone()));
+        wait_for_images(&mut doc);
+        self.chrome_doc = doc;
+        self.last_chrome_html = html;
+        if typing.is_some() {
+            if let Some(url_id) = self.chrome_doc.get_element_by_id("url-bar") {
+                self.chrome_doc.set_focus_to(url_id);
+                self.dispatch_chrome_ui(UiEvent::KeyDown(synthetic_key(
+                    Key::Named(NamedKey::End),
+                    Code::End,
+                    KbtModifiers::empty(),
+                )));
+            }
+        }
+        self.request_redraw();
+    }
+
+    fn update_window_title(&self) {
+        if let Some(win) = &self.window {
+            let tab = &self.tabs[self.active_tab];
+            win.set_title(&format!("{} — Rust Clean Browser", tab.title));
+        }
+    }
+
+    fn request_redraw(&self) {
+        if let Some(win) = &self.window {
+            win.request_redraw();
+        }
+    }
+
+    fn build_content_doc(&self, html: &str, base_url: &str, abort_ctrl: Option<&AbortController>, zoom: f32) -> HtmlDocument {
+        let mut cfg = self.doc_config(self.content_viewport(zoom), self.shell_provider.clone());
+        cfg.base_url = Some(base_url.to_string());
+        cfg.navigation_provider = Some(self.nav_provider.clone());
+        cfg.abort_signal = abort_ctrl.map(|c| c.signal.clone());
+        HtmlDocument::from_html(html, cfg)
+    }
+
+    /// Restores a saved scroll offset, or jumps to the URL's `#fragment`.
+    fn restore_position(&self, doc: &mut HtmlDocument, url: &str, scroll_y: Option<f64>) {
+        if let Some(y) = scroll_y {
+            doc.set_viewport_scroll(blitz_dom::Point { x: 0.0, y });
+        } else if let Some((_, frag)) = url.split_once('#').filter(|(_, f)| !f.is_empty()) {
+            doc.resolve(self.anim_time());
+            doc.scroll_to_fragment(frag);
+        }
+    }
+
+    fn apply_html_to_tab(&mut self, tab_idx: usize, final_url: String, clean_html: Arc<str>, restore_scroll_y: Option<f64>) {
+        let title = extract_title(&clean_html).unwrap_or_else(|| short_title_for_url(&final_url));
+        let zoom = self.tabs[tab_idx].zoom;
+        // Drop the previous DOM before building the next one so peak memory holds one page.
+        self.tabs[tab_idx].doc = None;
+        let abort_ctrl = AbortController::default();
+        let mut doc = if self.tabs[tab_idx].reader_mode {
+            let reader = build_reader_html(&clean_html, &final_url);
+            self.build_content_doc(&reader, &final_url, Some(&abort_ctrl), zoom)
+        } else {
+            self.build_content_doc(&clean_html, &final_url, Some(&abort_ctrl), zoom)
+        };
+        self.restore_position(&mut doc, &final_url, restore_scroll_y);
+
+        self.request_favicon_known(&final_url, &favicon::links_in_html(&clean_html));
+        let tab = &mut self.tabs[tab_idx];
+        tab.url = final_url.clone();
+        tab.title = title.clone();
+        tab.is_loading = false;
+        tab.abort_controller = Some(abort_ctrl);
+        tab.raw_html = Some(Arc::clone(&clean_html));
+        tab.doc = Some(doc);
+
+        if !final_url.starts_with("rust://") {
+            let cache_url = final_url.split('#').next().unwrap_or(&final_url).to_string();
+            self.html_cache.insert(cache_url, title, clean_html);
+        }
+
+        self.rebuild_chrome();
+    }
+
+    fn toggle_maximize(&mut self) {
+        if let Some(win) = &self.window {
+            win.set_maximized(!win.is_maximized());
+        }
+    }
+
+    fn exit_app(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.close_popup();
+        for wv in self.active_webview.iter().chain(self.parked_webview.as_ref().map(|(_, wv)| wv)) {
+            helpers::persist_session_cookies(wv);
+        }
+        self.net_provider.cookies.save();
+        self.renderer.suspend();
+        self.window = None;
+        event_loop.exit();
+    }
+
+    fn focus_url_bar(&mut self) {
+        self.chrome_focused = true;
+        if let Some(win) = &self.window {
+            helpers::focus_main_window(&**win, true);
+        }
+        if let Some(url_id) = self.chrome_doc.get_element_by_id("url-bar") {
+            self.chrome_doc.set_focus_to(url_id);
+            let select_all = synthetic_key(Key::Character("a".to_string()), Code::KeyA, ACTION_MOD);
+            self.dispatch_chrome_ui(UiEvent::KeyDown(select_all));
+        }
+        self.request_redraw();
+    }
+
+    /// Trimmed text of a focused `<input id=...>` on a built-in `rust://` page.
+    fn focused_builtin_input(&self, id: &str) -> Option<String> {
+        let tab = &self.tabs[self.active_tab];
+        if !tab.url.starts_with("rust://") {
+            return None;
+        }
+        let doc = tab.doc.as_ref()?;
+        let sid = doc.get_element_by_id(id)?;
+        if doc.get_focussed_node_id() != Some(sid) {
+            return None;
+        }
+        let input = doc.get_node(sid)?.element_data()?.text_input_data()?;
+        Some(input.editor.text().to_string().trim().to_string())
+    }
+
+    fn read_url_bar_text(&self) -> Option<String> {
+        let url_id = self.chrome_doc.get_element_by_id("url-bar")?;
+        let input = self.chrome_doc.get_node(url_id)?.element_data()?.text_input_data()?;
+        Some(input.editor.text().to_string())
+    }
+
+    fn dispatch_chrome_ui(&mut self, event: UiEvent) {
+        let handler = ChromeEventHandler {
+            bus: self.bus.clone(),
+        };
+        EventDriver::new(&mut self.chrome_doc, handler).handle_ui_event(event);
+    }
+
+    fn redraw(&mut self) {
+        if !self.renderer.is_active() {
+            return;
+        }
+        let anim_time = self.anim_time();
+        let scale = self.hidpi_scale as f64;
+        let win_w = self.win_size.width.max(1);
+        let win_h = self.win_size.height.max(1);
+        let chrome_h_phys = self.chrome_phys_height().min(win_h);
+        let content_h_phys = win_h.saturating_sub(chrome_h_phys);
+
+        self.chrome_doc.poll(None);
+        self.chrome_doc.resolve(anim_time);
+
+        let mut needs_more_frames = false;
+        // With a WebView mounted, it draws the content area itself.
+        let content_doc = if self.active_webview.is_some() {
+            None
+        } else {
+            self.tabs[self.active_tab].doc.as_mut()
+        };
+        let content = content_doc.map(|doc| {
+            needs_more_frames |= doc.poll(None);
+            doc.resolve(anim_time);
+            needs_more_frames |= doc.is_animating();
+            let doc_scale = doc.viewport().scale_f64();
+            (doc, doc_scale)
+        });
+        let chrome_inner = &mut *self.chrome_doc;
+
+        self.renderer.render(|scene| {
+            if let Some((content_doc, content_scale)) = content {
+                if content_h_phys > 0 {
+                    let clip = Rect::new(0.0, chrome_h_phys as f64, win_w as f64, win_h as f64);
+                    scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &clip);
+                    paint_scene(scene, content_doc, content_scale, win_w, content_h_phys, 0, chrome_h_phys);
+                    scene.pop_layer();
+                }
+            }
+            paint_scene(scene, chrome_inner, scale, win_w, chrome_h_phys, 0, 0);
+        });
+
+        if needs_more_frames {
+            self.request_redraw();
+        }
+    }
+}
+
+impl ApplicationHandler for BrowserApp {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
+        #[cfg(debug_assertions)]
+        eprintln!("[winit] can_create_surfaces window_is_none={}", self.window.is_none());
+        if self.window.is_none() {
+            let attrs = WindowAttributes::default()
+                .with_title("Rust Clean Browser")
+                .with_min_surface_size(LogicalSize::new(520.0, 360.0))
+                .with_surface_size(LogicalSize::new(1280.0, 820.0))
+                .with_window_icon(app_icon());
+            let win: Arc<dyn Window> = Arc::from(event_loop.create_window(main_window_style(attrs)).unwrap());
+            self.maximized = win.is_maximized();
+            self.hidpi_scale = win.scale_factor() as f32;
+            self.win_size = win.surface_size();
+            self.color_scheme = theme_to_color_scheme(win.theme().unwrap_or(Theme::Light));
+            let shell: Arc<dyn ShellProvider> = Arc::new(BrowserShellProvider {
+                window: Arc::clone(&win),
+            });
+            let chrome_vp = self.chrome_viewport();
+            let content_vp = self.content_viewport(1.0);
+            self.shell_provider = Some(Arc::clone(&shell));
+            self.chrome_doc.set_viewport(chrome_vp);
+            self.chrome_doc.set_shell_provider(Arc::clone(&shell));
+            if let Some(doc) = &mut self.tabs[self.active_tab].doc {
+                doc.set_viewport(content_vp);
+                doc.set_shell_provider(shell);
+            }
+            self.window = Some(win);
+            self.update_window_title();
+        }
+
+        if self.tabs[self.active_tab].js_mode && self.active_webview.is_none() {
+            self.mount_or_navigate_webview(self.active_tab);
+        }
+
+        if let Some(win) = &self.window {
+            let w = self.win_size.width.max(1);
+            let h = self.win_size.height.max(1);
+            self.renderer.resume(Arc::new(Arc::clone(win)), w, h, || {});
+            self.renderer.complete_resume();
+            self.renderer.set_size(w, h);
+            self.request_redraw();
+        }
+    }
+
+    fn destroy_surfaces(&mut self, _event_loop: &dyn ActiveEventLoop) {
+        self.close_popup();
+        self.renderer.suspend();
+    }
+
+    fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.process_app_events(event_loop);
+    }
+
+    fn window_event(&mut self, event_loop: &dyn ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
+        if self.popup_owns(window_id) {
+            self.handle_popup_window_event(event_loop, event);
+        } else {
+            self.handle_main_window_event(event_loop, event);
+        }
+    }
+}

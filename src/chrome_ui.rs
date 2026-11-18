@@ -52,7 +52,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--fram
 img.fav { border-radius: 3px; }
 .fav.loading { color: var(--accent); font-size: 13px; }
 .tab-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; }
-.tab-badge { font-size: 9px; font-weight: 700; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 3px; line-height: 12px; }
+/* Filled chips, no 1px outlines: thin borders land between device pixels at 125%/150% scale
+   and look broken on one side. */
+.tab-badge { font-size: 9px; font-weight: 700; color: var(--accent); background: var(--accent-bg); border-radius: 4px; padding: 1px 5px; line-height: 12px; }
 .tab-close { width: 20px; height: 20px; line-height: 20px; text-align: center; border-radius: 10px; font-size: 9px; color: var(--text-2); flex-shrink: 0; }
 .tab-close:hover { background: var(--press); color: var(--text); }
 .newtab { width: 28px; height: 28px; line-height: 28px; margin: 0 0 3px 6px; text-align: center; border-radius: 14px; font-size: 12px; color: var(--text); flex-shrink: 0; }
@@ -77,13 +79,12 @@ img.fav { border-radius: 3px; }
 #url-bar:hover { background: var(--omni-hover); border-color: var(--omni-hover); }
 #url-bar:focus { background: var(--surface); border-color: var(--accent); }
 .omni-lead { position: absolute; left: 13px; top: 0; height: 34px; line-height: 34px; font-size: 13px; color: var(--text-2); }
-.omni-lead.secure { color: var(--text-2); }
 .omni-star { position: absolute; right: 4px; top: 3px; width: 28px; height: 28px; line-height: 28px; text-align: center; border-radius: 14px; font-size: 14px; color: var(--text-2); }
 .omni-star:hover { background: var(--hover); }
 .omni-star.on { color: var(--accent); }
-.pill { height: 26px; line-height: 24px; padding: 0 10px; margin: 0 2px; border-radius: 13px; border: 1px solid var(--border); font-size: 11px; color: var(--text-2); white-space: nowrap; flex-shrink: 0; }
-.pill:hover { background: var(--hover); color: var(--text); }
-.pill.accent { border-color: var(--accent); color: var(--accent); }
+.pill { height: 26px; line-height: 26px; padding: 0 11px; margin: 0 2px; border-radius: 13px; background: var(--omni); font-size: 11px; color: var(--text-2); white-space: nowrap; flex-shrink: 0; }
+.pill:hover { background: var(--omni-hover); color: var(--text); }
+.pill.accent { background: var(--accent-bg); color: var(--accent); }
 .vsep { width: 1px; height: 20px; margin: 0 4px; background: var(--divider); flex-shrink: 0; }
 
 .bmbar { display: flex; align-items: center; gap: 2px; height: 32px; padding: 0 8px 2px; background: var(--surface); border-bottom: 1px solid var(--divider); overflow: hidden; }
@@ -165,6 +166,8 @@ pub struct ChromeRenderState<'a> {
     pub maximized: bool,
     /// Text the user is typing in the URL bar, kept across chrome rebuilds.
     pub url_override: Option<&'a str>,
+    /// Tab whose JS-mode WebView is kept alive in the background (not shown as asleep).
+    pub parked_tab: Option<u64>,
 }
 
 fn icon(cp: &str) -> String {
@@ -199,7 +202,7 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
     for (idx, tab) in state.tabs.iter().enumerate() {
         let is_active = idx == state.active_idx;
         let next_active = idx + 1 == state.active_idx;
-        let asleep = !is_active && !tab.is_loaded();
+        let asleep = !is_active && !tab.is_loaded() && state.parked_tab != Some(tab.id);
         let cls = match (is_active, asleep) {
             (true, _) => "tab active",
             (false, true) => "tab asleep",
@@ -369,11 +372,9 @@ fn compact_count(n: usize) -> String {
     }
 }
 
-/// Computes the ideal logical popup height for the number of items shown.
-pub fn estimate_popup_height(item_count: usize, has_header: bool) -> u32 {
-    let header_h = if has_header { 40 } else { 0 };
-    let rows_h = (item_count.max(1) as u32) * 32 + 12;
-    (header_h + rows_h).clamp(84, POPUP_MAX_HEIGHT)
+/// Ideal logical popup height (40px header + 32px rows) for the number of items shown.
+pub fn estimate_popup_height(item_count: usize) -> u32 {
+    (40 + (item_count.max(1) as u32) * 32 + 12).clamp(84, POPUP_MAX_HEIGHT)
 }
 
 const POPUP_CSS: &str = r#"
@@ -524,7 +525,7 @@ pub fn render_home_page(
         h,
         r#"</style></head><body><div class="wrap">
 <div class="brand">Rust <span>Clean</span> Browser</div>
-<input id="home-search" type="text" placeholder="DuckDuckGo 검색 또는 URL 입력" />
+<input id="home-search" type="text" placeholder="Google 검색 또는 URL 입력" />
 <div class="hint">Enter로 이동 · Ctrl+L 주소창 · Ctrl+T 새 탭</div>
 <div class="grid">{tiles}</div>
 <div class="stats">
@@ -832,6 +833,7 @@ mod tests {
             status_note: None,
             maximized: true,
             url_override: Some("typed"),
+            parked_tab: None,
         });
         assert!(html.contains(r#"value="typed""#));
         assert!(html.contains("T&amp;T"));

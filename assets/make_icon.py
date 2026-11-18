@@ -16,35 +16,51 @@ def lerp(a, b, t):
     return a + (b - a) * t
 
 
-def coverage(nx, ny):
-    """Returns RGBA (0..1 floats, premultiplied-free) for a normalized point in [0,1]^2."""
-    # Rounded square (squircle-ish) background.
-    r = 0.22
-    dx = max(abs(nx - 0.5) - (0.5 - r), 0.0)
-    dy = max(abs(ny - 0.5) - (0.5 - r), 0.0)
-    if math.hypot(dx, dy) > r - 0.02:
-        return None
-    t = (nx + ny) / 2
-    col = (lerp(0x1d, 0x06, t) / 255, lerp(0x4e, 0xb6, t) / 255, lerp(0xd8, 0xd4, t) / 255)
+def mix(c1, c2, t):
+    return tuple(lerp(a, b, t) for a, b in zip(c1, c2))
 
-    white = (1.0, 1.0, 1.0)
-    cx, cy = 0.47, 0.53
-    d = math.hypot(nx - cx, ny - cy)
-    R = 0.29
-    # Globe outline.
-    if abs(d - R) < 0.045:
-        col = white
-    elif d < R:
-        # Meridian ellipse + equator.
-        e = math.hypot((nx - cx) / 0.12, (ny - cy) / R)
-        if abs(e - 1.0) < 0.16 or abs(ny - cy) < 0.026:
-            col = white
-    # Orange "Rust" spark at top-right with a white ring.
-    sd = math.hypot(nx - 0.745, ny - 0.255)
-    if sd < 0.095:
-        col = (0xf9 / 255, 0x73 / 255, 0x16 / 255)
-    elif sd < 0.135:
-        col = white
+
+def hexc(h):
+    return tuple(int(h[i:i + 2], 16) / 255 for i in (1, 3, 5))
+
+
+BG_A, BG_B = hexc("#3b82f6"), hexc("#6d28d9")      # blue -> violet diagonal
+PLANET_A, PLANET_B = hexc("#fdba74"), hexc("#ea580c")  # rust orange
+WHITE = (1.0, 1.0, 1.0)
+CX, CY, R, W = 0.5, 0.5, 0.235, 0.085               # orbit ring
+GAP = (math.radians(18), math.radians(72))           # opening at the top right
+PA = math.radians(45)                                 # planet sits in the opening
+PX, PY, PR = CX + R * math.cos(PA), CY - R * math.sin(PA), 0.085
+
+
+def in_ring(nx, ny):
+    d = math.hypot(nx - CX, ny - CY)
+    if abs(d - R) > W / 2:
+        # Round caps at both ends of the opening.
+        return any(math.hypot(nx - (CX + R * math.cos(a)), ny - (CY - R * math.sin(a))) <= W / 2 for a in GAP)
+    ang = math.atan2(-(ny - CY), nx - CX) % (2 * math.pi)
+    return not (GAP[0] < ang < GAP[1])
+
+
+def coverage(nx, ny):
+    """RGBA (0..1, straight alpha) of a normalized point in [0,1]^2, or None if transparent."""
+    # Squircle (superellipse, n=5) with a small margin, like modern app icons.
+    sx, sy = (nx - 0.5) / 0.46, (ny - 0.5) / 0.46
+    if abs(sx) ** 5 + abs(sy) ** 5 > 1:
+        return None
+    col = mix(BG_A, BG_B, (nx + ny) / 2)
+    # Soft highlight from the top-left.
+    glow = max(0.0, 1 - math.hypot(nx - 0.25, ny - 0.18) / 0.55)
+    col = mix(col, WHITE, 0.18 * glow * glow)
+    # Faint drop shadow under the mark for depth.
+    if in_ring(nx - 0.012, ny - 0.02) or math.hypot(nx - 0.012 - PX, ny - 0.02 - PY) <= PR:
+        col = mix(col, (0.08, 0.04, 0.25), 0.28)
+    if in_ring(nx, ny):
+        col = WHITE
+    pd = math.hypot(nx - PX, ny - PY)
+    if pd <= PR:
+        t = min(1.0, math.hypot(nx - (PX - PR * 0.4), ny - (PY - PR * 0.4)) / (PR * 1.6))
+        col = mix(PLANET_A, PLANET_B, t)
     return col
 
 
