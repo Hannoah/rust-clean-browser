@@ -4,7 +4,8 @@
 //! - `navigation`: page loading, tabs, history, JS-mode WebView
 //! - `actions`: UI `data-action` clicks and the async `AppEvent` queue
 //! - `input`: keyboard shortcuts, pointer routing, frameless-window drag/resize
-//! - `popup`: bookmark folder popup window
+//! - `popup`: popup windows (bookmark folders, address-bar suggestions)
+//! - `suggest`: address-bar autocomplete
 //! - `bus`: Blitz/wry callback adapters that post `AppEvent`s
 
 mod actions;
@@ -13,11 +14,13 @@ mod helpers;
 mod input;
 mod navigation;
 mod popup;
+mod suggest;
 
 use crate::bookmarks::{BookmarkNode, BookmarkRootKind, BookmarkStore};
 use crate::chrome_ui::{CHROME_HEIGHT, ChromeRenderState, render_chrome_html};
 use crate::cleaner::{build_reader_html, extract_title};
 use crate::favicon;
+use crate::history::History;
 use crate::events::{theme_to_color_scheme, winit_modifiers_to_kbt_modifiers};
 use crate::memory::working_set_mb;
 use crate::net::{CleanNetProvider, PersistentCookieJar};
@@ -127,6 +130,9 @@ pub struct BrowserApp {
     active_tab: usize,
     next_tab_id: u64,
     bookmarks: BookmarkStore,
+    history: History,
+    /// Last URL-bar text the suggestion dropdown was built for.
+    suggest_query: String,
     html_cache: HtmlCache,
     page_cache: DiskPageCache,
     /// Pending favicon downloads, fetched one at a time while no page is loading.
@@ -147,7 +153,7 @@ pub struct BrowserApp {
     active_webview: Option<WebView>,
     /// The most recently left JS-mode tab's WebView, hidden but alive (tab id, view).
     parked_webview: Option<(u64, WebView)>,
-    popup: Option<popup::BookmarkPopup>,
+    popup: Option<popup::Popup>,
     recently_closed_popup: Option<(String, Instant)>,
     last_chrome_click_x_logical: f32,
     /// Last chrome HTML; identical rebuilds are skipped (no re-parse / re-style).
@@ -209,6 +215,8 @@ impl BrowserApp {
             active_tab: 0,
             next_tab_id: 2,
             bookmarks,
+            history: History::load(crate::bookmarks::app_data_dir().map(|p| p.join("history.json"))),
+            suggest_query: String::new(),
             html_cache: HtmlCache::new(8, 2 * 1024 * 1024),
             page_cache: DiskPageCache::new(crate::bookmarks::app_data_dir().map(|p| p.join("pages"))),
             favicon_queue: VecDeque::new(),
@@ -510,6 +518,7 @@ impl BrowserApp {
             helpers::persist_session_cookies(wv);
         }
         self.net_provider.cookies.save();
+        self.history.save();
         self.renderer.suspend();
         self.window = None;
         event_loop.exit();
@@ -517,6 +526,7 @@ impl BrowserApp {
 
     fn focus_url_bar(&mut self) {
         self.chrome_focused = true;
+        self.suggest_query.clear();
         if let Some(win) = &self.window {
             helpers::focus_main_window(&**win, true);
         }

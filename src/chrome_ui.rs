@@ -444,6 +444,68 @@ pub fn render_bookmark_popup_html(
     platform_icons(h)
 }
 
+/// Address-bar suggestion dropdown: 36px rows inside 6px padding.
+pub fn suggest_popup_height(rows: usize) -> u32 {
+    (rows as u32) * 36 + 12
+}
+
+const SUGGEST_CSS: &str = r#"
+html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surface); user-select: none; }
+.shell { height: 100vh; padding: 6px; border: 1px solid var(--border); background: var(--surface); }
+.row { display: flex; align-items: center; gap: 12px; height: 36px; padding: 0 12px; border-radius: 8px; font-size: 13px; white-space: nowrap; overflow: hidden; }
+.row:hover { background: var(--hover); }
+.row.sel { background: var(--accent-bg); color: var(--accent-text); }
+.sico { width: 16px; text-align: center; font-size: 13px; color: var(--text-2); flex-shrink: 0; }
+.title { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+.url { flex: 1 1 0; min-width: 0; overflow: hidden; color: var(--text-3); font-size: 12px; }
+.row.sel .url { color: var(--accent-text); opacity: 0.75; }
+"#;
+
+/// Suggestion rows for the address bar; `selected` is highlighted (Enter opens it).
+pub fn render_suggest_popup_html(rows: &[crate::history::Suggestion], selected: usize) -> String {
+    use crate::history::SuggestKind;
+    let mut h = String::with_capacity(2048 + rows.len() * 384);
+    h.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>");
+    h.push_str(THEME_CSS);
+    h.push_str(SUGGEST_CSS);
+    h.push_str(r#"</style></head><body><div class="shell">"#);
+    for (i, row) in rows.iter().enumerate() {
+        let sel = if i == selected { " sel" } else { "" };
+        let (icon, title, detail) = match row.kind {
+            SuggestKind::Typed if row.url.starts_with("https://www.google.com/search?") => (
+                r#"<span class="sico ico">&#xE721;</span>"#.to_string(),
+                html_escape(&truncate_chars(&row.title, 60)),
+                "Google 검색".to_string(),
+            ),
+            SuggestKind::Typed => (
+                r#"<span class="sico ico">&#xE72A;</span>"#.to_string(),
+                html_escape(&truncate_chars(&row.url, 70)),
+                "이동".to_string(),
+            ),
+            SuggestKind::History | SuggestKind::Bookmark => {
+                let title = if row.title.trim().is_empty() { &row.url } else { &row.title };
+                (
+                    favicon_html(&row.title, &row.url),
+                    html_escape(&truncate_chars(title, 50)),
+                    html_escape(&truncate_chars(row.url.trim_start_matches("https://"), 80)),
+                )
+            }
+        };
+        let star = if row.kind == SuggestKind::Bookmark {
+            r#"<span class="sico ico">&#xE735;</span>"#
+        } else {
+            ""
+        };
+        let _ = write!(
+            h,
+            r#"<div class="row{sel}" data-action="popup-open:{url}">{icon}<span class="title">{title}</span><span class="url">— {detail}</span>{star}</div>"#,
+            url = html_escape(&row.url),
+        );
+    }
+    h.push_str("</div></body></html>");
+    platform_icons(h)
+}
+
 const HOME_CSS: &str = r#"
 body { background: var(--surface-2); padding: 72px 28px 64px; }
 .wrap { max-width: 860px; margin: 0 auto; }

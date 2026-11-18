@@ -163,6 +163,9 @@ impl BrowserApp {
                     } else {
                         self.apply_html_to_tab(idx, final_url, clean_html, restore_scroll_y);
                     }
+                    if !self.tabs[idx].js_mode {
+                        self.history.record(&self.tabs[idx].url, &self.tabs[idx].title);
+                    }
                     // Persist any login cookies set during this navigation.
                     self.net_provider.cookies.save();
                 }
@@ -209,6 +212,7 @@ impl BrowserApp {
                 AppEvent::WebViewTitleChanged { tab_id, title } => {
                     if let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) {
                         if !title.trim().is_empty() && self.tabs[idx].title != title {
+                            self.history.set_title(&self.tabs[idx].url, &title);
                             self.tabs[idx].title = title;
                             if idx == self.active_tab {
                                 self.query_webview_icons();
@@ -226,6 +230,9 @@ impl BrowserApp {
                         self.tabs[idx].is_loading = !finished;
                         if !url.is_empty() && url != "about:blank" {
                             self.tabs[idx].url = url;
+                        }
+                        if finished {
+                            self.history.record(&self.tabs[idx].url, &self.tabs[idx].title);
                         }
                         if idx == self.active_tab {
                             if finished {
