@@ -1,6 +1,15 @@
 초경량 순수 Rust 웹 브라우저 — 적은 메모리, 빠른 로딩, Chrome 북마크 연동.
 *Ultra-lightweight pure-Rust web browser — low memory, instant page loads, Chrome bookmark import.*
 
+## 이번 버전 (v0.2.0)
+
+- **새 앱 아이콘**: 모던한 스퀴클 디자인
+- **탭 전환 시 새로고침 감소**: 가장 최근 JS 탭 1개는 WebView를 숨겨 두어 돌아오면 즉시 표시
+- **주소창 기본 검색 Google**로 변경
+- **사이트 아이콘 정확도 개선**: 각 서비스가 선언한 고유 아이콘 사용(SVG 지원, Confluence/Jira 등 구분, 로그인된 JS 페이지 아이콘 반영)
+- **주소창 입력 시 경고음 제거**(JS 탭 이후 키 입력마다 '띵' 소리 나던 문제)
+- 높은 화면 배율(125%/150%)에서 JS 배지·메모리 버튼 테두리가 끊겨 보이던 문제 수정
+
 ## 다운로드 / Download
 
 | 플랫폼 | 파일 | 설명 |
