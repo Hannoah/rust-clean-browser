@@ -60,16 +60,10 @@ impl ShellProvider for BrowserShellProvider {
     }
 
     fn set_cursor(&self, icon: Option<CursorIcon>) {
-        match icon {
-            Some(icon) => {
-                self.window.set_cursor_visible(true);
-                self.window.set_cursor(Cursor::Icon(icon));
-            }
-            None => {
-                self.window.set_cursor(Cursor::Icon(CursorIcon::Default));
-                self.window.set_cursor_visible(false);
-            }
-        }
+        // Blitz reports `None` both for `cursor: none` and for "no element under the pointer"
+        // (e.g. the empty area below a short page). Hiding the cursor made it vanish near the
+        // bottom of the window, so `None` shows the default arrow instead.
+        self.window.set_cursor(Cursor::Icon(icon.unwrap_or(CursorIcon::Default)));
     }
 
     fn set_window_title(&self, _title: String) {}
