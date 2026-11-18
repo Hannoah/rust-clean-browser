@@ -31,6 +31,9 @@ const THEME_CSS: &str = r#"
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: "Segoe UI Variable Text", "Segoe UI", -apple-system, "SF Pro Text", "Helvetica Neue", "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", sans-serif; color: var(--text); }
+/* Site icon: cached favicon <img>, or a coloured monogram badge. */
+.fav { display: inline-block; width: 16px; height: 16px; line-height: 16px; text-align: center; border-radius: 4px; color: #fff; font-size: 10px; font-weight: 700; flex-shrink: 0; }
+img.fav { border-radius: 3px; }
 .ico { font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", "Apple Symbols", "Lucida Grande", "DejaVu Sans", sans-serif; font-weight: normal; font-style: normal; }
 "#;
 
@@ -46,10 +49,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--fram
 .tab.active { background: var(--surface); color: var(--text); }
 .tab.asleep .tab-title { opacity: 0.62; }
 .tab-sep { width: 1px; height: 18px; margin-bottom: 8px; background: var(--border); flex-shrink: 0; }
-.fav { display: inline-block; width: 16px; height: 16px; line-height: 16px; text-align: center; border-radius: 4px;
-  color: #ffffff; font-size: 10px; font-weight: 700; flex-shrink: 0; }
 .fav.glyph { color: var(--text-2); font-size: 13px; }
-img.fav { border-radius: 3px; }
 .fav.loading { color: var(--accent); font-size: 13px; }
 .tab-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; }
 /* Filled chips, no 1px outlines: thin borders land between device pixels at 125%/150% scale
@@ -91,7 +91,7 @@ img.fav { border-radius: 3px; }
 .bm-items { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; overflow: hidden; }
 .chip { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border-radius: 13px; color: var(--text); font-size: 12px; white-space: nowrap; flex-shrink: 0; }
 .chip:hover { background: var(--hover); }
-.chip .fav { width: 16px; height: 16px; line-height: 16px; font-size: 9px; }
+.chip .fav { font-size: 9px; }
 .chip .fico { font-size: 13px; color: var(--text-2); }
 .bm-right { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
 .bm-empty { font-size: 12px; color: var(--text-3); padding-left: 6px; }
@@ -389,7 +389,6 @@ html, body { width: 100%; min-height: 100%; background: var(--surface); user-sel
 .list { padding: 6px; }
 .row { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; border-radius: 8px; font-size: 13px; }
 .row:hover { background: var(--hover); }
-.fav { display: inline-block; width: 16px; height: 16px; line-height: 16px; text-align: center; border-radius: 4px; color: #fff; font-size: 10px; font-weight: 700; flex-shrink: 0; }
 .fico { font-size: 14px; color: var(--text-2); flex-shrink: 0; }
 .title { flex: 1; white-space: nowrap; overflow: hidden; }
 .host { color: var(--text-3); font-size: 11px; white-space: nowrap; flex-shrink: 0; }
@@ -573,7 +572,6 @@ body { background: var(--surface-2); }
 .card { background: var(--surface); border: 1px solid var(--divider); border-radius: 12px; overflow: hidden; }
 .row { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--divider); text-decoration: none; color: var(--text); font-size: 13px; }
 .row:hover { background: var(--hover); }
-.fav { width: 16px; height: 16px; line-height: 16px; text-align: center; border-radius: 4px; color: #fff; font-size: 10px; font-weight: 700; flex-shrink: 0; }
 .rurl { color: var(--text-3); font-size: 11px; margin-left: auto; white-space: nowrap; }
 .empty { padding: 28px; background: var(--surface); border: 1px solid var(--divider); border-radius: 12px; color: var(--text-3); font-size: 13px; }
 "#;

@@ -138,7 +138,6 @@ impl reqwest::cookie::CookieStore for PersistentCookieJar {
 pub struct CleanNetProvider {
     inner: Arc<BlitzNetProvider>,
     pub blocked_count: Arc<AtomicUsize>,
-    pub fetched_count: Arc<AtomicUsize>,
     pub filter_enabled: AtomicBool,
     pub cookies: Arc<PersistentCookieJar>,
 }
@@ -149,7 +148,6 @@ impl CleanNetProvider {
             inner: Arc::new(BlitzNetProvider::with_cookie_provider(waker, Arc::clone(&cookies))),
             cookies,
             blocked_count: Arc::new(AtomicUsize::new(0)),
-            fetched_count: Arc::new(AtomicUsize::new(0)),
             filter_enabled: AtomicBool::new(true),
         }
     }
@@ -158,9 +156,8 @@ impl CleanNetProvider {
         self.filter_enabled.load(Ordering::Relaxed)
     }
 
-    pub fn toggle_filter(&self) -> bool {
-        let prev = self.filter_enabled.fetch_xor(true, Ordering::Relaxed);
-        !prev
+    pub fn toggle_filter(&self) {
+        self.filter_enabled.fetch_xor(true, Ordering::Relaxed);
     }
 
     /// Fetches a top-level document. `req` may be a GET or a form POST.
@@ -172,7 +169,6 @@ impl CleanNetProvider {
         on_fail: impl FnOnce(String) + Send + Sync + 'static,
     ) {
         req.signal = Some(signal.clone());
-        self.fetched_count.fetch_add(1, Ordering::Relaxed);
         self.inner.fetch(
             0,
             req,
@@ -221,7 +217,6 @@ impl NetProvider for CleanNetProvider {
             handler.bytes(url_str, Bytes::new());
             return;
         }
-        self.fetched_count.fetch_add(1, Ordering::Relaxed);
         self.inner.fetch(
             doc_id,
             request,

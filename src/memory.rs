@@ -1,8 +1,3 @@
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ProcessMemoryStats {
-    pub working_set_mb: f64,
-}
-
 #[cfg(target_os = "windows")]
 mod win_mem {
     use core::ffi::c_void;
@@ -38,20 +33,12 @@ mod win_mem {
     }
 }
 
+/// Process working set (resident memory) in MB; 0 if unavailable.
 #[cfg(target_os = "windows")]
-pub fn current_process_memory() -> ProcessMemoryStats {
-    let mut counters = win_mem::ProcessMemoryCounters {
-        cb: std::mem::size_of::<win_mem::ProcessMemoryCounters>() as u32,
-        page_fault_count: 0,
-        peak_working_set_size: 0,
-        working_set_size: 0,
-        quota_peak_paged_pool_usage: 0,
-        quota_paged_pool_usage: 0,
-        quota_peak_non_paged_pool_usage: 0,
-        quota_non_paged_pool_usage: 0,
-        pagefile_usage: 0,
-        peak_pagefile_usage: 0,
-    };
+pub fn working_set_mb() -> f64 {
+    // SAFETY: plain-old-data struct; all-zero is a valid value.
+    let mut counters: win_mem::ProcessMemoryCounters = unsafe { std::mem::zeroed() };
+    counters.cb = std::mem::size_of::<win_mem::ProcessMemoryCounters>() as u32;
 
     let ok = unsafe {
         win_mem::K32GetProcessMemoryInfo(
@@ -61,18 +48,12 @@ pub fn current_process_memory() -> ProcessMemoryStats {
         )
     };
 
-    if ok != 0 {
-        ProcessMemoryStats {
-            working_set_mb: counters.working_set_size as f64 / (1024.0 * 1024.0),
-        }
-    } else {
-        ProcessMemoryStats::default()
-    }
+    if ok != 0 { counters.working_set_size as f64 / (1024.0 * 1024.0) } else { 0.0 }
 }
 
 /// macOS: resident size from `proc_pidinfo(PROC_PIDTASKINFO)`.
 #[cfg(target_os = "macos")]
-pub fn current_process_memory() -> ProcessMemoryStats {
+pub fn working_set_mb() -> f64 {
     let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
     let n = unsafe {
@@ -84,25 +65,17 @@ pub fn current_process_memory() -> ProcessMemoryStats {
             size,
         )
     };
-    if n == size {
-        ProcessMemoryStats {
-            working_set_mb: info.pti_resident_size as f64 / (1024.0 * 1024.0),
-        }
-    } else {
-        ProcessMemoryStats::default()
-    }
+    if n == size { info.pti_resident_size as f64 / (1024.0 * 1024.0) } else { 0.0 }
 }
 
 /// Linux & other Unix: resident pages from `/proc/self/statm`.
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-pub fn current_process_memory() -> ProcessMemoryStats {
+pub fn working_set_mb() -> f64 {
     let resident_pages = std::fs::read_to_string("/proc/self/statm")
         .ok()
         .and_then(|s| s.split_whitespace().nth(1)?.parse::<f64>().ok())
         .unwrap_or(0.0);
-    ProcessMemoryStats {
-        working_set_mb: resident_pages * 4096.0 / (1024.0 * 1024.0),
-    }
+    resident_pages * 4096.0 / (1024.0 * 1024.0)
 }
 
 /// Ask Windows to reclaim freed heap pages from the process working set immediately
