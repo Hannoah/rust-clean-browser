@@ -110,6 +110,8 @@ pub(super) fn requires_js_engine(url: &str) -> bool {
         "teams.microsoft.com",
         "outlook.office.com",
         "accounts.google.com",
+        // UA-sniffs and redirects Blitz to /unsupported_browser; JS-only SPA anyway.
+        "highspot.com",
         // Google Search no longer serves results without JavaScript.
         "www.google.com",
     ];
