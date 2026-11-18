@@ -4,7 +4,7 @@ use super::helpers::{RESIZE_EDGE, normalize_url_input, persist_session_cookies, 
 use super::{AppEvent, BrowserApp};
 use crate::chrome_ui::{CHROME_HEIGHT, render_bookmarks_page, render_error_page, render_home_page};
 use crate::cleaner::process_fetched_document;
-use crate::memory::{current_process_memory, trim_process_working_set};
+use crate::memory::{trim_process_working_set, working_set_mb};
 use crate::tabs::{HistoryEntry, Tab, short_title_for_url};
 use blitz_traits::net::{AbortController, Request};
 use std::sync::Arc;
@@ -189,7 +189,7 @@ impl BrowserApp {
                 let unloaded = self.tabs.iter().filter(|t| !t.is_loaded()).count();
                 render_home_page(
                     &self.bookmarks,
-                    current_process_memory().working_set_mb,
+                    working_set_mb(),
                     self.tabs.len(),
                     unloaded,
                     self.net_provider.blocked_total(),

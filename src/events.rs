@@ -58,7 +58,6 @@ pub fn pointer_source_to_blitz(source: &PointerSource) -> BlitzPointerId {
     }
 }
 
-#[allow(dead_code)]
 pub fn pointer_kind_to_blitz(kind: &PointerKind) -> BlitzPointerId {
     match kind {
         PointerKind::Mouse => BlitzPointerId::Mouse,

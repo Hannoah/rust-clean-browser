@@ -129,15 +129,7 @@ impl BookmarkStore {
 
     pub fn search(&self, query: &str) -> Vec<BookmarkItem> {
         let q = query.trim().to_ascii_lowercase();
-        let mut out = Vec::new();
-        for item in &self.custom {
-            if q.is_empty()
-                || item.title.to_ascii_lowercase().contains(&q)
-                || item.url.to_ascii_lowercase().contains(&q)
-            {
-                out.push(item.clone());
-            }
-        }
+        let mut out: Vec<BookmarkItem> = self.custom.iter().filter(|i| item_matches(i, &q)).cloned().collect();
         collect_matching(&self.bar, &q, &mut out);
         collect_matching(&self.other, &q, &mut out);
         out
@@ -199,12 +191,6 @@ impl BookmarkStore {
     }
 }
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-}
-
 /// Per-user app data directory:
 /// Windows `%LOCALAPPDATA%/rust-browser`, macOS `~/Library/Application Support/rust-browser`,
 /// Linux `$XDG_DATA_HOME/rust-browser` (or `~/.local/share/rust-browser`).
@@ -212,11 +198,11 @@ pub fn app_data_dir() -> Option<PathBuf> {
     let base = if cfg!(target_os = "windows") {
         std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?
     } else if cfg!(target_os = "macos") {
-        home_dir()?.join("Library").join("Application Support")
+        std::env::home_dir()?.join("Library").join("Application Support")
     } else {
         std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
-            .or_else(|| Some(home_dir()?.join(".local").join("share")))?
+            .or_else(|| Some(std::env::home_dir()?.join(".local").join("share")))?
     };
     Some(base.join("rust-browser"))
 }
@@ -227,9 +213,9 @@ fn chrome_user_data_dir() -> Option<PathBuf> {
         let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?;
         Some(local.join("Google").join("Chrome").join("User Data"))
     } else if cfg!(target_os = "macos") {
-        Some(home_dir()?.join("Library/Application Support/Google/Chrome"))
+        Some(std::env::home_dir()?.join("Library/Application Support/Google/Chrome"))
     } else {
-        Some(home_dir()?.join(".config/google-chrome"))
+        Some(std::env::home_dir()?.join(".config/google-chrome"))
     }
 }
 
@@ -349,17 +335,17 @@ fn tree_contains_url(nodes: &[BookmarkNode], target: &str) -> bool {
     })
 }
 
+fn item_matches(item: &BookmarkItem, q_lower: &str) -> bool {
+    q_lower.is_empty()
+        || item.title.to_ascii_lowercase().contains(q_lower)
+        || item.url.to_ascii_lowercase().contains(q_lower)
+}
+
 fn collect_matching(nodes: &[BookmarkNode], q_lower: &str, out: &mut Vec<BookmarkItem>) {
     for node in nodes {
         match node {
-            BookmarkNode::Url(item) => {
-                if q_lower.is_empty()
-                    || item.title.to_ascii_lowercase().contains(q_lower)
-                    || item.url.to_ascii_lowercase().contains(q_lower)
-                {
-                    out.push(item.clone());
-                }
-            }
+            BookmarkNode::Url(item) if item_matches(item, q_lower) => out.push(item.clone()),
+            BookmarkNode::Url(_) => {}
             BookmarkNode::Folder(folder) => collect_matching(&folder.children, q_lower, out),
         }
     }

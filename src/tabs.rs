@@ -104,7 +104,6 @@ pub fn short_title_for_url(url: &str) -> String {
 #[derive(Clone)]
 pub struct CachedPage {
     pub url: String,
-    pub title: String,
     pub raw_html: Arc<str>,
 }
 
@@ -132,18 +131,14 @@ impl HtmlCache {
         Some(item)
     }
 
-    pub fn insert(&mut self, url: String, title: String, raw_html: Arc<str>) {
+    pub fn insert(&mut self, url: String, raw_html: Arc<str>) {
         if raw_html.len() > self.max_total_bytes / 2 {
             return;
         }
         if let Some(pos) = self.entries.iter().position(|e| e.url == url) {
             self.entries.remove(pos);
         }
-        self.entries.push_back(CachedPage {
-            url,
-            title,
-            raw_html,
-        });
+        self.entries.push_back(CachedPage { url, raw_html });
         while self.entries.len() > self.max_entries || self.total_bytes() > self.max_total_bytes {
             self.entries.pop_front();
         }
@@ -152,7 +147,7 @@ impl HtmlCache {
     fn total_bytes(&self) -> usize {
         self.entries
             .iter()
-            .map(|e| e.raw_html.len() + e.url.len() + e.title.len())
+            .map(|e| e.raw_html.len() + e.url.len())
             .sum()
     }
 }
@@ -164,12 +159,12 @@ mod tests {
     #[test]
     fn html_cache_evicts_oldest_by_entry_and_bytes() {
         let mut cache = HtmlCache::new(2, 100);
-        cache.insert("https://a.test".into(), "A".into(), Arc::from("1234"));
-        cache.insert("https://b.test".into(), "B".into(), Arc::from("5678"));
+        cache.insert("https://a.test".into(), Arc::from("1234"));
+        cache.insert("https://b.test".into(), Arc::from("5678"));
         assert!(cache.get("https://a.test").is_some());
         assert!(cache.get("https://b.test").is_some());
 
-        cache.insert("https://c.test".into(), "C".into(), Arc::from("9012"));
+        cache.insert("https://c.test".into(), Arc::from("9012"));
         assert!(cache.get("https://a.test").is_none());
         assert!(cache.get("https://c.test").is_some());
     }

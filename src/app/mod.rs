@@ -19,7 +19,7 @@ use crate::chrome_ui::{CHROME_HEIGHT, ChromeRenderState, render_chrome_html};
 use crate::cleaner::{build_reader_html, extract_title};
 use crate::favicon;
 use crate::events::{theme_to_color_scheme, winit_modifiers_to_kbt_modifiers};
-use crate::memory::current_process_memory;
+use crate::memory::working_set_mb;
 use crate::net::{CleanNetProvider, PersistentCookieJar};
 use crate::page_cache::DiskPageCache;
 use crate::tabs::{HtmlCache, Tab, short_title_for_url};
@@ -406,7 +406,7 @@ impl BrowserApp {
             tabs: &self.tabs,
             active_idx: self.active_tab,
             bookmarks: &self.bookmarks,
-            working_set_mb: current_process_memory().working_set_mb,
+            working_set_mb: working_set_mb(),
             blocked_count: self.net_provider.blocked_total(),
             filter_enabled: self.net_provider.is_filter_enabled(),
             status_note: self.status_note.as_deref(),
@@ -484,7 +484,7 @@ impl BrowserApp {
         self.request_favicon_known(&final_url, &favicon::links_in_html(&clean_html));
         let tab = &mut self.tabs[tab_idx];
         tab.url = final_url.clone();
-        tab.title = title.clone();
+        tab.title = title;
         tab.is_loading = false;
         tab.abort_controller = Some(abort_ctrl);
         tab.raw_html = Some(Arc::clone(&clean_html));
@@ -492,7 +492,7 @@ impl BrowserApp {
 
         if !final_url.starts_with("rust://") {
             let cache_url = final_url.split('#').next().unwrap_or(&final_url).to_string();
-            self.html_cache.insert(cache_url, title, clean_html);
+            self.html_cache.insert(cache_url, clean_html);
         }
 
         self.rebuild_chrome();
