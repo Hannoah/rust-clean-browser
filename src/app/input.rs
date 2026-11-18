@@ -54,6 +54,7 @@ impl BrowserApp {
             WindowEvent::Ime(ime_ev) => {
                 let ev = UiEvent::Ime(winit_ime_to_blitz(ime_ev));
                 self.dispatch_focused(ev);
+                self.update_suggestions(event_loop);
                 self.request_redraw();
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -71,6 +72,7 @@ impl BrowserApp {
                     UiEvent::KeyUp(key_data)
                 });
                 self.process_app_events(event_loop);
+                self.update_suggestions(event_loop);
                 self.request_redraw();
             }
             WindowEvent::PointerLeft {
@@ -255,6 +257,9 @@ impl BrowserApp {
 
     /// F5 / Esc / scrolling keys / Enter in the URL bar or a built-in page's search box.
     fn plain_key(&mut self, code: KeyCode, no_mods: bool, shift: bool) -> bool {
+        if self.url_bar_focused() && self.suggest_key(code) {
+            return true;
+        }
         if code == KeyCode::F5 {
             self.reload_active_tab();
             return true;

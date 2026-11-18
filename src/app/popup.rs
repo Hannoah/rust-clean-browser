@@ -1,10 +1,16 @@
-//! Bookmark folder popup: a separate borderless always-on-top window under the bookmark bar.
+//! Popup windows: the bookmark folder popup (under the bookmark bar) and the address-bar
+//! suggestion dropdown. Each is a separate borderless always-on-top window, so it also shows
+//! above a JS-mode WebView.
 
 use super::BrowserApp;
 use super::bus::{BrowserShellProvider, PopupEventHandler};
 use super::helpers::{mouse_button, plain_coords, pointer_event, popup_window_style, wheel_delta};
 use crate::bookmarks::{BookmarkNode, BookmarkRootKind};
-use crate::chrome_ui::{CHROME_HEIGHT, POPUP_WIDTH, estimate_popup_height, render_bookmark_popup_html};
+use crate::chrome_ui::{
+    CHROME_HEIGHT, POPUP_WIDTH, estimate_popup_height, render_bookmark_popup_html,
+    render_suggest_popup_html, suggest_popup_height,
+};
+use crate::history::Suggestion;
 use anyrender::WindowRenderer;
 use anyrender_vello_cpu::VelloCpuWindowRenderer;
 use blitz_dom::{Document, EventDriver};
@@ -23,13 +29,23 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId, WindowLevel};
 
-pub(super) struct BookmarkPopup {
+pub(super) enum PopupKind {
+    Bookmarks {
+        root: BookmarkRootKind,
+        path: Vec<usize>,
+        base_depth: usize,
+        root_title: String,
+        index_offset: usize,
+    },
+    /// Address-bar suggestions; `selected` is what Enter opens.
+    Suggest { rows: Vec<Suggestion>, selected: usize },
+}
+
+pub(super) struct Popup {
     key: String,
-    root: BookmarkRootKind,
-    path: Vec<usize>,
-    base_depth: usize,
-    root_title: String,
-    index_offset: usize,
+    pub(super) kind: PopupKind,
+    /// Logical width.
+    width: u32,
     window: Arc<dyn Window>,
     renderer: VelloCpuWindowRenderer,
     doc: HtmlDocument,
@@ -39,7 +55,7 @@ pub(super) struct BookmarkPopup {
     buttons: MouseEventButtons,
 }
 
-impl BookmarkPopup {
+impl Popup {
     fn coords(&self, pos: PhysicalPosition<f64>) -> PointerCoords {
         let logical: LogicalPosition<f32> = pos.to_logical(self.hidpi_scale as f64);
         let scroll = self.doc.viewport_scroll();
@@ -92,6 +108,90 @@ impl BrowserApp {
         HtmlDocument::from_html(html, self.doc_config(vp, Some(shell)))
     }
 
+    /// HTML and logical height for a popup's current content.
+    fn popup_content(&self, kind: &PopupKind) -> Option<(String, u32)> {
+        match kind {
+            PopupKind::Bookmarks { root, path, base_depth, root_title, index_offset } => {
+                let (title, nodes, can_go_back, eff_offset) =
+                    self.build_popup_view_data(*root, path, *base_depth, *index_offset, root_title)?;
+                Some((
+                    render_bookmark_popup_html(&title, &nodes, can_go_back, eff_offset),
+                    estimate_popup_height(nodes.len()),
+                ))
+            }
+            PopupKind::Suggest { rows, selected } => {
+                Some((render_suggest_popup_html(rows, *selected), suggest_popup_height(rows.len())))
+            }
+        }
+    }
+
+    /// Opens a popup window at main-window logical (`x`, `y`). `focus`: take keyboard focus
+    /// (the suggestion dropdown must leave it in the address bar).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn show_popup(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        key: String,
+        kind: PopupKind,
+        x: f64,
+        y: f64,
+        width: u32,
+        focus: bool,
+    ) {
+        self.close_popup();
+        let Some((html, logical_h)) = self.popup_content(&kind) else {
+            return;
+        };
+        let Some(main_win) = &self.window else {
+            return;
+        };
+        let scale = self.hidpi_scale.max(1.0) as f64;
+        let surf_pos = main_win.surface_position();
+        let attrs = WindowAttributes::default()
+            .with_title("Popup")
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_active(focus)
+            .with_window_level(WindowLevel::AlwaysOnTop)
+            .with_surface_size(LogicalSize::new(width as f64, logical_h as f64))
+            .with_position(PhysicalPosition::new(
+                surf_pos.x + (x * scale).round() as i32,
+                surf_pos.y + (y * scale).round() as i32,
+            ));
+        let Ok(popup_box) = event_loop.create_window(popup_window_style(attrs)) else {
+            return;
+        };
+        let popup_win: Arc<dyn Window> = Arc::from(popup_box);
+        let popup_scale = popup_win.scale_factor() as f32;
+        let popup_size = popup_win.surface_size();
+        let w = popup_size.width.max(1);
+        let h = popup_size.height.max(1);
+        let doc = self.popup_doc(&html, &popup_win, w, h, popup_scale);
+
+        let mut renderer = VelloCpuWindowRenderer::new();
+        renderer.resume(Arc::new(Arc::clone(&popup_win)), w, h, || {});
+        renderer.complete_resume();
+        renderer.set_size(w, h);
+
+        popup_win.request_redraw();
+        if focus {
+            popup_win.focus_window();
+        }
+
+        self.popup = Some(Popup {
+            key,
+            kind,
+            width,
+            window: popup_win,
+            renderer,
+            doc,
+            win_size: popup_size,
+            hidpi_scale: popup_scale,
+            pointer_pos: PhysicalPosition::new(0.0, 0.0),
+            buttons: MouseEventButtons::None,
+        });
+    }
+
     pub(super) fn open_bookmark_popup(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
@@ -115,17 +215,12 @@ impl BrowserApp {
             return;
         }
 
-        self.close_popup();
-
         let base_depth = path.len();
-        let Some((title, nodes, can_go_back, eff_offset)) =
+        let Some((_, nodes, _, _)) =
             self.build_popup_view_data(root, &path, base_depth, index_offset, &root_title)
         else {
             return;
         };
-
-        let logical_h = estimate_popup_height(nodes.len());
-        let html = render_bookmark_popup_html(&title, &nodes, can_go_back, eff_offset);
         let icon_urls: Vec<String> = nodes
             .iter()
             .take(40)
@@ -140,78 +235,24 @@ impl BrowserApp {
         }
         self.pump_favicons();
 
-        let Some(main_win) = &self.window else {
-            return;
-        };
         let scale = self.hidpi_scale.max(1.0) as f64;
-        let surf_pos = main_win.surface_position();
         let win_w_logical = (self.win_size.width as f64 / scale).max(POPUP_WIDTH as f64);
-        let anchor_x_logical = (self.last_chrome_click_x_logical as f64 - 24.0)
+        let x = (self.last_chrome_click_x_logical as f64 - 24.0)
             .clamp(8.0, (win_w_logical - POPUP_WIDTH as f64 - 8.0).max(8.0));
-        let popup_x_phys = surf_pos.x + (anchor_x_logical * scale).round() as i32;
-        let popup_y_phys = surf_pos.y + ((CHROME_HEIGHT as f64 - 1.0) * scale).round() as i32;
-
-        let attrs = WindowAttributes::default()
-            .with_title("Bookmarks")
-            .with_decorations(false)
-            .with_resizable(false)
-            .with_window_level(WindowLevel::AlwaysOnTop)
-            .with_surface_size(LogicalSize::new(POPUP_WIDTH as f64, logical_h as f64))
-            .with_position(PhysicalPosition::new(popup_x_phys, popup_y_phys));
-        let Ok(popup_box) = event_loop.create_window(popup_window_style(attrs)) else {
-            return;
-        };
-        let popup_win: Arc<dyn Window> = Arc::from(popup_box);
-        let popup_scale = popup_win.scale_factor() as f32;
-        let popup_size = popup_win.surface_size();
-        let w = popup_size.width.max(1);
-        let h = popup_size.height.max(1);
-        let doc = self.popup_doc(&html, &popup_win, w, h, popup_scale);
-
-        let mut renderer = VelloCpuWindowRenderer::new();
-        renderer.resume(Arc::new(Arc::clone(&popup_win)), w, h, || {});
-        renderer.complete_resume();
-        renderer.set_size(w, h);
-
-        popup_win.request_redraw();
-        popup_win.focus_window();
-
-        self.popup = Some(BookmarkPopup {
-            key,
-            root,
-            path,
-            base_depth,
-            root_title,
-            index_offset,
-            window: popup_win,
-            renderer,
-            doc,
-            win_size: popup_size,
-            hidpi_scale: popup_scale,
-            pointer_pos: PhysicalPosition::new(0.0, 0.0),
-            buttons: MouseEventButtons::None,
-        });
+        let kind = PopupKind::Bookmarks { root, path, base_depth, root_title, index_offset };
+        self.show_popup(event_loop, key, kind, x, CHROME_HEIGHT as f64 - 1.0, POPUP_WIDTH, true);
     }
 
+    /// Re-renders the open popup after its content changed (resizing it to fit).
     pub(super) fn refresh_popup(&mut self) {
         let Some(popup) = &self.popup else {
             return;
         };
-        let Some((title, nodes, can_go_back, eff_offset)) = self.build_popup_view_data(
-            popup.root,
-            &popup.path,
-            popup.base_depth,
-            popup.index_offset,
-            &popup.root_title,
-        ) else {
+        let Some((html, logical_h)) = self.popup_content(&popup.kind) else {
             return;
         };
-        let logical_h = estimate_popup_height(nodes.len());
-        let html = render_bookmark_popup_html(&title, &nodes, can_go_back, eff_offset);
-        drop(nodes);
-
         let scale = popup.hidpi_scale;
-        let phys_w = ((POPUP_WIDTH as f32) * scale).round().max(1.0) as u32;
+        let phys_w = ((popup.width as f32) * scale).round().max(1.0) as u32;
         let phys_h = ((logical_h as f32) * scale).round().max(1.0) as u32;
         let doc = self.popup_doc(&html, &popup.window, phys_w, phys_h, scale);
 
@@ -220,7 +261,7 @@ impl BrowserApp {
         };
         let _ = popup
             .window
-            .request_surface_size(LogicalSize::new(POPUP_WIDTH as f64, logical_h as f64).into());
+            .request_surface_size(LogicalSize::new(popup.width as f64, logical_h as f64).into());
         popup.win_size = PhysicalSize::new(phys_w, phys_h);
         popup.doc = doc;
         if popup.renderer.is_active() {
@@ -231,20 +272,20 @@ impl BrowserApp {
 
     pub(super) fn handle_popup_action(&mut self, action: &str, new_tab: bool) {
         if action == "popup-back" {
-            let changed = self.popup.as_mut().is_some_and(|p| {
-                let can = p.path.len() > p.base_depth;
-                if can {
-                    p.path.pop();
+            let changed = match self.popup.as_mut().map(|p| &mut p.kind) {
+                Some(PopupKind::Bookmarks { path, base_depth, .. }) if path.len() > *base_depth => {
+                    path.pop();
+                    true
                 }
-                can
-            });
+                _ => false,
+            };
             if changed {
                 self.refresh_popup();
             }
         } else if let Some(rest) = action.strip_prefix("popup-enter:") {
             if let Ok(idx) = rest.parse::<usize>() {
-                if let Some(popup) = &mut self.popup {
-                    popup.path.push(idx);
+                if let Some(PopupKind::Bookmarks { path, .. }) = self.popup.as_mut().map(|p| &mut p.kind) {
+                    path.push(idx);
                 }
                 self.refresh_popup();
             }

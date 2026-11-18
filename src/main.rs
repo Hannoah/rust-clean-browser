@@ -6,6 +6,7 @@ mod chrome_ui;
 mod cleaner;
 mod events;
 mod favicon;
+mod history;
 mod memory;
 mod net;
 mod page_cache;
