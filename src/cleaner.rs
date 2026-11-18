@@ -239,8 +239,65 @@ fn decode_basic_entities(s: &str) -> String {
         .replace("&nbsp;", " ")
 }
 
-/// Produce a distraction-free Reader Mode HTML document when pages are messy or cluttered.
+/// Produce a distraction-free Reader Mode HTML document with default options (used by tests).
+#[cfg(test)]
 pub fn build_reader_html(raw_html: &str, url: &str) -> String {
+    build_reader_html_with_options(raw_html, url, ReaderOptions::default(), false)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReaderTheme {
+    #[default]
+    Auto,
+    Light,
+    Sepia,
+    Dark,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReaderFont {
+    #[default]
+    Sans,
+    Serif,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReaderWidth {
+    Narrow,
+    #[default]
+    Medium,
+    Wide,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ReaderOptions {
+    pub theme: ReaderTheme,
+    pub font: ReaderFont,
+    pub font_size: u32,
+    pub width: ReaderWidth,
+}
+
+impl Default for ReaderOptions {
+    fn default() -> Self {
+        Self {
+            theme: ReaderTheme::Auto,
+            font: ReaderFont::Sans,
+            font_size: 18,
+            width: ReaderWidth::Medium,
+        }
+    }
+}
+
+pub fn build_reader_html_with_options(
+    raw_html: &str,
+    url: &str,
+    opts: ReaderOptions,
+    os_dark: bool,
+) -> String {
     let title = extract_title(raw_html).unwrap_or_else(|| url.to_string());
     let cleaned = strip_tag_blocks(
         raw_html,
@@ -248,76 +305,203 @@ pub fn build_reader_html(raw_html: &str, url: &str) -> String {
     );
 
     let body_fragment = extract_primary_fragment(&cleaned).to_string();
+    let visible_chars = count_visible_text_chars(&body_fragment);
+    let minutes = (visible_chars / 750).max(1);
+    let host = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or(url);
+
+    let eff_theme = match opts.theme {
+        ReaderTheme::Auto => if os_dark { ReaderTheme::Dark } else { ReaderTheme::Light },
+        other => other,
+    };
+    let (bg, bar_bg, text, muted, link, border, code_bg, active_bg, active_fg) = match eff_theme {
+        ReaderTheme::Sepia => (
+            "#f6eedb", "#ece0c6", "#3b2f26", "#746251", "#9a4d16", "#dfd1b4", "#ebe0c7", "#9a4d16", "#fcf8ef",
+        ),
+        ReaderTheme::Dark => (
+            "#16181c", "#1e2127", "#dcdfe6", "#8d96a6", "#8ab4f8", "#2c313b", "#22262e", "#1b3863", "#d6e6ff",
+        ),
+        ReaderTheme::Light | ReaderTheme::Auto => (
+            "#fcfcfd", "#f2f4f8", "#1c2026", "#5a6372", "#0b57d0", "#e2e6ee", "#f1f4f8", "#dbeafe", "#0f3a8a",
+        ),
+    };
+    let font_stack = match opts.font {
+        ReaderFont::Sans => {
+            r#""Pretendard Variable", "Pretendard", "Segoe UI Variable Text", "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif"#
+        }
+        ReaderFont::Serif => {
+            r#""Noto Serif KR", "Batang", "Georgia", "Charter", "AppleMyungjo", serif"#
+        }
+    };
+    let max_ch = match opts.width {
+        ReaderWidth::Narrow => 56,
+        ReaderWidth::Medium => 66,
+        ReaderWidth::Wide => 78,
+    };
+    let font_size = opts.font_size.clamp(14, 24);
+    let active_cls = |cond: bool| if cond { "rpill on" } else { "rpill" };
 
     format!(
         r#"<!DOCTYPE html>
-<html lang="en">
+<html lang="ko">
 <head>
 <meta charset="utf-8">
 <title>{title}</title>
 <style>
   :root {{ color-scheme: light dark; }}
+  * {{ box-sizing: border-box; }}
   body {{
     margin: 0;
-    padding: 32px 24px 72px;
-    background: #fafafa;
-    color: #1f2328;
-    font-family: "Segoe UI", "Malgun Gothic", -apple-system, BlinkMacSystemFont, sans-serif;
-    line-height: 1.7;
-    font-size: 16px;
+    padding: 20px 24px 88px;
+    background: {bg};
+    color: {text};
+    font-family: {font_stack};
+    line-height: 1.72;
+    font-size: {font_size}px;
   }}
   .reader-shell {{
-    max-width: 760px;
+    max-width: {max_ch}ch;
     margin: 0 auto;
   }}
-  .reader-banner {{
+  .reader-bar {{
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 12px;
+    margin-bottom: 28px;
+    border-radius: 14px;
+    background: {bar_bg};
+    border: 1px solid {border};
+    font-family: "Pretendard Variable", "Pretendard", "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic", sans-serif;
     font-size: 12px;
-    color: #57606a;
-    border-bottom: 1px solid #d8dee4;
-    padding-bottom: 10px;
-    margin-bottom: 22px;
+  }}
+  .rgroup {{ display: flex; align-items: center; gap: 4px; }}
+  .rsep {{ width: 1px; height: 16px; background: {border}; margin: 0 4px; }}
+  .rpill {{
+    display: inline-flex;
+    align-items: center;
+    height: 26px;
+    padding: 0 10px;
+    border-radius: 13px;
+    color: {muted};
+    text-decoration: none;
+    font-weight: 500;
+  }}
+  .rpill:hover {{ background: {border}; color: {text}; }}
+  .rpill.on {{ background: {active_bg}; color: {active_fg}; font-weight: 600; }}
+  .rsize {{ color: {text}; font-variant-numeric: tabular-nums; padding: 0 4px; font-weight: 600; }}
+  .reader-meta {{
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    font-size: 12.5px;
+    color: {muted};
+    margin-bottom: 10px;
+    font-family: "Pretendard Variable", "Pretendard", "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic", sans-serif;
+  }}
+  .rmeta-chip {{
+    padding: 2px 9px;
+    border-radius: 999px;
+    background: {bar_bg};
+    border: 1px solid {border};
+    color: {text};
+    font-weight: 500;
   }}
   .reader-title {{
-    font-size: 28px;
-    line-height: 1.3;
-    margin: 0 0 18px 0;
-    color: #0d1117;
+    font-size: 1.75em;
+    line-height: 1.28;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0 0 22px 0;
+    padding-bottom: 18px;
+    border-bottom: 1px solid {border};
+    color: {text};
   }}
-  img {{ max-width: 100%; height: auto; border-radius: 6px; }}
-  pre, code {{
-    background: #f0f3f6;
-    border-radius: 4px;
-    font-family: Consolas, "Cascadia Mono", monospace;
-    font-size: 14px;
+  .reader-content h1, .reader-content h2, .reader-content h3, .reader-content h4 {{
+    line-height: 1.35;
+    margin: 1.6em 0 0.6em;
+    font-weight: 700;
   }}
-  pre {{ padding: 12px; overflow-x: auto; }}
-  a {{ color: #0969da; }}
-  blockquote {{
-    border-left: 3px solid #d0d7de;
-    margin: 16px 0;
-    padding: 4px 16px;
-    color: #57606a;
+  .reader-content p {{ margin: 0 0 1.2em; }}
+  .reader-content ul, .reader-content ol {{ margin: 0 0 1.2em; padding-left: 1.5em; }}
+  .reader-content li {{ margin-bottom: 0.45em; }}
+  .reader-content img {{ max-width: 100%; height: auto; border-radius: 10px; margin: 16px 0; }}
+  .reader-content pre, .reader-content code {{
+    background: {code_bg};
+    border-radius: 6px;
+    font-family: "Cascadia Code", Consolas, "JetBrains Mono", monospace;
+    font-size: 0.85em;
   }}
-  @media (prefers-color-scheme: dark) {{
-    body {{ background: #1b1c1f; color: #e3e5e8; }}
-    .reader-title {{ color: #f1f3f4; }}
-    .reader-banner {{ color: #9aa0a6; border-color: #3c4043; }}
-    pre, code {{ background: #2a2b2f; }}
-    a {{ color: #8ab4f8; }}
-    blockquote {{ border-color: #5f6368; color: #bdc1c6; }}
+  .reader-content code {{ padding: 2px 5px; }}
+  .reader-content pre {{ padding: 14px 16px; overflow-x: auto; border: 1px solid {border}; line-height: 1.55; }}
+  .reader-content pre code {{ padding: 0; background: transparent; }}
+  .reader-content a {{ color: {link}; text-decoration: underline; text-underline-offset: 3px; }}
+  .reader-content blockquote {{
+    border-left: 3px solid {link};
+    background: {bar_bg};
+    margin: 20px 0;
+    padding: 10px 18px;
+    border-radius: 0 8px 8px 0;
+    color: {muted};
   }}
+  .reader-content hr {{ border: none; border-top: 1px solid {border}; margin: 28px 0; }}
+  .reader-content table {{ width: 100%; border-collapse: collapse; margin: 18px 0; font-size: 0.9em; }}
+  .reader-content th, .reader-content td {{ border: 1px solid {border}; padding: 8px 12px; text-align: left; }}
+  .reader-content th {{ background: {bar_bg}; font-weight: 600; }}
 </style>
 </head>
 <body>
   <div class="reader-shell">
-    <div class="reader-banner">Reader Mode · {url}</div>
+    <div class="reader-bar">
+      <div class="rgroup">
+        <a class="{t_light}" href="rust://reader-opt?theme=light">라이트</a>
+        <a class="{t_sepia}" href="rust://reader-opt?theme=sepia">세피아</a>
+        <a class="{t_dark}" href="rust://reader-opt?theme=dark">다크</a>
+        <div class="rsep"></div>
+        <a class="rpill" href="rust://reader-opt?size=dec">A-</a>
+        <span class="rsize">{font_size}px</span>
+        <a class="rpill" href="rust://reader-opt?size=inc">A+</a>
+        <div class="rsep"></div>
+        <a class="{f_sans}" href="rust://reader-opt?font=sans">고딕</a>
+        <a class="{f_serif}" href="rust://reader-opt?font=serif">명조</a>
+        <div class="rsep"></div>
+        <a class="{w_narrow}" href="rust://reader-opt?width=narrow">좁게</a>
+        <a class="{w_med}" href="rust://reader-opt?width=medium">보통</a>
+        <a class="{w_wide}" href="rust://reader-opt?width=wide">넓게</a>
+      </div>
+      <div class="rgroup">
+        <a class="rpill" href="rust://reader-opt?exit=1">원본 보기</a>
+      </div>
+    </div>
+    <div class="reader-meta">
+      <span class="rmeta-chip">Reader Mode</span>
+      <span>{host}</span>
+      <span>·</span>
+      <span>약 {minutes}분 읽기</span>
+    </div>
     <h1 class="reader-title">{title}</h1>
     <div class="reader-content">{body_fragment}</div>
   </div>
 </body>
 </html>"#,
         title = html_escape(&title),
-        url = html_escape(url),
+        host = html_escape(host),
+        t_light = active_cls(eff_theme == ReaderTheme::Light),
+        t_sepia = active_cls(eff_theme == ReaderTheme::Sepia),
+        t_dark = active_cls(eff_theme == ReaderTheme::Dark),
+        f_sans = active_cls(opts.font == ReaderFont::Sans),
+        f_serif = active_cls(opts.font == ReaderFont::Serif),
+        w_narrow = active_cls(opts.width == ReaderWidth::Narrow),
+        w_med = active_cls(opts.width == ReaderWidth::Medium),
+        w_wide = active_cls(opts.width == ReaderWidth::Wide),
         body_fragment = body_fragment,
     )
 }
@@ -377,6 +561,23 @@ mod tests {
         assert!(!reader.contains("Menu"));
         assert!(!reader.contains("bad()"));
         assert!(reader.contains("Body text"));
+        assert!(reader.contains("약 1분 읽기"));
+
+        let sepia = build_reader_html_with_options(
+            raw,
+            "https://example.com",
+            ReaderOptions {
+                theme: ReaderTheme::Sepia,
+                font: ReaderFont::Serif,
+                font_size: 20,
+                width: ReaderWidth::Narrow,
+            },
+            false,
+        );
+        assert!(sepia.contains("#f6eedb"));
+        assert!(sepia.contains("max-width: 56ch"));
+        assert!(sepia.contains("font-size: 20px"));
+        assert!(sepia.contains("Noto Serif KR"));
     }
 
     #[test]

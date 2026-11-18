@@ -1920,6 +1920,21 @@ impl InnerWebView {
   }
 
   pub fn set_memory_usage_level(&self, level: MemoryUsageLevel) -> Result<()> {
+    // rust-browser patch: also suspend/resume background WebViews via ICoreWebView2_3
+    // (Edge Sleeping Tabs mechanism) so parked tabs use minimal RAM and 0% CPU.
+    if let Ok(wv3) = self.webview.cast::<ICoreWebView2_3>() {
+      unsafe {
+        match level {
+          MemoryUsageLevel::Normal => {
+            let _ = wv3.Resume();
+          }
+          MemoryUsageLevel::Low => {
+            let handler = TrySuspendCompletedHandler::create(Box::new(|_, _| Ok(())));
+            let _ = wv3.TrySuspend(&handler);
+          }
+        }
+      }
+    }
     let webview = self.webview.cast::<ICoreWebView2_19>()?;
     // https://learn.microsoft.com/en-us/dotnet/api/microsoft.web.webview2.core.corewebview2memoryusagetargetlevel
     let level = match level {

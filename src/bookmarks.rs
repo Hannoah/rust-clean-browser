@@ -37,6 +37,22 @@ pub struct BookmarkStore {
     pub custom: Vec<BookmarkItem>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum PersistedBookmarks {
+    Tree {
+        #[serde(default)]
+        source_label: String,
+        #[serde(default)]
+        bar: Vec<BookmarkNode>,
+        #[serde(default)]
+        other: Vec<BookmarkNode>,
+        #[serde(default)]
+        custom: Vec<BookmarkItem>,
+    },
+    LegacyCustom(Vec<BookmarkItem>),
+}
+
 #[derive(Debug, Deserialize)]
 struct ChromeBookmarksFile {
     roots: ChromeRoots,
@@ -62,11 +78,42 @@ struct ChromeNode {
 
 impl BookmarkStore {
     pub fn load() -> Self {
+        if let Some(loaded) = Self::load_persisted_file() {
+            match loaded {
+                PersistedBookmarks::Tree {
+                    source_label,
+                    bar,
+                    other,
+                    custom,
+                } if !bar.is_empty() || !other.is_empty() => {
+                    return Self {
+                        source_label: if source_label.is_empty() {
+                            "Chrome".to_string()
+                        } else {
+                            source_label
+                        },
+                        bar,
+                        other,
+                        custom,
+                    };
+                }
+                PersistedBookmarks::Tree { custom, .. } | PersistedBookmarks::LegacyCustom(custom) => {
+                    let mut store = Self {
+                        source_label: "Empty".to_string(),
+                        bar: Vec::new(),
+                        other: Vec::new(),
+                        custom,
+                    };
+                    let _ = store.import_from_chrome();
+                    return store;
+                }
+            }
+        }
         let mut store = Self {
             source_label: "Empty".to_string(),
             bar: Vec::new(),
             other: Vec::new(),
-            custom: Self::load_custom_file(),
+            custom: Vec::new(),
         };
         let _ = store.import_from_chrome();
         store
@@ -75,12 +122,15 @@ impl BookmarkStore {
     pub fn import_from_chrome(&mut self) -> Result<usize, String> {
         let candidates = find_chrome_bookmark_files();
         for (profile_label, path) in candidates {
-            if let Ok((bar, other)) = parse_chrome_bookmarks(&path) {
+            if let Ok((mut bar, mut other)) = parse_chrome_bookmarks(&path) {
                 let total = count_urls(&bar) + count_urls(&other);
                 if total > 0 || self.bar.is_empty() {
+                    merge_extra_urls(&self.bar, &mut bar);
+                    merge_extra_urls(&self.other, &mut other);
                     self.bar = bar;
                     self.other = other;
                     self.source_label = format!("Chrome ({profile_label})");
+                    self.save_custom_file();
                     if total > 0 {
                         return Ok(total);
                     }
@@ -141,9 +191,24 @@ impl BookmarkStore {
             || tree_contains_url(&self.other, url)
     }
 
+    pub fn remove_url(&mut self, url: &str) -> bool {
+        let before = self.custom.len();
+        self.custom.retain(|b| b.url != url);
+        let removed = (self.custom.len() != before)
+            | remove_url_from_tree(&mut self.bar, url)
+            | remove_url_from_tree(&mut self.other, url);
+        if removed {
+            self.save_custom_file();
+        }
+        removed
+    }
+
     pub fn toggle_custom(&mut self, title: &str, url: &str) -> bool {
         if let Some(pos) = self.custom.iter().position(|b| b.url == url) {
             self.custom.remove(pos);
+            self.save_custom_file();
+            false
+        } else if remove_url_from_tree(&mut self.bar, url) | remove_url_from_tree(&mut self.other, url) {
             self.save_custom_file();
             false
         } else {
@@ -164,18 +229,133 @@ impl BookmarkStore {
         }
     }
 
+    /// Moves or registers a bookmark (`src_spec`: `"custom-0"`, `"bar-0-1"`, or `"url:<url>"`)
+    /// into a destination folder (`dst_folder_spec`: `"bar"`, `"bar-0"`, `"other-1"`, `"custom"`).
+    /// Returns `(bookmark_title, folder_title)`.
+    pub fn move_to_folder(
+        &mut self,
+        src_spec: &str,
+        fallback_title: &str,
+        dst_folder_spec: &str,
+    ) -> Result<(String, String), String> {
+        let res = self.move_to_folder_in_memory(src_spec, fallback_title, dst_folder_spec)?;
+        self.save_custom_file();
+        Ok(res)
+    }
+
+    pub fn move_to_folder_in_memory(
+        &mut self,
+        src_spec: &str,
+        fallback_title: &str,
+        dst_folder_spec: &str,
+    ) -> Result<(String, String), String> {
+        let (dst_kind, dst_path) = parse_folder_spec(dst_folder_spec);
+        if dst_kind == BookmarkRootKind::Custom && !dst_path.is_empty() {
+            return Err("잘못된 대상 폴더입니다.".to_string());
+        }
+        let folder_title = self
+            .resolve_folder(dst_kind, &dst_path)
+            .map(|(t, _)| t)
+            .ok_or_else(|| "대상 폴더를 찾을 수 없습니다.".to_string())?;
+
+        if let Some(url) = src_spec.strip_prefix("url:") {
+            let clean_title = if fallback_title.trim().is_empty() {
+                url
+            } else {
+                fallback_title.trim()
+            };
+            let item = BookmarkItem {
+                title: clean_title.to_string(),
+                url: url.to_string(),
+            };
+            // If it was in `custom`, move it out of `custom` when placing into a folder.
+            if dst_kind != BookmarkRootKind::Custom {
+                self.custom.retain(|b| b.url != item.url);
+            }
+            let bm_title = item.title.clone();
+            self.insert_into_folder(dst_kind, &dst_path, item)?;
+            return Ok((bm_title, folder_title));
+        }
+
+        let (src_kind, src_path) = parse_folder_spec(src_spec);
+        if src_path.is_empty() {
+            return Err("이동할 북마크 항목이 아닙니다.".to_string());
+        }
+        let src_parent = &src_path[..src_path.len() - 1];
+        let src_idx = src_path[src_path.len() - 1];
+
+        if src_kind == dst_kind && src_parent == dst_path.as_slice() {
+            let item = self.peek_item(src_kind, src_parent, src_idx)?;
+            return Ok((item.title, folder_title));
+        }
+
+        let item = self.peek_item(src_kind, src_parent, src_idx)?;
+        let bm_title = item.title.clone();
+
+        if src_kind == dst_kind && src_parent.len() < dst_path.len() {
+            self.insert_into_folder(dst_kind, &dst_path, item)?;
+            let _ = self.remove_item(src_kind, src_parent, src_idx);
+        } else {
+            let _ = self.remove_item(src_kind, src_parent, src_idx)?;
+            self.insert_into_folder(dst_kind, &dst_path, item)?;
+        }
+
+        Ok((bm_title, folder_title))
+    }
+
+    fn peek_item(&self, kind: BookmarkRootKind, parent: &[usize], idx: usize) -> Result<BookmarkItem, String> {
+        match kind {
+            BookmarkRootKind::Custom => self
+                .custom
+                .get(idx)
+                .cloned()
+                .ok_or_else(|| "북마크를 찾을 수 없습니다.".to_string()),
+            BookmarkRootKind::Bar | BookmarkRootKind::Other => {
+                let (_, nodes) = self
+                    .resolve_folder(kind, parent)
+                    .ok_or_else(|| "원본 폴더를 찾을 수 없습니다.".to_string())?;
+                match nodes.get(idx) {
+                    Some(BookmarkNode::Url(item)) => Ok(item.clone()),
+                    _ => Err("북마크 URL 항목이 아닙니다.".to_string()),
+                }
+            }
+        }
+    }
+
+    fn remove_item(&mut self, kind: BookmarkRootKind, parent: &[usize], idx: usize) -> Result<BookmarkItem, String> {
+        match kind {
+            BookmarkRootKind::Custom => {
+                if idx < self.custom.len() {
+                    Ok(self.custom.remove(idx))
+                } else {
+                    Err("북마크를 찾을 수 없습니다.".to_string())
+                }
+            }
+            BookmarkRootKind::Bar => remove_node_at(&mut self.bar, parent, idx),
+            BookmarkRootKind::Other => remove_node_at(&mut self.other, parent, idx),
+        }
+    }
+
+    fn insert_into_folder(&mut self, kind: BookmarkRootKind, path: &[usize], item: BookmarkItem) -> Result<(), String> {
+        match kind {
+            BookmarkRootKind::Custom => {
+                self.custom.retain(|b| b.url != item.url);
+                self.custom.insert(0, item);
+                Ok(())
+            }
+            BookmarkRootKind::Bar => insert_node_at(&mut self.bar, path, item),
+            BookmarkRootKind::Other => insert_node_at(&mut self.other, path, item),
+        }
+    }
+
     fn custom_file_path() -> Option<PathBuf> {
         Some(app_data_dir()?.join("bookmarks.json"))
     }
 
-    fn load_custom_file() -> Vec<BookmarkItem> {
-        let Some(path) = Self::custom_file_path() else {
-            return Vec::new();
-        };
-        let Ok(raw) = fs::read_to_string(path) else {
-            return Vec::new();
-        };
-        serde_json::from_str(&raw).unwrap_or_default()
+    fn load_persisted_file() -> Option<PersistedBookmarks> {
+        let path = Self::custom_file_path()?;
+        let raw = fs::read_to_string(path).ok()?;
+        serde_json::from_str(&raw).ok()
     }
 
     fn save_custom_file(&self) {
@@ -185,8 +365,93 @@ impl BookmarkStore {
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        if let Ok(json) = serde_json::to_string_pretty(&self.custom) {
+        let persisted = PersistedBookmarks::Tree {
+            source_label: self.source_label.clone(),
+            bar: self.bar.clone(),
+            other: self.other.clone(),
+            custom: self.custom.clone(),
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&persisted) {
             let _ = fs::write(path, json);
+        }
+    }
+}
+
+pub fn parse_folder_spec(spec: &str) -> (BookmarkRootKind, Vec<usize>) {
+    let mut parts = spec.split('-');
+    let kind = match parts.next() {
+        Some("other") => BookmarkRootKind::Other,
+        Some("custom") => BookmarkRootKind::Custom,
+        _ => BookmarkRootKind::Bar,
+    };
+    let path = parts.filter_map(|p| p.parse::<usize>().ok()).collect();
+    (kind, path)
+}
+
+fn folder_children_mut<'a>(
+    root: &'a mut Vec<BookmarkNode>,
+    path: &[usize],
+) -> Result<&'a mut Vec<BookmarkNode>, String> {
+    let mut cur = root;
+    for &idx in path {
+        cur = match cur.get_mut(idx) {
+            Some(BookmarkNode::Folder(f)) => &mut f.children,
+            _ => return Err("폴더 경로가 올바르지 않습니다.".to_string()),
+        };
+    }
+    Ok(cur)
+}
+
+fn remove_node_at(root: &mut Vec<BookmarkNode>, parent: &[usize], idx: usize) -> Result<BookmarkItem, String> {
+    let list = folder_children_mut(root, parent)?;
+    if idx >= list.len() {
+        return Err("북마크 인덱스가 범위를 벗어났습니다.".to_string());
+    }
+    match list.remove(idx) {
+        BookmarkNode::Url(item) => Ok(item),
+         other => {
+            list.insert(idx, other);
+            Err("폴더는 이동할 수 없습니다.".to_string())
+        }
+    }
+}
+
+fn insert_node_at(root: &mut Vec<BookmarkNode>, path: &[usize], item: BookmarkItem) -> Result<(), String> {
+    let list = folder_children_mut(root, path)?;
+    list.retain(|n| !matches!(n, BookmarkNode::Url(u) if u.url == item.url));
+    list.push(BookmarkNode::Url(item));
+    Ok(())
+}
+
+fn remove_url_from_tree(nodes: &mut Vec<BookmarkNode>, url: &str) -> bool {
+    let before = nodes.len();
+    nodes.retain(|n| !matches!(n, BookmarkNode::Url(u) if u.url == url));
+    let mut removed = nodes.len() != before;
+    for node in nodes {
+        if let BookmarkNode::Folder(f) = node {
+            removed |= remove_url_from_tree(&mut f.children, url);
+        }
+    }
+    removed
+}
+
+/// Preserves user-added URLs inside matching folders when re-importing Chrome's bookmark tree.
+fn merge_extra_urls(old_nodes: &[BookmarkNode], new_nodes: &mut Vec<BookmarkNode>) {
+    for old in old_nodes {
+        match old {
+            BookmarkNode::Url(item) => {
+                if !new_nodes.iter().any(|n| matches!(n, BookmarkNode::Url(u) if u.url == item.url)) {
+                    new_nodes.push(BookmarkNode::Url(item.clone()));
+                }
+            }
+            BookmarkNode::Folder(old_f) => {
+                if let Some(BookmarkNode::Folder(new_f)) = new_nodes
+                    .iter_mut()
+                    .find(|n| matches!(n, BookmarkNode::Folder(f) if f.title == old_f.title))
+                {
+                    merge_extra_urls(&old_f.children, &mut new_f.children);
+                }
+            }
         }
     }
 }
@@ -394,5 +659,28 @@ mod tests {
         assert_eq!(title, "Docs");
         assert_eq!(nodes.len(), 1);
         assert_eq!(store.search("docs.rs").len(), 1);
+
+        let mut store = store;
+        store.custom.push(BookmarkItem {
+            title: "Astryx".into(),
+            url: "https://github.com/meta/astryx".into(),
+        });
+        let (bm_t, folder_t) = store
+            .move_to_folder_in_memory("custom-0", "Astryx", "bar-1")
+            .unwrap();
+        assert_eq!(bm_t, "Astryx");
+        assert_eq!(folder_t, "Docs");
+        assert!(store.custom.is_empty());
+        let (_, docs_nodes) = store.resolve_folder(BookmarkRootKind::Bar, &[1]).unwrap();
+        assert_eq!(docs_nodes.len(), 2);
+
+        // Moving a top-level bar item ("bar-0") into its sibling folder ("bar-1") handles index shift.
+        let (bm_t2, folder_t2) = store
+            .move_to_folder_in_memory("bar-0", "Rust", "bar-1")
+            .unwrap();
+        assert_eq!(bm_t2, "Rust");
+        assert_eq!(folder_t2, "Docs");
+        let (_, docs_nodes2) = store.resolve_folder(BookmarkRootKind::Bar, &[0]).unwrap();
+        assert_eq!(docs_nodes2.len(), 3);
     }
 }

@@ -50,6 +50,18 @@ impl NavigationProvider for BrowserNavProvider {
     }
 }
 
+pub(super) fn enable_window_ime(window: &dyn Window) {
+    use winit::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
+    let caps = ImeCapabilities::new().with_cursor_area();
+    let data = ImeRequestData::default().with_cursor_area(
+        LogicalPosition::new(0.0, 0.0).into(),
+        LogicalSize::new(1.0, 1.0).into(),
+    );
+    if let Some(req) = ImeEnableRequest::new(caps, data) {
+        let _ = window.request_ime_update(ImeRequest::Enable(req));
+    }
+}
+
 pub(super) struct BrowserShellProvider {
     pub(super) window: Arc<dyn Window>,
 }
@@ -69,22 +81,21 @@ impl ShellProvider for BrowserShellProvider {
     fn set_window_title(&self, _title: String) {}
 
     fn set_ime_enabled(&self, is_enabled: bool) {
-        use winit::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
         if is_enabled {
-            let _ = self.window.request_ime_update(ImeRequest::Enable(
-                ImeEnableRequest::new(ImeCapabilities::new(), ImeRequestData::default()).unwrap(),
-            ));
-        } else {
-            let _ = self.window.request_ime_update(ImeRequest::Disable);
+            enable_window_ime(&*self.window);
         }
+        // Never send `ImeRequest::Disable` on the main window: on Windows, winit calls
+        // `ImmAssociateContextEx(hwnd, null, 0)` which disables the OS Hangul (한/영) key
+        // and drops IME state when switching focus between `chrome_doc` and `content_doc`.
     }
 
     fn set_ime_cursor_area(&self, x: f32, y: f32, width: f32, height: f32) {
         use winit::window::{ImeRequest, ImeRequestData};
+        enable_window_ime(&*self.window);
         let _ = self.window.request_ime_update(ImeRequest::Update(
             ImeRequestData::default().with_cursor_area(
                 LogicalPosition::new(x, y).into(),
-                LogicalSize::new(width, height).into(),
+                LogicalSize::new(width.max(1.0), height.max(1.0)).into(),
             ),
         ));
     }
@@ -126,13 +137,34 @@ impl EventHandler for ChromeEventHandler {
         doc: &mut dyn Document,
         event_state: &mut EventState,
     ) {
-        if let DomEventData::Click(click) = &event.data {
-            if click.button == MouseEventButton::Main {
+        match &event.data {
+            DomEventData::Click(click) if click.button == MouseEventButton::Main => {
                 if let Some(action) = find_action(chain, doc) {
+                    let action = if click.mods.contains(ACTION_MOD) {
+                        if let Some(url) = action.strip_prefix("nav:") {
+                            format!("nav-bg:{url}")
+                        } else {
+                            action
+                        }
+                    } else {
+                        action
+                    };
                     self.bus.send(AppEvent::ChromeAction(action));
                     event_state.stop_propagation();
                 }
             }
+            DomEventData::PointerUp(ptr) if ptr.button == MouseEventButton::Auxiliary => {
+                if let Some(action) = find_action(chain, doc) {
+                    if let Some(idx) = action.strip_prefix("tab:") {
+                        self.bus.send(AppEvent::ChromeAction(format!("close-tab:{idx}")));
+                        event_state.stop_propagation();
+                    } else if let Some(url) = action.strip_prefix("nav:") {
+                        self.bus.send(AppEvent::ChromeAction(format!("nav-bg:{url}")));
+                        event_state.stop_propagation();
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }

@@ -12,18 +12,19 @@ const MAX_ENTRIES: usize = 5000;
 const SAVE_EVERY: usize = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Visit {
-    url: String,
-    title: String,
-    count: u32,
+pub struct HistoryItem {
+    pub url: String,
+    pub title: String,
+    pub count: u32,
     /// Unix seconds of the last visit.
-    last: u64,
+    pub last: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SuggestKind {
     /// Go to / search for exactly what was typed.
     Typed,
+    OpenTab,
     History,
     Bookmark,
 }
@@ -36,7 +37,7 @@ pub struct Suggestion {
 }
 
 pub struct History {
-    visits: Vec<Visit>,
+    visits: Vec<HistoryItem>,
     path: Option<PathBuf>,
     unsaved: usize,
 }
@@ -105,7 +106,7 @@ impl History {
                     v.title = title.to_string();
                 }
             }
-            None => self.visits.push(Visit {
+            None => self.visits.push(HistoryItem {
                 url: url.to_string(),
                 title: title.to_string(),
                 count: 1,
@@ -195,6 +196,53 @@ impl History {
         }
         scored.sort_by_key(|(s, _)| std::cmp::Reverse(*s));
         scored.into_iter().take(limit).map(|(_, s)| s).collect()
+    }
+
+    /// Most recent `limit` visits, newest first.
+    pub fn recent(&self, limit: usize) -> Vec<HistoryItem> {
+        let mut items = self.visits.clone();
+        items.sort_by_key(|v| std::cmp::Reverse(v.last));
+        items.truncate(limit);
+        items
+    }
+
+    /// Search history items by title/URL substring (empty query returns newest items).
+    pub fn search_history(&self, query: &str, limit: usize) -> Vec<HistoryItem> {
+        let q = query.trim().to_lowercase();
+        let mut items: Vec<HistoryItem> = if q.is_empty() {
+            self.visits.clone()
+        } else {
+            self.visits
+                .iter()
+                .filter(|v| v.url.to_lowercase().contains(&q) || v.title.to_lowercase().contains(&q))
+                .cloned()
+                .collect()
+        };
+        items.sort_by_key(|v| std::cmp::Reverse(v.last));
+        items.truncate(limit);
+        items
+    }
+
+    pub fn remove_url(&mut self, url: &str) -> bool {
+        let before = self.visits.len();
+        self.visits.retain(|v| v.url != url);
+        if self.visits.len() != before {
+            self.unsaved += 1;
+            self.save();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.visits.clear();
+        self.unsaved += 1;
+        self.save();
+    }
+
+    pub fn len(&self) -> usize {
+        self.visits.len()
     }
 }
 

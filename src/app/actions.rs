@@ -17,6 +17,8 @@ impl BrowserApp {
             if let Ok(idx) = rest.parse() {
                 self.close_tab(idx, Some(event_loop));
             }
+        } else if let Some(url) = action.strip_prefix("nav-bg:") {
+            self.open_background_tab(url);
         } else if let Some(url) = action.strip_prefix("nav:") {
             self.navigate_current(url);
         } else if let Some(rest) = action.strip_prefix("bm-popup:bar:") {
@@ -42,20 +44,41 @@ impl BrowserApp {
                 "reload" => self.reload_active_tab(),
                 "toggle-bookmark" => {
                     let tab = &self.tabs[self.active_tab];
-                    self.bookmarks.toggle_custom(&tab.title, &tab.url);
+                    let added = self.bookmarks.toggle_custom(&tab.title, &tab.url);
+                    self.set_status_note(if added { "북마크 추가됨" } else { "북마크 해제됨" });
                     self.rebuild_chrome();
                 }
                 "toggle-js" => self.toggle_js_mode(),
                 "toggle-reader" => self.toggle_reader_mode(),
                 "toggle-filter" => {
                     self.net_provider.toggle_filter();
+                    let on = self.net_provider.is_filter_enabled();
+                    self.set_status_note(if on { "트래커 차단 켜짐" } else { "트래커 차단 꺼짐" });
                     self.rebuild_chrome();
                 }
+                "open-palette" => self.open_command_palette(event_loop),
+                "open-find" => self.open_find_bar(event_loop),
+                "cycle-theme" => self.cycle_theme(),
+                "toggle-bm-bar" => self.toggle_bookmarks_bar(),
+                "trim-memory" => {
+                    crate::memory::trim_process_working_set();
+                    let mb = crate::memory::working_set_mb();
+                    self.set_status_note(&format!("메모리 정리됨 · {mb:.0} MB"));
+                    self.rebuild_chrome();
+                }
+                "dismiss-toast" => {
+                    self.status_note = None;
+                    self.status_note_until = None;
+                    self.rebuild_chrome();
+                }
+                "reopen-tab" => self.reopen_closed_tab(),
+                "close-current-tab" => self.close_tab(self.active_tab, Some(event_loop)),
                 "sync-chrome" => {
-                    self.status_note = Some(match self.bookmarks.import_from_chrome() {
-                        Ok(n) => format!("Synced {n} Chrome bookmarks"),
+                    let msg = match self.bookmarks.import_from_chrome() {
+                        Ok(n) => format!("Chrome 북마크 {n}개 동기화"),
                         Err(e) => e,
-                    });
+                    };
+                    self.set_status_note(&msg);
                     let url = &self.tabs[self.active_tab].url;
                     if url.starts_with("rust://bookmarks") || url == "rust://home" {
                         self.load_active_tab(false, None);
@@ -142,7 +165,7 @@ impl BrowserApp {
                     {
                         self.tabs[idx].url = final_url;
                         self.tabs[idx].is_loading = false;
-                        self.status_note = Some("Auto JS Mode (SPA)".to_string());
+                        self.set_status_note("Auto JS Mode (SPA)");
                         self.mount_or_navigate_webview(idx);
                         self.rebuild_chrome();
                     } else if self.tabs[idx].revalidating {
@@ -185,7 +208,7 @@ impl BrowserApp {
                         // Offline / server error: keep showing the cached copy.
                         self.tabs[idx].revalidating = false;
                         self.tabs[idx].is_loading = false;
-                        self.status_note = Some("저장된 페이지 표시 중 (오프라인)".to_string());
+                        self.set_status_note("오프라인 캐시 표시 중");
                     } else {
                         self.show_error(idx, &url, &error, Some("Load Error"));
                     }
@@ -216,8 +239,8 @@ impl BrowserApp {
                             self.tabs[idx].title = title;
                             if idx == self.active_tab {
                                 self.query_webview_icons();
-                                self.rebuild_chrome();
                             }
+                            self.rebuild_chrome();
                         }
                     }
                 }
@@ -233,13 +256,11 @@ impl BrowserApp {
                         }
                         if finished {
                             self.history.record(&self.tabs[idx].url, &self.tabs[idx].title);
-                        }
-                        if idx == self.active_tab {
-                            if finished {
+                            if idx == self.active_tab {
                                 self.query_webview_icons();
                             }
-                            self.rebuild_chrome();
                         }
+                        self.rebuild_chrome();
                     }
                 }
                 AppEvent::OpenInNewTab(url) => self.open_new_tab(&url),
@@ -251,7 +272,9 @@ impl BrowserApp {
                     index_offset,
                     title,
                 } => self.open_bookmark_popup(event_loop, key, root, path, index_offset, title),
-                AppEvent::PopupAction { action, new_tab } => self.handle_popup_action(&action, new_tab),
+                AppEvent::PopupAction { action, new_tab } => {
+                    self.handle_popup_action(&action, new_tab, event_loop);
+                }
             }
         }
         // Coalesce a burst of icon downloads into one chrome/popup refresh.

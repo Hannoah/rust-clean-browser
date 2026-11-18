@@ -10,21 +10,26 @@
 
 mod actions;
 mod bus;
+mod find;
 mod helpers;
 mod input;
 mod navigation;
+mod palette;
 mod popup;
 mod suggest;
 
 use crate::bookmarks::{BookmarkNode, BookmarkRootKind, BookmarkStore};
-use crate::chrome_ui::{CHROME_HEIGHT, ChromeRenderState, render_chrome_html};
-use crate::cleaner::{build_reader_html, extract_title};
+use crate::chrome_ui::{
+    ChromeRenderState, chrome_height, render_chrome_html, render_link_preview_html,
+};
+use crate::cleaner::{build_reader_html_with_options, extract_title};
 use crate::favicon;
 use crate::history::History;
 use crate::events::{theme_to_color_scheme, winit_modifiers_to_kbt_modifiers};
 use crate::memory::working_set_mb;
 use crate::net::{CleanNetProvider, PersistentCookieJar};
 use crate::page_cache::DiskPageCache;
+use crate::prefs::{ThemePreference, UiPrefs};
 use crate::tabs::{HtmlCache, Tab, short_title_for_url};
 use bus::{AppBus, BrowserNavProvider, BrowserShellProvider, ChromeEventHandler};
 use helpers::{
@@ -45,12 +50,12 @@ use peniko::Fill;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use url::Url;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{Modifiers, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::window::{ResizeDirection, Theme, Window, WindowAttributes, WindowId};
 use wry::{WebContext, WebView};
 
@@ -114,6 +119,20 @@ pub enum AppEvent {
     },
 }
 
+pub(super) struct BookmarkDrag {
+    pub src_spec: String,
+    pub title: String,
+    pub start_pos: PhysicalPosition<f64>,
+    pub active: bool,
+    pub hover_folder: Option<String>,
+}
+
+pub(super) struct TabDrag {
+    pub tab_id: u64,
+    pub start_pos: PhysicalPosition<f64>,
+    pub active: bool,
+}
+
 pub struct BrowserApp {
     window: Option<Arc<dyn Window>>,
     renderer: VelloCpuWindowRenderer,
@@ -141,7 +160,9 @@ pub struct BrowserApp {
 
     win_size: PhysicalSize<u32>,
     hidpi_scale: f32,
+    os_color_scheme: ColorScheme,
     color_scheme: ColorScheme,
+    prefs: UiPrefs,
     pointer_pos: PhysicalPosition<f64>,
     pointer_in_chrome: Option<bool>,
     buttons: MouseEventButtons,
@@ -149,10 +170,13 @@ pub struct BrowserApp {
     chrome_focused: bool,
     start_instant: Instant,
     status_note: Option<String>,
+    status_note_until: Option<Instant>,
+    hover_link_url: Option<String>,
+    link_preview_doc: Option<(HtmlDocument, u32)>,
     web_context: Option<WebContext>,
     active_webview: Option<WebView>,
-    /// The most recently left JS-mode tab's WebView, hidden but alive (tab id, view).
-    parked_webview: Option<(u64, WebView)>,
+    /// Up to 5 background JS-mode WebViews kept alive (oldest first, MRU last; hidden + suspended).
+    parked_webviews: VecDeque<(u64, WebView)>,
     popup: Option<popup::Popup>,
     recently_closed_popup: Option<(String, Instant)>,
     last_chrome_click_x_logical: f32,
@@ -163,6 +187,14 @@ pub struct BrowserApp {
     last_titlebar_press: Option<Instant>,
     resize_hover: Option<ResizeDirection>,
     maximized: bool,
+    /// Target timestamp for the next animation frame (~60 FPS cap when chrome/content animates).
+    next_anim_frame: Option<Instant>,
+    /// Active mouse drag of a bookmark or tab onto a bookmark folder.
+    bm_drag: Option<BookmarkDrag>,
+    /// Active horizontal drag of a tab on the tab strip to reorder tabs.
+    tab_drag: Option<TabDrag>,
+    /// Set when clicking an unfocused `#url-bar`, so a click without drag selects all text.
+    url_bar_select_all_on_click: Option<PhysicalPosition<f64>>,
 }
 
 impl BrowserApp {
@@ -201,6 +233,11 @@ impl BrowserApp {
             },
         );
 
+        let prefs = UiPrefs::load();
+        let initial_scheme = match prefs.theme {
+            ThemePreference::Dark => ColorScheme::Dark,
+            _ => ColorScheme::Light,
+        };
         let mut app = Self {
             window: None,
             renderer: VelloCpuWindowRenderer::new(),
@@ -223,7 +260,9 @@ impl BrowserApp {
             favicon_inflight: false,
             win_size: PhysicalSize::new(1280, 820),
             hidpi_scale: 1.0,
-            color_scheme: ColorScheme::Light,
+            os_color_scheme: ColorScheme::Light,
+            color_scheme: initial_scheme,
+            prefs,
             pointer_pos: PhysicalPosition::new(0.0, 0.0),
             pointer_in_chrome: None,
             buttons: MouseEventButtons::None,
@@ -231,9 +270,12 @@ impl BrowserApp {
             chrome_focused: false,
             start_instant: Instant::now(),
             status_note: None,
+            status_note_until: None,
+            hover_link_url: None,
+            link_preview_doc: None,
             web_context: None,
             active_webview: None,
-            parked_webview: None,
+            parked_webviews: VecDeque::new(),
             popup: None,
             recently_closed_popup: None,
             last_chrome_click_x_logical: 24.0,
@@ -242,6 +284,10 @@ impl BrowserApp {
             last_titlebar_press: None,
             resize_hover: None,
             maximized: false,
+            next_anim_frame: None,
+            bm_drag: None,
+            tab_drag: None,
+            url_bar_select_all_on_click: None,
         };
 
         app.load_active_tab(false, None);
@@ -256,8 +302,82 @@ impl BrowserApp {
         winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state())
     }
 
+    pub(super) fn chrome_height(&self) -> u32 {
+        chrome_height(self.prefs.show_bookmarks_bar)
+    }
+
     fn chrome_phys_height(&self) -> u32 {
-        ((CHROME_HEIGHT as f32) * self.hidpi_scale).round() as u32
+        ((self.chrome_height() as f32) * self.hidpi_scale).round() as u32
+    }
+
+    fn effective_color_scheme(&self) -> ColorScheme {
+        match self.prefs.theme {
+            ThemePreference::System => self.os_color_scheme,
+            ThemePreference::Light => ColorScheme::Light,
+            ThemePreference::Dark => ColorScheme::Dark,
+        }
+    }
+
+    pub(super) fn apply_effective_color_scheme(&mut self) {
+        self.color_scheme = self.effective_color_scheme();
+        let tab = &self.tabs[self.active_tab];
+        if tab.url.starts_with("rust://") {
+            let scroll = self.current_scroll_y();
+            self.load_active_tab(false, Some(scroll));
+        } else if tab.reader_mode {
+            if let Some(raw) = tab.raw_html.clone() {
+                let url = tab.url.clone();
+                let scroll = self.current_scroll_y();
+                self.apply_html_to_tab(self.active_tab, url, raw, Some(scroll));
+            }
+        }
+        self.sync_viewports();
+        self.rebuild_chrome();
+        self.refresh_popup();
+    }
+
+    pub(super) fn cycle_theme(&mut self) {
+        self.prefs.theme = self.prefs.theme.next();
+        self.prefs.save();
+        self.set_status_note(&format!("테마: {}", self.prefs.theme.label()));
+        self.apply_effective_color_scheme();
+    }
+
+    pub(super) fn toggle_bookmarks_bar(&mut self) {
+        self.prefs.show_bookmarks_bar = !self.prefs.show_bookmarks_bar;
+        self.prefs.save();
+        self.set_status_note(if self.prefs.show_bookmarks_bar {
+            "북마크 바 표시"
+        } else {
+            "북마크 바 숨김"
+        });
+        self.sync_viewports();
+        self.rebuild_chrome();
+    }
+
+    pub(super) fn set_status_note(&mut self, msg: &str) {
+        self.status_note = Some(msg.to_string());
+        self.status_note_until = Some(Instant::now() + Duration::from_millis(2800));
+    }
+
+    pub(super) fn set_hover_link(&mut self, next: Option<String>) {
+        if self.hover_link_url == next {
+            return;
+        }
+        self.hover_link_url = next.clone();
+        self.link_preview_doc = next.map(|url| {
+            let char_w = (url.chars().count().min(72) as u32) * 7 + 138;
+            let max_w = ((self.win_size.width as f32 / self.hidpi_scale.max(1.0)) * 0.65) as u32;
+            let w = char_w.clamp(190, max_w.max(220));
+            let h = 36u32;
+            let phys_w = ((w as f32) * self.hidpi_scale).round().max(1.0) as u32;
+            let phys_h = ((h as f32) * self.hidpi_scale).round().max(1.0) as u32;
+            let vp = Viewport::new(phys_w, phys_h, self.hidpi_scale, self.color_scheme);
+            let html = render_link_preview_html(&url);
+            let doc = HtmlDocument::from_html(&html, self.doc_config(vp, None));
+            (doc, w)
+        });
+        self.request_redraw();
     }
 
     fn content_phys_size(&self) -> (u32, u32) {
@@ -298,6 +418,7 @@ impl BrowserApp {
             font_ctx: Some(self.shared_font_ctx.clone()),
             net_provider: Some(self.net_provider.clone()),
             shell_provider: shell,
+            html_parser_provider: Some(Arc::new(blitz_html::HtmlProvider)),
             style_threading: StyleThreading::Sequential,
             ..Default::default()
         }
@@ -408,8 +529,15 @@ impl BrowserApp {
             self.request_favicon(url);
         }
         self.pump_favicons();
+        // Never rebuild `chrome_doc` while the user is mid-syllable in an IME preedit inside
+        // `#url-bar`, because recreating the `PlainEditor` would drop the active compose range.
+        if self.url_bar_focused() && self.url_bar_composing() {
+            self.update_window_title();
+            return;
+        }
         // Keep whatever the user is typing (and focus) when background events rebuild the chrome.
         let typing = self.url_bar_focused().then(|| self.read_url_bar_text()).flatten();
+        let drop_target = self.bm_drag.as_ref().and_then(|d| d.hover_folder.as_deref());
         let html = render_chrome_html(&ChromeRenderState {
             tabs: &self.tabs,
             active_idx: self.active_tab,
@@ -417,10 +545,13 @@ impl BrowserApp {
             working_set_mb: working_set_mb(),
             blocked_count: self.net_provider.blocked_total(),
             filter_enabled: self.net_provider.is_filter_enabled(),
-            status_note: self.status_note.as_deref(),
             maximized: self.maximized,
+            dark_mode: self.color_scheme == ColorScheme::Dark,
+            show_bookmarks_bar: self.prefs.show_bookmarks_bar,
+            theme_pref: self.prefs.theme,
+            status_note: self.status_note.as_deref(),
             url_override: typing.as_deref(),
-            parked_tab: self.parked_webview.as_ref().map(|(id, _)| *id),
+            drop_target_folder: drop_target,
         });
         self.update_window_title();
         if html == self.last_chrome_html {
@@ -482,7 +613,8 @@ impl BrowserApp {
         self.tabs[tab_idx].doc = None;
         let abort_ctrl = AbortController::default();
         let mut doc = if self.tabs[tab_idx].reader_mode {
-            let reader = build_reader_html(&clean_html, &final_url);
+            let dark = self.color_scheme == ColorScheme::Dark;
+            let reader = build_reader_html_with_options(&clean_html, &final_url, self.prefs.reader, dark);
             self.build_content_doc(&reader, &final_url, Some(&abort_ctrl), zoom)
         } else {
             self.build_content_doc(&clean_html, &final_url, Some(&abort_ctrl), zoom)
@@ -514,7 +646,7 @@ impl BrowserApp {
 
     fn exit_app(&mut self, event_loop: &dyn ActiveEventLoop) {
         self.close_popup();
-        for wv in self.active_webview.iter().chain(self.parked_webview.as_ref().map(|(_, wv)| wv)) {
+        for wv in self.active_webview.iter().chain(self.parked_webviews.iter().map(|(_, wv)| wv)) {
             helpers::persist_session_cookies(wv);
         }
         self.net_provider.cookies.save();
@@ -527,18 +659,26 @@ impl BrowserApp {
     fn focus_url_bar(&mut self) {
         self.chrome_focused = true;
         self.suggest_query.clear();
+        if let Some(doc) = &mut self.tabs[self.active_tab].doc {
+            doc.clear_focus();
+        }
         if let Some(win) = &self.window {
             helpers::focus_main_window(&**win, true);
+            bus::enable_window_ime(&**win);
         }
+        self.select_all_url_bar();
+        self.request_redraw();
+    }
+
+    pub(super) fn select_all_url_bar(&mut self) {
         if let Some(url_id) = self.chrome_doc.get_element_by_id("url-bar") {
             self.chrome_doc.set_focus_to(url_id);
             let select_all = synthetic_key(Key::Character("a".to_string()), Code::KeyA, ACTION_MOD);
             self.dispatch_chrome_ui(UiEvent::KeyDown(select_all));
         }
-        self.request_redraw();
     }
 
-    /// Trimmed text of a focused `<input id=...>` on a built-in `rust://` page.
+    /// Trimmed text of a focused `<input id=...>` on a built-in `rust://` page (including IME preedit).
     fn focused_builtin_input(&self, id: &str) -> Option<String> {
         let tab = &self.tabs[self.active_tab];
         if !tab.url.starts_with("rust://") {
@@ -550,13 +690,29 @@ impl BrowserApp {
             return None;
         }
         let input = doc.get_node(sid)?.element_data()?.text_input_data()?;
-        Some(input.editor.text().to_string().trim().to_string())
+        Some(input.editor.raw_text().trim().to_string())
     }
 
     fn read_url_bar_text(&self) -> Option<String> {
         let url_id = self.chrome_doc.get_element_by_id("url-bar")?;
         let input = self.chrome_doc.get_node(url_id)?.element_data()?.text_input_data()?;
-        Some(input.editor.text().to_string())
+        Some(input.editor.raw_text().to_string())
+    }
+
+    /// True when `#url-bar` has an in-progress IME preedit syllable (`raw_text` != committed `text`).
+    pub(super) fn url_bar_composing(&self) -> bool {
+        let Some(url_id) = self.chrome_doc.get_element_by_id("url-bar") else {
+            return false;
+        };
+        let Some(input) = self
+            .chrome_doc
+            .get_node(url_id)
+            .and_then(|n| n.element_data())
+            .and_then(|e| e.text_input_data())
+        else {
+            return false;
+        };
+        input.editor.raw_text().len() != input.editor.text().to_string().len()
     }
 
     fn dispatch_chrome_ui(&mut self, event: UiEvent) {
@@ -580,7 +736,7 @@ impl BrowserApp {
         self.chrome_doc.poll(None);
         self.chrome_doc.resolve(anim_time);
 
-        let mut needs_more_frames = false;
+        let mut needs_more_frames = self.chrome_doc.is_animating();
         // With a WebView mounted, it draws the content area itself.
         let content_doc = if self.active_webview.is_some() {
             None
@@ -595,6 +751,18 @@ impl BrowserApp {
             (doc, doc_scale)
         });
         let chrome_inner = &mut *self.chrome_doc;
+        let preview = if self.active_webview.is_none() {
+            self.link_preview_doc.as_mut().map(|(doc, w_logical)| {
+                doc.resolve(anim_time);
+                let pw = (((*w_logical as f32) * self.hidpi_scale).round().max(1.0) as u32).min(win_w);
+                let ph = ((36.0 * self.hidpi_scale).round().max(1.0) as u32).min(win_h);
+                let px = ((6.0 * self.hidpi_scale).round() as u32).min(win_w.saturating_sub(pw));
+                let py = win_h.saturating_sub(ph + (6.0 * self.hidpi_scale).round() as u32);
+                (&mut **doc, pw, ph, px, py)
+            })
+        } else {
+            None
+        };
 
         self.renderer.render(|scene| {
             if let Some((content_doc, content_scale)) = content {
@@ -605,12 +773,19 @@ impl BrowserApp {
                     scene.pop_layer();
                 }
             }
+            if let Some((pdoc, pw, ph, px, py)) = preview {
+                if content_h_phys > ph {
+                    paint_scene(scene, pdoc, scale, pw, ph, px, py);
+                }
+            }
             paint_scene(scene, chrome_inner, scale, win_w, chrome_h_phys, 0, 0);
         });
 
-        if needs_more_frames {
-            self.request_redraw();
-        }
+        self.next_anim_frame = if needs_more_frames {
+            Some(Instant::now() + Duration::from_millis(16))
+        } else {
+            None
+        };
     }
 }
 
@@ -625,10 +800,12 @@ impl ApplicationHandler for BrowserApp {
                 .with_surface_size(LogicalSize::new(1280.0, 820.0))
                 .with_window_icon(app_icon());
             let win: Arc<dyn Window> = Arc::from(event_loop.create_window(main_window_style(attrs)).unwrap());
+            bus::enable_window_ime(&*win);
             self.maximized = win.is_maximized();
             self.hidpi_scale = win.scale_factor() as f32;
             self.win_size = win.surface_size();
-            self.color_scheme = theme_to_color_scheme(win.theme().unwrap_or(Theme::Light));
+            self.os_color_scheme = theme_to_color_scheme(win.theme().unwrap_or(Theme::Light));
+            self.color_scheme = self.effective_color_scheme();
             let shell: Arc<dyn ShellProvider> = Arc::new(BrowserShellProvider {
                 window: Arc::clone(&win),
             });
@@ -642,6 +819,7 @@ impl ApplicationHandler for BrowserApp {
                 doc.set_shell_provider(shell);
             }
             self.window = Some(win);
+            self.rebuild_chrome();
             self.update_window_title();
         }
 
@@ -673,6 +851,33 @@ impl ApplicationHandler for BrowserApp {
             self.handle_popup_window_event(event_loop, event);
         } else {
             self.handle_main_window_event(event_loop, event);
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        let now = Instant::now();
+        if let Some(until) = self.status_note_until {
+            if now >= until {
+                self.status_note = None;
+                self.status_note_until = None;
+                self.rebuild_chrome();
+            }
+        }
+        let next_wakeup = match (self.next_anim_frame, self.status_note_until) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        if let Some(deadline) = next_wakeup {
+            if now >= deadline {
+                if self.next_anim_frame.is_some_and(|d| now >= d) {
+                    self.next_anim_frame = None;
+                    self.request_redraw();
+                }
+            } else {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+            }
+        } else {
+            event_loop.set_control_flow(ControlFlow::Wait);
         }
     }
 }

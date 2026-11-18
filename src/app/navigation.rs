@@ -2,27 +2,35 @@
 
 use super::helpers::{RESIZE_EDGE, normalize_url_input, persist_session_cookies, requires_js_engine};
 use super::{AppEvent, BrowserApp};
-use crate::chrome_ui::{CHROME_HEIGHT, render_bookmarks_page, render_error_page, render_home_page};
-use crate::cleaner::process_fetched_document;
+use crate::chrome_ui::{
+    parse_query_param, render_bookmarks_page, render_error_page, render_history_page,
+    render_home_page,
+};
+use crate::cleaner::{ReaderFont, ReaderTheme, ReaderWidth, process_fetched_document};
 use crate::memory::{trim_process_working_set, working_set_mb};
 use crate::tabs::{HistoryEntry, Tab, short_title_for_url};
 use blitz_traits::net::{AbortController, Request};
+use blitz_traits::shell::ColorScheme;
 use std::sync::Arc;
 use url::Url;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 use wry::{NewWindowResponse, PageLoadEvent, Rect as WryRect, WebContext, WebView, WebViewBuilder};
 
+/// Maximum number of background JS-mode WebViews kept alive (hidden + suspended) in LRU order.
+const MAX_PARKED_WEBVIEWS: usize = 5;
+
 impl BrowserApp {
     pub(super) fn webview_bounds(&self) -> WryRect {
         let scale = self.hidpi_scale as f64;
         let logical_w = ((self.win_size.width as f64) / scale).round().max(1.0) as u32;
         let logical_h = ((self.win_size.height as f64) / scale).round().max(1.0) as u32;
+        let chrome_h = self.chrome_height();
         // Leave a thin frame around the child WebView so window edges stay resizable.
         let inset = if self.maximized || !cfg!(target_os = "windows") { 0 } else { RESIZE_EDGE };
-        let content_h = logical_h.saturating_sub(CHROME_HEIGHT + inset).max(1);
+        let content_h = logical_h.saturating_sub(chrome_h + inset).max(1);
         WryRect {
-            position: dpi::LogicalPosition::new(inset as i32, CHROME_HEIGHT as i32).into(),
+            position: dpi::LogicalPosition::new(inset as i32, chrome_h as i32).into(),
             size: dpi::LogicalSize::new(logical_w.saturating_sub(inset * 2).max(1), content_h).into(),
         }
     }
@@ -43,25 +51,36 @@ impl BrowserApp {
         trim_process_working_set();
     }
 
-    /// Leaving a JS-mode tab: hide its WebView instead of destroying it, so switching back is
-    /// instant (no reload). Only the most recent one is kept; the previously parked one is freed.
+    /// Leaving a JS-mode tab: hide and suspend its WebView instead of destroying it, so switching
+    /// back is instant (no reload, session preserved). Up to `MAX_PARKED_WEBVIEWS` are kept in LRU
+    /// order; when full, the least-recently-used one is evicted and freed.
     fn park_active_webview(&mut self) {
         let Some(wv) = self.active_webview.take() else {
             return;
         };
+        let tab_id = self.tabs[self.active_tab].id;
+        persist_session_cookies(&wv);
         let _ = wv.set_visible(false);
+        super::helpers::suspend_webview(&wv);
         if let Some(win) = &self.window {
             super::helpers::focus_main_window(&**win, false);
         }
-        if let Some((_, old)) = self.parked_webview.replace((self.tabs[self.active_tab].id, wv)) {
-            self.discard_webview(old);
+        self.parked_webviews.retain(|(id, _)| *id != tab_id);
+        while self.parked_webviews.len() >= MAX_PARKED_WEBVIEWS {
+            if let Some((_, old)) = self.parked_webviews.pop_front() {
+                self.discard_webview(old);
+            }
         }
+        self.parked_webviews.push_back((tab_id, wv));
+        trim_process_working_set();
     }
 
     /// Frees the parked WebView if it belongs to `tab_id` (e.g. that tab was closed).
     fn drop_parked_webview(&mut self, tab_id: u64) {
-        if let Some((_, wv)) = self.parked_webview.take_if(|(id, _)| *id == tab_id) {
-            self.discard_webview(wv);
+        if let Some(pos) = self.parked_webviews.iter().position(|(id, _)| *id == tab_id) {
+            if let Some((_, wv)) = self.parked_webviews.remove(pos) {
+                self.discard_webview(wv);
+            }
         }
     }
 
@@ -75,17 +94,22 @@ impl BrowserApp {
         self.tabs[tab_idx].unload();
         self.tabs[tab_idx].js_mode = true;
 
-        // Returning to the parked tab: show its live WebView as-is.
+        // Returning to a parked tab: wake and show its live WebView as-is.
         if self.active_webview.is_none() {
-            if let Some((_, wv)) = self.parked_webview.take_if(|(id, _)| *id == tab_id) {
-                let _ = wv.set_bounds(self.webview_bounds());
-                let _ = wv.set_visible(true);
-                self.active_webview = Some(wv);
-                return;
+            if let Some(pos) = self.parked_webviews.iter().position(|(id, _)| *id == tab_id) {
+                if let Some((_, wv)) = self.parked_webviews.remove(pos) {
+                    super::helpers::resume_webview(&wv);
+                    let _ = wv.set_bounds(self.webview_bounds());
+                    let _ = wv.set_visible(true);
+                    let _ = wv.zoom(self.tabs[tab_idx].zoom as f64);
+                    self.active_webview = Some(wv);
+                    return;
+                }
             }
         }
 
         if let Some(wv) = &self.active_webview {
+            self.tabs[tab_idx].is_loading = true;
             let _ = wv.set_bounds(self.webview_bounds());
             let _ = wv.load_url(&url);
             return;
@@ -146,6 +170,7 @@ impl BrowserApp {
             Ok(wv) => {
                 #[cfg(debug_assertions)]
                 eprintln!("[webview] mounted OK for {url}");
+                self.tabs[tab_idx].is_loading = true;
                 self.active_webview = Some(wv);
             }
             Err(e) => {
@@ -160,7 +185,8 @@ impl BrowserApp {
 
     /// Replaces the tab's document with an error page (`title`: new tab title, if any).
     pub(super) fn show_error(&mut self, tab_idx: usize, url: &str, message: &str, title: Option<&str>) {
-        let err_html = render_error_page(url, message);
+        let dark = self.color_scheme == ColorScheme::Dark;
+        let err_html = render_error_page(url, message, dark);
         self.tabs[tab_idx].doc = None;
         let doc = self.build_content_doc(&err_html, "rust://error", None, self.tabs[tab_idx].zoom);
         let tab = &mut self.tabs[tab_idx];
@@ -177,22 +203,52 @@ impl BrowserApp {
         let tab_id = self.tabs[idx].id;
         self.tabs[idx].cancel_inflight();
         let load_seq = self.tabs[idx].load_seq;
-        self.status_note = None;
+        self.hover_link_url = None;
+        self.link_preview_doc = None;
 
         // Internal built-in pages (always Pure Rust Blitz, zero WebView2)
         if url.starts_with("rust://") {
             self.destroy_active_webview();
+            self.drop_parked_webview(tab_id);
             self.tabs[idx].js_mode = false;
+            let dark = self.color_scheme == ColorScheme::Dark;
             let html = if url.starts_with("rust://bookmarks") {
-                render_bookmarks_page(&self.bookmarks, &url)
+                if url.contains("sync=1") {
+                    match self.bookmarks.import_from_chrome() {
+                        Ok(n) => self.set_status_note(&format!("Chrome 북마크 {n}개 동기화")),
+                        Err(e) => self.set_status_note(&e),
+                    }
+                    self.tabs[idx].url = "rust://bookmarks".to_string();
+                } else if let Some(del_url) = parse_query_param(&url, "del") {
+                    if self.bookmarks.remove_url(&del_url) {
+                        self.set_status_note("북마크 삭제됨");
+                    }
+                    self.tabs[idx].url = "rust://bookmarks".to_string();
+                }
+                let drop_target = self.bm_drag.as_ref().and_then(|d| d.hover_folder.as_deref());
+                render_bookmarks_page(&self.bookmarks, &self.tabs[idx].url, drop_target)
+            } else if url.starts_with("rust://history") {
+                if url.contains("clear=1") {
+                    self.history.clear();
+                    self.set_status_note("방문 기록 비워짐");
+                    self.tabs[idx].url = "rust://history".to_string();
+                } else if let Some(del_url) = parse_query_param(&url, "del") {
+                    if self.history.remove_url(&del_url) {
+                        self.set_status_note("방문 기록 항목 삭제됨");
+                    }
+                    self.tabs[idx].url = "rust://history".to_string();
+                }
+                render_history_page(&self.history, &self.tabs[idx].url)
             } else {
                 let unloaded = self.tabs.iter().filter(|t| !t.is_loaded()).count();
                 render_home_page(
                     &self.bookmarks,
+                    &self.history,
                     working_set_mb(),
                     self.tabs.len(),
                     unloaded,
                     self.net_provider.blocked_total(),
+                    dark,
                 )
             };
             let zoom = self.tabs[idx].zoom;
@@ -212,13 +268,13 @@ impl BrowserApp {
             self.tabs[idx].js_mode = true;
         }
         if self.tabs[idx].js_mode && !self.tabs[idx].force_blitz {
-            self.tabs[idx].is_loading = true;
             self.mount_or_navigate_webview(idx);
             self.rebuild_chrome();
             return;
         }
 
         self.destroy_active_webview();
+        self.drop_parked_webview(tab_id);
 
         let pending_request = self.tabs[idx].pending_request.take();
         let cache_key = url.split('#').next().unwrap_or(&url);
@@ -309,6 +365,26 @@ impl BrowserApp {
     pub(super) fn navigate_with_request(&mut self, raw_input: &str, request: Option<Request>) {
         self.close_popup();
         let target = normalize_url_input(raw_input);
+
+        // Internal action routes from Reader Mode toolbar & Error page.
+        if target.starts_with("rust://reader-opt") {
+            self.handle_reader_option_url(&target);
+            return;
+        }
+        if target.starts_with("rust://open-js") {
+            if let Some(orig) = parse_query_param(&target, "url") {
+                let idx = self.active_tab;
+                self.tabs[idx].url = orig;
+                self.tabs[idx].force_blitz = false;
+                self.tabs[idx].js_mode = true;
+                self.tabs[idx].reader_mode = false;
+                self.set_status_note("JS 모드로 열기");
+                self.mount_or_navigate_webview(idx);
+                self.rebuild_chrome();
+            }
+            return;
+        }
+
         let idx = self.active_tab;
         let current_url = self.tabs[idx].url.clone();
 
@@ -325,7 +401,10 @@ impl BrowserApp {
             }
         }
 
+        // Navigating to a new URL in the active tab invalidates any previously parked WebView for it.
         if current_url != target {
+            let tab_id = self.tabs[idx].id;
+            self.drop_parked_webview(tab_id);
             let scroll_y = self.current_scroll_y();
             self.tabs[idx].history_back.push(HistoryEntry {
                 url: current_url,
@@ -368,10 +447,14 @@ impl BrowserApp {
     }
 
     pub(super) fn open_new_tab(&mut self, url: &str) {
+        let inherit_js = self.tabs.get(self.active_tab).is_some_and(|t| t.js_mode)
+            && !url.starts_with("rust://");
         self.unload_active();
         let id = self.next_tab_id;
         self.next_tab_id += 1;
-        self.tabs.push(Tab::new(id, url.to_string()));
+        let mut tab = Tab::new(id, url.to_string());
+        tab.js_mode = inherit_js;
+        self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
         self.load_active_tab(false, None);
     }
@@ -381,7 +464,7 @@ impl BrowserApp {
         let id = self.next_tab_id;
         self.next_tab_id += 1;
         self.tabs.insert(self.active_tab + 1, Tab::new(id, url.to_string()));
-        self.status_note = Some("백그라운드 탭 열림".to_string());
+        self.set_status_note("백그라운드 탭 열림");
         self.rebuild_chrome();
     }
 
@@ -489,13 +572,56 @@ impl BrowserApp {
         self.tabs[idx].force_blitz = !next;
         if next {
             self.tabs[idx].reader_mode = false;
-            self.status_note = Some("JS Mode (WebView2)".to_string());
+            self.set_status_note("JS Mode (WebView2)");
             self.mount_or_navigate_webview(idx);
             self.rebuild_chrome();
         } else {
             self.destroy_active_webview();
-            self.status_note = Some("Pure Rust Mode (Blitz)".to_string());
+            self.set_status_note("Pure Rust Mode (Blitz)");
             self.load_active_tab(false, None);
+        }
+    }
+
+    fn handle_reader_option_url(&mut self, opt_url: &str) {
+        if opt_url.contains("exit=1") {
+            if self.tabs[self.active_tab].reader_mode {
+                self.toggle_reader_mode();
+            }
+            return;
+        }
+        if let Some(theme) = parse_query_param(opt_url, "theme") {
+            self.prefs.reader.theme = match theme.as_str() {
+                "sepia" => ReaderTheme::Sepia,
+                "dark" => ReaderTheme::Dark,
+                _ => ReaderTheme::Light,
+            };
+        }
+        if let Some(sz) = parse_query_param(opt_url, "size") {
+            self.prefs.reader.font_size = match sz.as_str() {
+                "inc" => (self.prefs.reader.font_size + 2).min(24),
+                "dec" => self.prefs.reader.font_size.saturating_sub(2).max(14),
+                _ => self.prefs.reader.font_size,
+            };
+        }
+        if let Some(font) = parse_query_param(opt_url, "font") {
+            self.prefs.reader.font = match font.as_str() {
+                "serif" => ReaderFont::Serif,
+                _ => ReaderFont::Sans,
+            };
+        }
+        if let Some(width) = parse_query_param(opt_url, "width") {
+            self.prefs.reader.width = match width.as_str() {
+                "narrow" => ReaderWidth::Narrow,
+                "wide" => ReaderWidth::Wide,
+                _ => ReaderWidth::Medium,
+            };
+        }
+        self.prefs.save();
+        let idx = self.active_tab;
+        if let Some(raw) = self.tabs[idx].raw_html.clone() {
+            let url = self.tabs[idx].url.clone();
+            let scroll = self.current_scroll_y();
+            self.apply_html_to_tab(idx, url, raw, Some(scroll));
         }
     }
 

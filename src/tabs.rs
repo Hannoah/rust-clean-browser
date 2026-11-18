@@ -89,6 +89,7 @@ pub fn short_title_for_url(url: &str) -> String {
     match url {
         "rust://home" => "새 탭".to_string(),
         u if u.starts_with("rust://bookmarks") => "북마크".to_string(),
+        u if u.starts_with("rust://history") => "방문 기록".to_string(),
         _ => url
             .strip_prefix("https://")
             .or_else(|| url.strip_prefix("http://"))

@@ -79,9 +79,9 @@ pub(super) fn wait_for_images(doc: &mut HtmlDocument) {
     }
 }
 
-/// The JS-mode WebView is destroyed on tab switch to free memory, which would also drop its
+/// The JS-mode WebView is destroyed when evicted from the parked LRU pool, which would drop its
 /// session cookies (i.e. log the user out). Promote them to 30-day persistent cookies first so
-/// logins survive tab switches and restarts.
+/// logins survive tab eviction and restarts.
 pub(super) fn persist_session_cookies(wv: &WebView) {
     let Ok(cookies) = wv.cookies() else {
         return;
@@ -93,6 +93,29 @@ pub(super) fn persist_session_cookies(wv: &WebView) {
             let _ = wv.set_cookie(&kept);
         }
     }
+}
+
+/// Freezes a hidden background WebView (`TrySuspend` + `MemoryUsageTargetLevel::Low` on Windows)
+/// so keeping up to 5 parked JS tabs uses minimal working-set memory and 0% CPU.
+pub(super) fn suspend_webview(wv: &WebView) {
+    #[cfg(target_os = "windows")]
+    {
+        use wry::{MemoryUsageLevel, WebViewExtWindows};
+        let _ = wv.set_memory_usage_level(MemoryUsageLevel::Low);
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = wv;
+}
+
+/// Wakes a parked WebView back to normal execution and memory target level before showing it.
+pub(super) fn resume_webview(wv: &WebView) {
+    #[cfg(target_os = "windows")]
+    {
+        use wry::{MemoryUsageLevel, WebViewExtWindows};
+        let _ = wv.set_memory_usage_level(MemoryUsageLevel::Normal);
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = wv;
 }
 
 /// Hosts whose sign-in / app flows only work with a real JS engine and the Windows account SSO
@@ -112,6 +135,13 @@ pub(super) fn requires_js_engine(url: &str) -> bool {
         "accounts.google.com",
         // UA-sniffs and redirects Blitz to /unsupported_browser; JS-only SPA anyway.
         "highspot.com",
+        // GitHub uses <react-app>/<react-partial> custom elements, Primer @layer CSS, and
+        // multi-theme stylesheets that require JS hydration to render code/file trees properly.
+        "github.com",
+        "gist.github.com",
+        // Naver services (www, mail, nid, cafe, blog, pay) share login cookies in WebView2;
+        // fetching mail.naver.com via Blitz first lacks WebView2 cookies and bounces to nidlogin.
+        "naver.com",
         // Google Search no longer serves results without JavaScript.
         "www.google.com",
     ];
@@ -239,7 +269,7 @@ pub(super) fn popup_window_style(attrs: WindowAttributes) -> WindowAttributes {
         attrs.with_platform_attributes(Box::new(
             WindowAttributesWindows::default()
                 .with_undecorated_shadow(true)
-                .with_corner_preference(CornerPreference::RoundSmall),
+                .with_corner_preference(CornerPreference::Round),
         ))
     }
     #[cfg(not(target_os = "windows"))]
@@ -281,6 +311,7 @@ mod tests {
         assert!(requires_js_engine("https://login.microsoftonline.com/common/oauth2"));
         assert!(requires_js_engine("https://contoso.sharepoint.com/sites/x"));
         assert!(requires_js_engine("https://www.google.com/search?q=x"));
+        assert!(requires_js_engine("https://github.com/meta/astryx"));
         assert!(!requires_js_engine("https://mail.google.com/"));
         assert!(!requires_js_engine("https://news.ycombinator.com/"));
         assert!(!requires_js_engine("https://notoffice.com/"));

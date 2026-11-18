@@ -7,9 +7,11 @@ mod cleaner;
 mod events;
 mod favicon;
 mod history;
+mod icons;
 mod memory;
 mod net;
 mod page_cache;
+mod prefs;
 mod tabs;
 
 use app::BrowserApp;
