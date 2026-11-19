@@ -7,6 +7,8 @@ use std::sync::Arc;
 pub struct HistoryEntry {
     pub url: String,
     pub scroll_y: f64,
+    pub js_mode: bool,
+    pub force_blitz: bool,
 }
 
 pub struct Tab {

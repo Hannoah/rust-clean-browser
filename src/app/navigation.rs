@@ -1,7 +1,7 @@
 //! Page loading, tab lifecycle, history and the JS-mode WebView.
 
 use super::helpers::{RESIZE_EDGE, normalize_url_input, persist_session_cookies, requires_js_engine};
-use super::{AppEvent, BrowserApp};
+use super::{AppEvent, BrowserApp, ClosedTab};
 use crate::chrome_ui::{
     parse_query_param, render_bookmarks_page, render_error_page, render_history_page,
     render_home_page,
@@ -111,6 +111,7 @@ impl BrowserApp {
         if let Some(wv) = &self.active_webview {
             self.tabs[tab_idx].is_loading = true;
             let _ = wv.set_bounds(self.webview_bounds());
+            let _ = wv.zoom(self.tabs[tab_idx].zoom as f64);
             let _ = wv.load_url(&url);
             return;
         }
@@ -170,6 +171,7 @@ impl BrowserApp {
             Ok(wv) => {
                 #[cfg(debug_assertions)]
                 eprintln!("[webview] mounted OK for {url}");
+                let _ = wv.zoom(self.tabs[tab_idx].zoom as f64);
                 self.tabs[tab_idx].is_loading = true;
                 self.active_webview = Some(wv);
             }
@@ -188,12 +190,16 @@ impl BrowserApp {
         let dark = self.color_scheme == ColorScheme::Dark;
         let err_html = render_error_page(url, message, dark);
         self.tabs[tab_idx].doc = None;
+        self.tabs[tab_idx].raw_html = None;
         let doc = self.build_content_doc(&err_html, "rust://error", None, self.tabs[tab_idx].zoom);
         let tab = &mut self.tabs[tab_idx];
         tab.doc = Some(doc);
         if let Some(t) = title {
             tab.title = t.to_string();
             tab.is_loading = false;
+        }
+        if tab_idx == self.active_tab {
+            self.sync_find_bar_after_doc_change();
         }
     }
 
@@ -205,6 +211,7 @@ impl BrowserApp {
         let load_seq = self.tabs[idx].load_seq;
         self.hover_link_url = None;
         self.link_preview_doc = None;
+        self.clear_find_matches();
 
         // Internal built-in pages (always Pure Rust Blitz, zero WebView2)
         if url.starts_with("rust://") {
@@ -260,6 +267,7 @@ impl BrowserApp {
             tab.doc = Some(doc);
             tab.raw_html = None;
             tab.is_loading = false;
+            self.sync_find_bar_after_doc_change();
             self.rebuild_chrome();
             return;
         }
@@ -269,6 +277,7 @@ impl BrowserApp {
         }
         if self.tabs[idx].js_mode && !self.tabs[idx].force_blitz {
             self.mount_or_navigate_webview(idx);
+            self.sync_find_bar_after_doc_change();
             self.rebuild_chrome();
             return;
         }
@@ -401,22 +410,30 @@ impl BrowserApp {
             }
         }
 
-        // Navigating to a new URL in the active tab invalidates any previously parked WebView for it.
+        // Navigating to a new URL in the active tab invalidates any active/parked WebView so
+        // `tab.history_back` stays synchronized with WebView history and non-JS URLs return to Blitz.
         if current_url != target {
             let tab_id = self.tabs[idx].id;
+            self.destroy_active_webview();
             self.drop_parked_webview(tab_id);
             let scroll_y = self.current_scroll_y();
+            let prev_js = self.tabs[idx].js_mode;
+            let prev_force = self.tabs[idx].force_blitz;
             self.tabs[idx].history_back.push(HistoryEntry {
                 url: current_url,
                 scroll_y,
+                js_mode: prev_js,
+                force_blitz: prev_force,
             });
             self.tabs[idx].history_forward.clear();
+            self.tabs[idx].js_mode = false;
         }
         self.tabs[idx].url = target;
         self.tabs[idx].scroll_y = 0.0;
         self.tabs[idx].force_blitz = false;
         self.tabs[idx].pending_request = request;
         self.chrome_focused = false;
+        self.chrome_doc.clear_focus();
         self.load_active_tab(false, None);
     }
 
@@ -440,6 +457,8 @@ impl BrowserApp {
         if target_idx >= self.tabs.len() || target_idx == self.active_tab {
             return;
         }
+        self.chrome_focused = false;
+        self.chrome_doc.clear_focus();
         self.unload_active();
         self.active_tab = target_idx;
         let restore_y = Some(self.tabs[target_idx].scroll_y);
@@ -447,13 +466,25 @@ impl BrowserApp {
     }
 
     pub(super) fn open_new_tab(&mut self, url: &str) {
+        self.open_new_tab_with_js(url, false);
+    }
+
+    /// Used for `window.open` / `target="_blank"` inside a JS-mode WebView so authenticated
+    /// links keep using WebView2.
+    pub(super) fn open_new_tab_inheriting_js(&mut self, url: &str) {
         let inherit_js = self.tabs.get(self.active_tab).is_some_and(|t| t.js_mode)
             && !url.starts_with("rust://");
+        self.open_new_tab_with_js(url, inherit_js);
+    }
+
+    fn open_new_tab_with_js(&mut self, url: &str, js_mode: bool) {
+        self.chrome_focused = false;
+        self.chrome_doc.clear_focus();
         self.unload_active();
         let id = self.next_tab_id;
         self.next_tab_id += 1;
         let mut tab = Tab::new(id, url.to_string());
-        tab.js_mode = inherit_js;
+        tab.js_mode = js_mode && !url.starts_with("rust://");
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
         self.load_active_tab(false, None);
@@ -469,27 +500,35 @@ impl BrowserApp {
     }
 
     pub(super) fn reopen_closed_tab(&mut self) {
-        if let Some(url) = self.closed_tabs.pop() {
-            self.open_new_tab(&url);
+        if let Some(closed) = self.closed_tabs.pop() {
+            self.open_new_tab_with_js(&closed.url, closed.js_mode);
         }
     }
 
     pub(super) fn close_tab(&mut self, idx: usize, event_loop: Option<&dyn ActiveEventLoop>) {
+        if idx >= self.tabs.len() {
+            return;
+        }
         self.close_popup();
         let closed_url = self.tabs[idx].url.clone();
         if !closed_url.starts_with("rust://home") {
             if self.closed_tabs.len() >= 16 {
                 self.closed_tabs.remove(0);
             }
-            self.closed_tabs.push(closed_url);
+            self.closed_tabs.push(ClosedTab {
+                url: closed_url,
+                js_mode: self.tabs[idx].js_mode,
+            });
         }
         if idx == self.active_tab {
             self.destroy_active_webview();
+            self.chrome_focused = false;
+            self.chrome_doc.clear_focus();
         }
         self.drop_parked_webview(self.tabs[idx].id);
         if self.tabs.len() <= 1 {
             if let Some(el) = event_loop {
-                el.exit();
+                self.exit_app(el);
             } else {
                 self.tabs[0].unload();
                 trim_process_working_set();
@@ -523,26 +562,40 @@ impl BrowserApp {
         let idx = self.active_tab;
         if self.tabs[idx].js_mode {
             if let Some(wv) = &self.active_webview {
-                let js = if forward { "window.history.forward();" } else { "window.history.back();" };
-                let _ = wv.evaluate_script(js);
-                return;
+                let can_step = if forward {
+                    wv.can_go_forward().unwrap_or(false)
+                } else {
+                    wv.can_go_back().unwrap_or(false)
+                };
+                if can_step {
+                    let res = if forward { wv.go_forward() } else { wv.go_back() };
+                    if res.is_ok() {
+                        self.rebuild_chrome();
+                        return;
+                    }
+                }
             }
         }
         let scroll_y = self.current_scroll_y();
-        let tab = &mut self.tabs[idx];
-        let (from, to) = if forward {
-            (&mut tab.history_forward, &mut tab.history_back)
-        } else {
-            (&mut tab.history_back, &mut tab.history_forward)
+        let entry = {
+            let tab = &mut self.tabs[idx];
+            let from = if forward { &mut tab.history_forward } else { &mut tab.history_back };
+            from.pop()
         };
-        let Some(entry) = from.pop() else {
+        let Some(entry) = entry else {
             return;
         };
+        self.destroy_active_webview();
+        let tab = &mut self.tabs[idx];
+        let to = if forward { &mut tab.history_back } else { &mut tab.history_forward };
         to.push(HistoryEntry {
             url: std::mem::replace(&mut tab.url, entry.url),
             scroll_y,
+            js_mode: tab.js_mode,
+            force_blitz: tab.force_blitz,
         });
-        tab.force_blitz = false;
+        tab.js_mode = entry.js_mode;
+        tab.force_blitz = entry.force_blitz;
         self.load_active_tab(false, Some(entry.scroll_y));
     }
 
@@ -574,6 +627,7 @@ impl BrowserApp {
             self.tabs[idx].reader_mode = false;
             self.set_status_note("JS Mode (WebView2)");
             self.mount_or_navigate_webview(idx);
+            self.sync_find_bar_after_doc_change();
             self.rebuild_chrome();
         } else {
             self.destroy_active_webview();

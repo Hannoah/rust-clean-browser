@@ -63,20 +63,105 @@ pub(super) fn focus_main_window(win: &dyn winit::window::Window, activate: bool)
 }
 
 /// Lets cached `file://` favicons decode before a freshly built UI document is shown, so
-/// icons don't flicker on every chrome rebuild. Bounded to 40 ms.
+/// icons don't flicker on every chrome rebuild. Bounded to 25 ms, and skips icon URLs that
+/// previously failed to decode so corrupt cached files never stall the UI thread.
 pub(super) fn wait_for_images(doc: &mut HtmlDocument) {
-    let deadline = Instant::now() + std::time::Duration::from_millis(40);
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static BROKEN_SRCS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let broken = BROKEN_SRCS.get_or_init(|| Mutex::new(HashSet::new()));
+
+    let deadline = Instant::now() + std::time::Duration::from_millis(25);
     loop {
         doc.handle_messages();
-        let pending = doc.tree().iter().any(|(_, node)| {
-            node.element_data()
-                .is_some_and(|el| &*el.name.local == "img" && el.image_data().is_none())
-        });
-        if !pending || Instant::now() >= deadline {
+        let pending_srcs: Vec<String> = {
+            let guard = broken.lock().ok();
+            doc.tree()
+                .iter()
+                .filter_map(|(_, node)| {
+                    let el = node.element_data()?;
+                    if &*el.name.local != "img" || el.image_data().is_some() {
+                        return None;
+                    }
+                    let src = el.attr(blitz_dom::LocalName::from("src")).unwrap_or_default();
+                    if guard.as_ref().is_some_and(|set| set.contains(src)) {
+                        return None;
+                    }
+                    Some(src.to_string())
+                })
+                .collect()
+        };
+        if pending_srcs.is_empty() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            if let Ok(mut guard) = broken.lock() {
+                for src in pending_srcs {
+                    if !src.is_empty() {
+                        guard.insert(src);
+                    }
+                }
+            }
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
+}
+
+/// Screen position (physical px) of the main window's client-area origin.
+///
+/// On Windows this asks the OS directly (`ClientToScreen`), which stays correct after
+/// Win+Arrow snapping, DPI changes and invisible resize borders; `surface_position()` can
+/// lag behind in those cases and made popups open in the wrong place.
+pub(super) fn client_origin_on_screen(win: &dyn winit::window::Window) -> winit::dpi::PhysicalPosition<i32> {
+    #[cfg(target_os = "windows")]
+    {
+        use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        #[repr(C)]
+        struct Point {
+            x: i32,
+            y: i32,
+        }
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn ClientToScreen(hwnd: isize, point: *mut Point) -> i32;
+        }
+        if let Ok(handle) = win.window_handle() {
+            if let RawWindowHandle::Win32(h) = handle.as_raw() {
+                let mut p = Point { x: 0, y: 0 };
+                if unsafe { ClientToScreen(h.hwnd.get(), &mut p) } != 0 {
+                    return winit::dpi::PhysicalPosition::new(p.x, p.y);
+                }
+            }
+        }
+    }
+    win.surface_position()
+}
+
+/// Returns whether the primary mouse button is currently held down at the OS level.
+#[cfg(target_os = "windows")]
+pub(super) fn is_primary_mouse_button_down() -> bool {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetAsyncKeyState(vkey: i32) -> i16;
+        fn GetSystemMetrics(index: i32) -> i32;
+    }
+    const VK_LBUTTON: i32 = 0x01;
+    const VK_RBUTTON: i32 = 0x02;
+    const SM_SWAPBUTTON: i32 = 23;
+    unsafe {
+        let vkey = if GetSystemMetrics(SM_SWAPBUTTON) != 0 {
+            VK_RBUTTON
+        } else {
+            VK_LBUTTON
+        };
+        GetAsyncKeyState(vkey) < 0
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(super) fn is_primary_mouse_button_down() -> bool {
+    true
 }
 
 /// The JS-mode WebView is destroyed when evicted from the parked LRU pool, which would drop its
@@ -283,17 +368,28 @@ pub(super) fn normalize_url_input(raw: &str) -> String {
     if trimmed.is_empty() {
         return "rust://home".to_string();
     }
-    if trimmed.starts_with("rust://")
-        || trimmed.starts_with("http://")
-        || trimmed.starts_with("https://")
-        || trimmed.starts_with("file://")
+    let lower = trimmed.to_ascii_lowercase();
+    for scheme in ["rust://", "http://", "https://", "file://"] {
+        if lower.starts_with(scheme) {
+            return format!("{scheme}{}", &trimmed[scheme.len()..]);
+        }
+    }
+    if lower.starts_with("about:")
+        || lower.starts_with("mailto:")
+        || lower.starts_with("javascript:")
+        || lower.starts_with("data:")
     {
         return trimmed.to_string();
     }
-    if !trimmed.contains(char::is_whitespace)
-        && (trimmed.contains('.') || trimmed.starts_with("localhost"))
-    {
-        return format!("https://{trimmed}");
+    if !trimmed.contains(char::is_whitespace) {
+        let host_part = trimmed.split(['/', '?', '#']).next().unwrap_or(trimmed);
+        let host_no_port = host_part.split(':').next().unwrap_or(host_part);
+        if host_no_port.eq_ignore_ascii_case("localhost") || host_no_port == "127.0.0.1" {
+            return format!("http://{trimmed}");
+        }
+        if trimmed.contains('.') {
+            return format!("https://{trimmed}");
+        }
     }
     let encoded: String = url::form_urlencoded::byte_serialize(trimmed.as_bytes()).collect();
     format!("https://www.google.com/search?q={encoded}")
@@ -324,6 +420,10 @@ mod tests {
         assert_eq!(normalize_url_input("rust://bookmarks"), "rust://bookmarks");
         assert_eq!(normalize_url_input("example.com"), "https://example.com");
         assert_eq!(normalize_url_input("https://rust-lang.org"), "https://rust-lang.org");
+        assert_eq!(normalize_url_input("HTTPS://Example.COM/Path"), "https://Example.COM/Path");
+        assert_eq!(normalize_url_input("localhost:3000"), "http://localhost:3000");
+        assert_eq!(normalize_url_input("127.0.0.1:8080/api"), "http://127.0.0.1:8080/api");
+        assert_eq!(normalize_url_input("mailto:a@b.com"), "mailto:a@b.com");
         assert_eq!(
             normalize_url_input("rust browser engine"),
             "https://www.google.com/search?q=rust+browser+engine"

@@ -82,7 +82,9 @@ impl BrowserApp {
 
         if let Some(wv) = &self.active_webview {
             let trimmed = text.trim();
-            if !trimmed.is_empty() {
+            if trimmed.is_empty() {
+                let _ = wv.evaluate_script("window.getSelection()?.removeAllRanges();");
+            } else {
                 let js_q = serde_json::to_string(trimmed).unwrap_or_else(|_| "\"\"".to_string());
                 let _ = wv.evaluate_script(&format!("window.find({js_q}, false, false, true);"));
             }
@@ -170,11 +172,57 @@ impl BrowserApp {
     }
 
     pub(super) fn close_find_bar(&mut self) {
+        if let Some(wv) = &self.active_webview {
+            let _ = wv.evaluate_script("window.getSelection()?.removeAllRanges();");
+        }
         if let Some(doc) = &mut self.tabs[self.active_tab].doc {
             doc.clear_text_selection();
         }
         self.close_popup();
         self.request_redraw();
+    }
+
+    /// Drops stale `NodeId` matches before the active tab's document is unloaded or replaced.
+    pub(super) fn clear_find_matches(&mut self) {
+        let query = match self.popup.as_mut().map(|p| &mut p.kind) {
+            Some(PopupKind::FindBar { query, matches, current }) => {
+                matches.clear();
+                *current = 0;
+                query.clone()
+            }
+            _ => return,
+        };
+        let is_wv = self.active_webview.is_some();
+        self.refresh_find_counter(&query, 0, 0, is_wv);
+    }
+
+    /// Recomputes `FindBar` matches against the active tab's current document (or WebView)
+    /// so `NodeId`s never point into a replaced/dropped `HtmlDocument`.
+    pub(super) fn sync_find_bar_after_doc_change(&mut self) {
+        let query = match self.popup.as_ref().map(|p| &p.kind) {
+            Some(PopupKind::FindBar { query, .. }) => query.clone(),
+            _ => return,
+        };
+        if self.active_webview.is_some() {
+            self.clear_find_matches();
+            return;
+        }
+        let anim_time = self.anim_time();
+        let found = if let Some(doc) = &mut self.tabs[self.active_tab].doc {
+            doc.resolve(anim_time);
+            collect_doc_matches(doc, &query)
+        } else {
+            Vec::new()
+        };
+        let count = found.len();
+        if let Some(popup) = &mut self.popup {
+            if let PopupKind::FindBar { matches, current, .. } = &mut popup.kind {
+                *matches = found;
+                *current = 0;
+            }
+        }
+        self.apply_active_find_match();
+        self.refresh_find_counter(&query, count, 0, false);
     }
 
     fn apply_active_find_match(&mut self) {

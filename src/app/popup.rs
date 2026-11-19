@@ -101,6 +101,9 @@ impl BrowserApp {
                 PopupKind::Bookmarks { .. } | PopupKind::CommandPalette { .. } | PopupKind::FindBar { .. }
             );
             if matches!(popup.kind, PopupKind::FindBar { .. }) {
+                if let Some(wv) = &self.active_webview {
+                    let _ = wv.evaluate_script("window.getSelection()?.removeAllRanges();");
+                }
                 if let Some(doc) = &mut self.tabs[self.active_tab].doc {
                     doc.clear_text_selection();
                 }
@@ -190,8 +193,8 @@ impl BrowserApp {
         let Some(main_win) = &self.window else {
             return;
         };
-        let scale = self.hidpi_scale.max(1.0) as f64;
-        let surf_pos = main_win.surface_position();
+        let scale = main_win.scale_factor().max(1.0);
+        let surf_pos = super::helpers::client_origin_on_screen(&**main_win);
         let attrs = WindowAttributes::default()
             .with_title("Popup")
             .with_decorations(false)

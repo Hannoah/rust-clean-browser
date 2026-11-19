@@ -133,6 +133,11 @@ pub(super) struct TabDrag {
     pub active: bool,
 }
 
+pub(super) struct ClosedTab {
+    pub url: String,
+    pub js_mode: bool,
+}
+
 pub struct BrowserApp {
     window: Option<Arc<dyn Window>>,
     renderer: VelloCpuWindowRenderer,
@@ -182,8 +187,8 @@ pub struct BrowserApp {
     last_chrome_click_x_logical: f32,
     /// Last chrome HTML; identical rebuilds are skipped (no re-parse / re-style).
     last_chrome_html: String,
-    /// URLs of recently closed tabs (Ctrl+Shift+T), newest last.
-    closed_tabs: Vec<String>,
+    /// Recently closed tabs (`Ctrl+Shift+T`), newest last.
+    closed_tabs: Vec<ClosedTab>,
     last_titlebar_press: Option<Instant>,
     resize_hover: Option<ResizeDirection>,
     maximized: bool,
@@ -509,9 +514,12 @@ impl BrowserApp {
 
     fn rebuild_chrome(&mut self) {
         // Icons for open tabs and the bookmark bar (deduplicated per host, fetched once).
+        // Skip tabs that are currently loading so `apply_html_to_tab` / `WebViewIcons` can use
+        // the page's real `<link rel=icon>` without triggering a duplicate page fetch.
         let icon_urls: Vec<String> = self
             .tabs
             .iter()
+            .filter(|t| !t.is_loading)
             .map(|t| t.url.clone())
             .chain(self.bookmarks.custom.iter().map(|b| b.url.clone()))
             .chain(
@@ -535,13 +543,22 @@ impl BrowserApp {
             self.update_window_title();
             return;
         }
-        // Keep whatever the user is typing (and focus) when background events rebuild the chrome.
+        // Keep whatever the user is typing (and focus / caret) when background events rebuild chrome.
         let typing = self.url_bar_focused().then(|| self.read_url_bar_text()).flatten();
+        let saved_sel_range = if typing.is_some() { self.read_url_bar_selection() } else { None };
         let drop_target = self.bm_drag.as_ref().and_then(|d| d.hover_folder.as_deref());
+        let active = &self.tabs[self.active_tab];
+        let (wv_back, wv_fwd) = self.active_webview.as_ref().map_or((false, false), |wv| {
+            (wv.can_go_back().unwrap_or(false), wv.can_go_forward().unwrap_or(false))
+        });
+        let can_back = !active.history_back.is_empty() || wv_back;
+        let can_forward = !active.history_forward.is_empty() || wv_fwd;
         let html = render_chrome_html(&ChromeRenderState {
             tabs: &self.tabs,
             active_idx: self.active_tab,
             bookmarks: &self.bookmarks,
+            can_back,
+            can_forward,
             working_set_mb: working_set_mb(),
             blocked_count: self.net_provider.blocked_total(),
             filter_enabled: self.net_provider.is_filter_enabled(),
@@ -560,17 +577,11 @@ impl BrowserApp {
 
         let mut doc = HtmlDocument::from_html(&html, self.doc_config(self.chrome_viewport(), self.shell_provider.clone()));
         wait_for_images(&mut doc);
+        doc.resolve(self.anim_time());
         self.chrome_doc = doc;
         self.last_chrome_html = html;
-        if typing.is_some() {
-            if let Some(url_id) = self.chrome_doc.get_element_by_id("url-bar") {
-                self.chrome_doc.set_focus_to(url_id);
-                self.dispatch_chrome_ui(UiEvent::KeyDown(synthetic_key(
-                    Key::Named(NamedKey::End),
-                    Code::End,
-                    KbtModifiers::empty(),
-                )));
-            }
+        if let Some(text) = typing {
+            self.restore_url_bar_focus_and_caret(&text, saved_sel_range);
         }
         self.request_redraw();
     }
@@ -635,18 +646,20 @@ impl BrowserApp {
             self.html_cache.insert(cache_url, clean_html);
         }
 
+        if tab_idx == self.active_tab {
+            self.sync_find_bar_after_doc_change();
+        }
         self.rebuild_chrome();
     }
 
-    fn toggle_maximize(&mut self) {
-        if let Some(win) = &self.window {
-            win.set_maximized(!win.is_maximized());
-        }
-    }
-
-    fn exit_app(&mut self, event_loop: &dyn ActiveEventLoop) {
+    pub(super) fn exit_app(&mut self, event_loop: &dyn ActiveEventLoop) {
         self.close_popup();
-        for wv in self.active_webview.iter().chain(self.parked_webviews.iter().map(|(_, wv)| wv)) {
+        // All WebViews share one `WebContext` / `CookieManager`, so persisting once is enough.
+        if let Some(wv) = self
+            .active_webview
+            .as_ref()
+            .or_else(|| self.parked_webviews.front().map(|(_, wv)| wv))
+        {
             helpers::persist_session_cookies(wv);
         }
         self.net_provider.cookies.save();
@@ -691,6 +704,81 @@ impl BrowserApp {
         }
         let input = doc.get_node(sid)?.element_data()?.text_input_data()?;
         Some(input.editor.raw_text().trim().to_string())
+    }
+
+    pub(super) fn toggle_maximize(&mut self) {
+        if let Some(win) = &self.window {
+            win.set_maximized(!win.is_maximized());
+        }
+    }
+
+    fn read_url_bar_selection(&self) -> Option<std::ops::Range<usize>> {
+        let url_id = self.chrome_doc.get_element_by_id("url-bar")?;
+        let input = self.chrome_doc.get_node(url_id)?.element_data()?.text_input_data()?;
+        Some(input.editor.raw_selection().text_range())
+    }
+
+    fn restore_url_bar_focus_and_caret(&mut self, text: &str, saved: Option<std::ops::Range<usize>>) {
+        let Some(url_id) = self.chrome_doc.get_element_by_id("url-bar") else {
+            return;
+        };
+        self.chrome_doc.set_focus_to(url_id);
+        let Some(range) = saved else {
+            self.dispatch_chrome_ui(UiEvent::KeyDown(synthetic_key(
+                Key::Named(NamedKey::End),
+                Code::End,
+                KbtModifiers::empty(),
+            )));
+            return;
+        };
+        if range.start == 0 && range.end == text.len() && !text.is_empty() {
+            self.dispatch_chrome_ui(UiEvent::KeyDown(synthetic_key(
+                Key::Character("a".to_string()),
+                Code::KeyA,
+                ACTION_MOD,
+            )));
+            return;
+        }
+        let pos = range.end.min(text.len());
+        if range.start == range.end && pos < text.len() && text.is_char_boundary(pos) {
+            let from_start = text[..pos].chars().count();
+            let from_end = text[pos..].chars().count();
+            if from_start <= from_end && from_start <= 256 {
+                self.dispatch_chrome_ui(UiEvent::KeyDown(synthetic_key(
+                    Key::Named(NamedKey::Home),
+                    Code::Home,
+                    KbtModifiers::empty(),
+                )));
+                for _ in 0..from_start {
+                    self.dispatch_chrome_ui(UiEvent::KeyDown(synthetic_key(
+                        Key::Named(NamedKey::ArrowRight),
+                        Code::ArrowRight,
+                        KbtModifiers::empty(),
+                    )));
+                }
+                return;
+            }
+            if from_end <= 256 {
+                self.dispatch_chrome_ui(UiEvent::KeyDown(synthetic_key(
+                    Key::Named(NamedKey::End),
+                    Code::End,
+                    KbtModifiers::empty(),
+                )));
+                for _ in 0..from_end {
+                    self.dispatch_chrome_ui(UiEvent::KeyDown(synthetic_key(
+                        Key::Named(NamedKey::ArrowLeft),
+                        Code::ArrowLeft,
+                        KbtModifiers::empty(),
+                    )));
+                }
+                return;
+            }
+        }
+        self.dispatch_chrome_ui(UiEvent::KeyDown(synthetic_key(
+            Key::Named(NamedKey::End),
+            Code::End,
+            KbtModifiers::empty(),
+        )));
     }
 
     fn read_url_bar_text(&self) -> Option<String> {
@@ -804,13 +892,14 @@ impl ApplicationHandler for BrowserApp {
             self.maximized = win.is_maximized();
             self.hidpi_scale = win.scale_factor() as f32;
             self.win_size = win.surface_size();
+            let prev_scheme = self.color_scheme;
             self.os_color_scheme = theme_to_color_scheme(win.theme().unwrap_or(Theme::Light));
             self.color_scheme = self.effective_color_scheme();
             let shell: Arc<dyn ShellProvider> = Arc::new(BrowserShellProvider {
                 window: Arc::clone(&win),
             });
             let chrome_vp = self.chrome_viewport();
-            let content_vp = self.content_viewport(1.0);
+            let content_vp = self.content_viewport(self.tabs[self.active_tab].zoom);
             self.shell_provider = Some(Arc::clone(&shell));
             self.chrome_doc.set_viewport(chrome_vp);
             self.chrome_doc.set_shell_provider(Arc::clone(&shell));
@@ -819,7 +908,11 @@ impl ApplicationHandler for BrowserApp {
                 doc.set_shell_provider(shell);
             }
             self.window = Some(win);
-            self.rebuild_chrome();
+            if self.color_scheme != prev_scheme && self.tabs[self.active_tab].url.starts_with("rust://") {
+                self.load_active_tab(false, None);
+            } else {
+                self.rebuild_chrome();
+            }
             self.update_window_title();
         }
 
@@ -849,7 +942,7 @@ impl ApplicationHandler for BrowserApp {
     fn window_event(&mut self, event_loop: &dyn ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
         if self.popup_owns(window_id) {
             self.handle_popup_window_event(event_loop, event);
-        } else {
+        } else if self.window.as_ref().is_some_and(|w| w.id() == window_id) {
             self.handle_main_window_event(event_loop, event);
         }
     }
@@ -872,6 +965,11 @@ impl ApplicationHandler for BrowserApp {
                 if self.next_anim_frame.is_some_and(|d| now >= d) {
                     self.next_anim_frame = None;
                     self.request_redraw();
+                }
+                if let Some(until) = self.status_note_until {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(until));
+                } else {
+                    event_loop.set_control_flow(ControlFlow::Wait);
                 }
             } else {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));

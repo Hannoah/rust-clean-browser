@@ -92,6 +92,22 @@ impl BrowserApp {
         self.show_popup(event_loop, POPUP_KEY.to_string(), kind, x, y + 4.0, width, false);
     }
 
+    /// `Alt+Enter` in the address bar: opens the highlighted suggestion (if open) in a new tab.
+    pub(super) fn suggest_open_new_tab(&mut self) -> bool {
+        let url = match self.popup.as_ref().map(|p| &p.kind) {
+            Some(PopupKind::Suggest { rows, selected, .. }) => {
+                rows.get(*selected).map(|r| r.url.clone())
+            }
+            _ => None,
+        };
+        let Some(url) = url else {
+            return false;
+        };
+        self.close_popup();
+        self.open_new_tab(&url);
+        true
+    }
+
     /// Up / Down / Enter / Esc while the dropdown is open. Returns true when consumed.
     pub(super) fn suggest_key(&mut self, code: KeyCode) -> bool {
         let Some(PopupKind::Suggest { rows, selected, .. }) = self.popup.as_mut().map(|p| &mut p.kind) else {
@@ -101,7 +117,9 @@ impl BrowserApp {
             KeyCode::ArrowDown => *selected = (*selected + 1) % rows.len(),
             KeyCode::ArrowUp => *selected = (*selected + rows.len() - 1) % rows.len(),
             KeyCode::Enter | KeyCode::NumpadEnter => {
-                let row = &rows[*selected];
+                let Some(row) = rows.get(*selected) else {
+                    return false;
+                };
                 let url = row.url.clone();
                 let is_open_tab = row.kind == SuggestKind::OpenTab;
                 self.close_popup();

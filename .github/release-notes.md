@@ -1,7 +1,15 @@
 초경량 순수 Rust 웹 브라우저 — 적은 메모리, 빠른 로딩, Chrome 북마크 연동.
 *Ultra-lightweight pure-Rust web browser — low memory, instant page loads, Chrome bookmark import.*
 
-## 이번 버전 (v0.4.0)
+## 이번 버전 (v0.4.1)
+
+- **안정성 및 버그 수정 패치**
+  - **종료 및 데이터 보존**: 마지막 탭을 닫아 종료할 때도 방문 기록·쿠키가 정상 저장되고 렌더러가 안전하게 정리되도록 수정 (`bookmarks.json` 원자적 저장 포함)
+  - **히스토리·JS 모드 전환 개선**: Blitz ↔ WebView2(JS 모드) 간 뒤로/앞으로 가기(`can_go_back` / `can_go_forward` 연동), 새 URL 이동 시 `js_mode` 고착 해제, 새 탭·닫은 탭 복원(`Ctrl+Shift+T`) 모드 일치 및 WebView 줌 배율 동기화
+  - **창·입력·찾기 바 안정화**: 닫히거나 교체된 팝업 창 지연 이벤트 오라우팅 차단, 문서 변경 시 페이지 내 찾기(`Ctrl+F`) 매치 재계산 및 WebView 선택 해제, 크롬 클릭 후 키보드 스크롤 먹통(`chrome_focused`) 수정, 창 포커스 이탈/마우스 릴리스 시 드래그 고착 방지, 자동완성 `Alt+Enter` 새 탭 동작 및 IME 조합 중 조기 제출 방지
+  - **UI·파서·네트워크 보완**: 자동완성·방문 기록에서 `threads.net`/`twitch.tv` 등 도메인 앞글자 잘림 수정, 혼합 유니코드 하이라이트 안전 처리, HTML `<meta charset>` 스니핑 및 중첩 태그/리더 모드 `<form>` 래퍼 파싱 개선, 팝업 파비콘 리드로우·주소창 캐럿 위치 보존, `blitz-net` HTTP 타임아웃 및 응답 전달 후 wake 순서 보정
+
+### v0.4.0
 
 - **모던 UI/UX 대폭 강화 (Fluent 2 + Material 3 + Arc/Zen 스타일)**
   - **크로스플랫폼 벡터 SVG 아이콘**: Windows·macOS 전반에서 동일한 선명한 1.5px 벡터 아이콘 적용 및 Pretendard/Segoe UI Variable 기반 한국어 CJK 타이포그래피·`tabular-nums` 정비

@@ -100,7 +100,12 @@ impl Provider {
     }
 
     fn from_builder(waker: Option<Arc<dyn NetWaker>>, builder: reqwest::ClientBuilder) -> Self {
-        let client = builder.build().unwrap();
+        // rust-browser patch: bound connect/request timeouts so stalled hosts don't hang forever.
+        let client = builder
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .timeout(std::time::Duration::from_secs(45))
+            .build()
+            .unwrap();
 
         #[cfg(feature = "cache")]
         let cache_manager = CACacheManager::new(get_cache_path(), true);
@@ -315,8 +320,6 @@ impl NetProvider for Provider {
                 Self::fetch_inner(client, request, per_host_limits).await
             };
 
-            waker.wake(doc_id);
-
             match result {
                 Ok((response_url, bytes)) => {
                     handler.bytes(response_url, bytes);
@@ -330,6 +333,10 @@ impl NetProvider for Provider {
                     let _ = e;
                 }
             };
+
+            // rust-browser patch: wake the document after delivering bytes (or dropping handler)
+            // so `doc.poll()` never misses the response channel message.
+            waker.wake(doc_id);
         });
     }
 }

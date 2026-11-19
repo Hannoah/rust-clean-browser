@@ -3,8 +3,8 @@
 
 use super::{BookmarkDrag, BrowserApp, TabDrag};
 use super::helpers::{
-    RESIZE_EDGE, focus_main_window, mouse_button, normalize_url_input, pointer_event, primary_modifier,
-    resize_cursor, wheel_delta,
+    RESIZE_EDGE, focus_main_window, is_primary_mouse_button_down, mouse_button, normalize_url_input,
+    pointer_event, primary_modifier, resize_cursor, wheel_delta,
 };
 use crate::chrome_ui::TITLEBAR_HEIGHT;
 use crate::events::{
@@ -30,6 +30,19 @@ impl BrowserApp {
     pub(super) fn handle_main_window_event(&mut self, event_loop: &dyn ActiveEventLoop, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => self.exit_app(event_loop),
+            WindowEvent::Focused(false) => {
+                self.buttons = MouseEventButtons::None;
+                self.tab_drag = None;
+                self.url_bar_select_all_on_click = None;
+                if let Some(drag) = self.bm_drag.take() {
+                    if drag.active {
+                        if let Some(win) = &self.window {
+                            win.set_cursor(Cursor::Icon(CursorIcon::Default));
+                        }
+                        self.rebuild_chrome();
+                    }
+                }
+            }
             WindowEvent::ThemeChanged(theme) => {
                 self.os_color_scheme = theme_to_color_scheme(theme);
                 self.apply_effective_color_scheme();
@@ -102,6 +115,18 @@ impl BrowserApp {
                 ..
             } => {
                 self.pointer_pos = position;
+                if (self.tab_drag.is_some() || self.bm_drag.is_some()) && !is_primary_mouse_button_down() {
+                    self.buttons &= !MouseEventButtons::from(MouseEventButton::Main);
+                    self.tab_drag = None;
+                    if let Some(drag) = self.bm_drag.take() {
+                        if drag.active {
+                            if let Some(win) = &self.window {
+                                win.set_cursor(Cursor::Icon(CursorIcon::Default));
+                            }
+                            self.rebuild_chrome();
+                        }
+                    }
+                }
                 let resize = self.resize_direction_at(position);
                 if resize != self.resize_hover {
                     self.resize_hover = resize;
@@ -212,7 +237,7 @@ impl BrowserApp {
                             doc.clear_focus();
                         }
                     }
-                    self.chrome_focused = in_chrome;
+                    self.chrome_focused = hit_url_bar;
                     if in_chrome {
                         self.last_chrome_click_x_logical = (position.x / (self.hidpi_scale.max(1.0) as f64)) as f32;
                     }
@@ -222,6 +247,7 @@ impl BrowserApp {
                     }
                     if btn == MouseEventButton::Main {
                         if hit_url_bar && !was_url_focused {
+                            self.suggest_query.clear();
                             self.url_bar_select_all_on_click = Some(position);
                             select_all_url_bar_now = true;
                         }
@@ -256,6 +282,12 @@ impl BrowserApp {
                     if let Some(drag) = self.bm_drag.take() {
                         if drag.active {
                             self.finish_bm_drag(drag, position);
+                            self.send_pointer_leave(
+                                button_source_to_blitz(&button),
+                                primary,
+                                position,
+                                in_chrome,
+                            );
                             return;
                         }
                     }
@@ -368,10 +400,12 @@ impl BrowserApp {
             KeyCode::KeyR => self.toggle_reader_mode(),
             KeyCode::Home => self.navigate_current("rust://home"),
             KeyCode::Enter | KeyCode::NumpadEnter if self.url_bar_focused() => {
-                if let Some(text) = self.read_url_bar_text() {
-                    let target = normalize_url_input(&text);
-                    self.close_popup();
-                    self.open_new_tab(&target);
+                if !self.suggest_open_new_tab() {
+                    if let Some(text) = self.read_url_bar_text() {
+                        let target = normalize_url_input(&text);
+                        self.close_popup();
+                        self.open_new_tab(&target);
+                    }
                 }
             }
             _ => return false,
@@ -418,7 +452,7 @@ impl BrowserApp {
             return false;
         }
         if self.chrome_focused {
-            if !self.url_bar_focused() {
+            if !self.url_bar_focused() || self.url_bar_composing() {
                 return false;
             }
             if let Some(text) = self.read_url_bar_text() {
@@ -466,7 +500,7 @@ impl BrowserApp {
         }
         let page_h = {
             let (_, ch) = self.content_phys_size();
-            ch as f64 / self.hidpi_scale as f64 / self.tabs[self.active_tab].zoom as f64
+            ch as f64 / self.hidpi_scale.max(1.0) as f64 / self.tabs[self.active_tab].zoom.max(0.1) as f64
         };
         let Some(doc) = &mut self.tabs[self.active_tab].doc else {
             return false;

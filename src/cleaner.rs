@@ -46,20 +46,44 @@ pub fn decode_html_bytes(bytes: &[u8]) -> String {
 
 fn sniff_meta_charset(head: &[u8]) -> Option<&'static encoding_rs::Encoding> {
     let lower = head.to_ascii_lowercase();
-    let mut from = 0;
-    while let Some(rel) = find_bytes(&lower[from..], b"charset") {
-        let mut i = from + rel + 7;
-        from = i;
-        while i < lower.len() && matches!(lower[i], b' ' | b'=' | b'"' | b'\'') {
-            i += 1;
+    let mut pos = 0;
+    while let Some(rel) = find_bytes(&lower[pos..], b"<meta") {
+        let after_name = pos + rel + 5;
+        pos = after_name;
+        if !lower.get(after_name).is_some_and(|b| b.is_ascii_whitespace() || *b == b'/') {
+            continue;
         }
-        let start = i;
-        while i < lower.len() && (lower[i].is_ascii_alphanumeric() || matches!(lower[i], b'-' | b'_')) {
+        let tag_end = find_bytes(&lower[after_name..], b">").map_or(lower.len(), |r| after_name + r);
+        pos = tag_end;
+        let tag = &lower[after_name..tag_end];
+        let mut from = 0;
+        while let Some(crel) = find_bytes(&tag[from..], b"charset") {
+            let cpos = from + crel;
+            let prev_ok = cpos == 0
+                || matches!(tag[cpos - 1], b' ' | b'\t' | b'\r' | b'\n' | b';' | b'"' | b'\'');
+            let mut i = cpos + 7;
+            from = i;
+            if !prev_ok {
+                continue;
+            }
+            while i < tag.len() && tag[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if tag.get(i) != Some(&b'=') {
+                continue;
+            }
             i += 1;
-        }
-        if i > start {
-            if let Some(enc) = encoding_rs::Encoding::for_label(&lower[start..i]) {
-                return Some(enc);
+            while i < tag.len() && matches!(tag[i], b' ' | b'\t' | b'"' | b'\'') {
+                i += 1;
+            }
+            let start = i;
+            while i < tag.len() && (tag[i].is_ascii_alphanumeric() || matches!(tag[i], b'-' | b'_')) {
+                i += 1;
+            }
+            if i > start {
+                if let Some(enc) = encoding_rs::Encoding::for_label(&tag[start..i]) {
+                    return Some(enc);
+                }
             }
         }
     }
@@ -86,11 +110,17 @@ pub fn process_fetched_document(bytes: &[u8], url: &str, strip_iframes: bool) ->
     if trimmed.is_empty() {
         return Err("빈 응답을 받았습니다.".to_string());
     }
+    let head_end = trimmed
+        .char_indices()
+        .take_while(|(idx, _)| *idx < 512)
+        .last()
+        .map_or(0, |(idx, ch)| idx + ch.len_utf8());
+    let head_lower = trimmed[..head_end].to_ascii_lowercase();
     let looks_like_html = trimmed.starts_with('<')
-        || trimmed.get(..512).is_some_and(|head| {
-            let h = head.to_ascii_lowercase();
-            h.contains("<!doctype") || h.contains("<html") || h.contains("<head") || h.contains("<body")
-        });
+        || head_lower.contains("<!doctype")
+        || head_lower.contains("<html")
+        || head_lower.contains("<head")
+        || head_lower.contains("<body");
     if looks_like_html {
         let spa = is_js_spa_shell(&text);
         Ok((strip_scripts_and_bloat(&text, strip_iframes), spa))
@@ -106,6 +136,81 @@ pub fn process_fetched_document(bytes: &[u8], url: &str, strip_iframes: bool) ->
     }
 }
 
+fn is_tag_boundary(b: Option<&u8>) -> bool {
+    b.is_some_and(|c| c.is_ascii_whitespace() || *c == b'>' || *c == b'/')
+}
+
+/// Scans from `from` (just after `<tag`) to the closing `>` of the opening tag, respecting quotes.
+/// Returns `(gt_index, is_self_closing)`.
+fn find_open_tag_end(bytes: &[u8], from: usize) -> Option<(usize, bool)> {
+    let mut i = from;
+    let mut quote: Option<u8> = None;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match quote {
+            Some(q) if b == q => quote = None,
+            Some(_) => {}
+            None if b == b'"' || b == b'\'' => quote = Some(b),
+            None if b == b'>' => {
+                // Trim whitespace before `>` to see if a `/` closes the tag; ignore `/` that ends
+                // an unquoted attribute token (e.g. `data-url=https://a.test/>`).
+                let mut end = i;
+                while end > from && bytes[end - 1].is_ascii_whitespace() {
+                    end -= 1;
+                }
+                let self_close = end > from
+                    && bytes[end - 1] == b'/'
+                    && (end - 1 == from
+                        || bytes[end - 2].is_ascii_whitespace()
+                        || matches!(bytes[end - 2], b'"' | b'\''));
+                return Some((i, self_close));
+            }
+            None => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn find_matching_close_tag(lower: &str, lb: &[u8], tag: &str, from: usize) -> usize {
+    let raw_text = matches!(tag, "script" | "style" | "noscript");
+    let open_pat = format!("<{tag}");
+    let close_pat = format!("</{tag}");
+    let mut scan = from;
+    let mut depth = 1usize;
+
+    while let Some(rel) = lower[scan..].find('<') {
+        let pos = scan + rel;
+        if lower[pos..].starts_with(&close_pat) && is_tag_boundary(lb.get(pos + close_pat.len())) {
+            let gt = lower[pos + close_pat.len()..]
+                .find('>')
+                .map_or(lower.len(), |r| pos + close_pat.len() + r + 1);
+            depth -= 1;
+            if depth == 0 || raw_text {
+                return gt;
+            }
+            scan = gt;
+            continue;
+        }
+        if !raw_text
+            && lower[pos..].starts_with(&open_pat)
+            && is_tag_boundary(lb.get(pos + open_pat.len()))
+        {
+            let after_open = pos + open_pat.len();
+            if let Some((te, self_close)) = find_open_tag_end(lb, after_open) {
+                if !self_close {
+                    depth += 1;
+                }
+                scan = te + 1;
+                continue;
+            }
+            return lower.len();
+        }
+        scan = pos + 1;
+    }
+    lower.len()
+}
+
 /// Removes `<tag ...>...</tag>` blocks for every tag in `tags` in a single pass.
 fn strip_tag_blocks(input: &str, tags: &[&str]) -> String {
     let lower = input.to_ascii_lowercase();
@@ -119,29 +224,22 @@ fn strip_tag_blocks(input: &str, tags: &[&str]) -> String {
         scan = start + 1;
         let Some(tag) = tags.iter().find(|t| {
             let after = start + 1 + t.len();
-            lower[start + 1..].starts_with(**t)
-                && lb.get(after).is_some_and(|b| b.is_ascii_whitespace() || *b == b'>' || *b == b'/')
+            lower[start + 1..].starts_with(**t) && is_tag_boundary(lb.get(after))
         }) else {
             continue;
         };
         let after_tag = start + 1 + tag.len();
         out.push_str(&input[cursor..start]);
 
-        let tag_end = lower[after_tag..].find('>').map(|r| after_tag + r);
-        if let Some(te) = tag_end {
-            if lower[after_tag..te].trim_end().ends_with('/') {
+        if let Some((te, self_close)) = find_open_tag_end(lb, after_tag) {
+            if self_close {
                 cursor = te + 1;
                 scan = cursor;
                 continue;
             }
-        }
-        let close_pat = format!("</{tag}");
-        match lower[after_tag..].find(&close_pat) {
-            Some(rel_close) => {
-                let close_start = after_tag + rel_close;
-                cursor = lower[close_start..].find('>').map_or(input.len(), |r| close_start + r + 1);
-            }
-            None => cursor = input.len(),
+            cursor = find_matching_close_tag(&lower, lb, tag, te + 1);
+        } else {
+            cursor = input.len();
         }
         scan = cursor;
         if cursor >= input.len() {
@@ -218,16 +316,27 @@ fn count_visible_text_chars(html: &str) -> usize {
 }
 
 pub fn extract_title(html: &str) -> Option<String> {
-    let lower = html.to_ascii_lowercase();
-    let start = lower.find("<title")?;
-    let gt = lower[start..].find('>')? + start + 1;
-    let end = lower[gt..].find("</title>")? + gt;
-    let raw = html[gt..end].trim();
-    if raw.is_empty() {
-        None
-    } else {
-        Some(decode_basic_entities(raw))
+    let stripped = strip_tag_blocks(html, &["script", "style", "svg"]);
+    let lower = stripped.to_ascii_lowercase();
+    let lb = lower.as_bytes();
+    let mut scan = 0;
+    while let Some(rel) = lower[scan..].find("<title") {
+        let start = scan + rel;
+        let after = start + 6;
+        if !is_tag_boundary(lb.get(after)) {
+            scan = after;
+            continue;
+        }
+        let gt = lower[after..].find('>')? + after + 1;
+        let end = lower[gt..].find("</title>")? + gt;
+        let raw = stripped[gt..end].trim();
+        return if raw.is_empty() {
+            None
+        } else {
+            Some(decode_basic_entities(raw))
+        };
     }
+    None
 }
 
 fn decode_basic_entities(s: &str) -> String {
@@ -301,10 +410,12 @@ pub fn build_reader_html_with_options(
     let title = extract_title(raw_html).unwrap_or_else(|| url.to_string());
     let cleaned = strip_tag_blocks(
         raw_html,
-        &["script", "style", "noscript", "nav", "aside", "footer", "header", "iframe", "form"],
+        &["script", "style", "noscript", "nav", "aside", "footer", "header", "iframe"],
     );
 
-    let body_fragment = extract_primary_fragment(&cleaned).to_string();
+    // Extract the primary content container before stripping `<form>` so outer wrapper forms
+    // (e.g. ASP.NET WebForms) do not wipe out `<article>`/`<main>`.
+    let body_fragment = strip_tag_blocks(extract_primary_fragment(&cleaned), &["form"]);
     let visible_chars = count_visible_text_chars(&body_fragment);
     let minutes = (visible_chars / 750).max(1);
     let host = url
@@ -508,16 +619,30 @@ pub fn build_reader_html_with_options(
 
 fn extract_primary_fragment(html: &str) -> &str {
     let lower = html.to_ascii_lowercase();
+    let lb = lower.as_bytes();
     for tag in ["<article", "<main", "<body"] {
-        if let Some(start) = lower.find(tag) {
-            if let Some(gt_rel) = lower[start..].find('>') {
-                let inner_start = start + gt_rel + 1;
+        let mut scan = 0;
+        while let Some(rel) = lower[scan..].find(tag) {
+            let start = scan + rel;
+            let after = start + tag.len();
+            if !is_tag_boundary(lb.get(after)) {
+                scan = after;
+                continue;
+            }
+            if let Some((gt, _)) = find_open_tag_end(lb, after) {
+                let inner_start = gt + 1;
                 let close_tag = format!("</{}", &tag[1..]);
-                if let Some(end_rel) = lower[inner_start..].rfind(&close_tag) {
-                    return &html[inner_start..inner_start + end_rel];
+                let mut end_search = &lower[inner_start..];
+                while let Some(end_rel) = end_search.rfind(&close_tag) {
+                    let abs_end = inner_start + end_rel;
+                    if is_tag_boundary(lb.get(abs_end + close_tag.len())) {
+                        return &html[inner_start..abs_end];
+                    }
+                    end_search = &end_search[..end_rel];
                 }
                 return &html[inner_start..];
             }
+            break;
         }
     }
     html
@@ -587,5 +712,33 @@ mod tests {
 
         let article_like = r#"<!doctype html><html><head><script src="a.js"></script></head><body><article><h1>Rust Browser</h1><p>This is a full server-rendered article with plenty of readable content and links.</p></article></body></html>"#;
         assert!(!is_js_spa_shell(article_like));
+    }
+
+    #[test]
+    fn ignores_charset_outside_meta_and_handles_short_and_nested_html() {
+        let utf8_with_script_charset = r#"<!doctype html><html><head><script src="legacy.js" charset="euc-kr"></script></head><body><h1>한글 정상 출력</h1></body></html>"#;
+        assert_eq!(decode_html_bytes(utf8_with_script_charset.as_bytes()), utf8_with_script_charset);
+
+        let short_prefixed = "  note <!DOCTYPE html><html><body><p>Hi</p></body></html>";
+        let (cleaned, _) = process_fetched_document(short_prefixed.as_bytes(), "https://a.test", true).unwrap();
+        assert!(!cleaned.contains("<pre>"), "short HTML with prefix must not become <pre>: {cleaned}");
+
+        let boundary_prefixed = format!(
+            "{}<!DOCTYPE html><html><body><p>OK {}</p></body></html>",
+            "가".repeat(150),
+            "가".repeat(20)
+        );
+        let (cleaned2, _) = process_fetched_document(boundary_prefixed.as_bytes(), "https://a.test", true).unwrap();
+        assert!(!cleaned2.contains("<pre>"));
+
+        let tricky_script = r#"<p>a</p><script data-url=https://a.test/>const x="</scripts>";secret();</script><p>b</p>"#;
+        assert_eq!(strip_scripts_and_bloat(tricky_script, true), "<p>a</p><p>b</p>");
+
+        let nested_and_wrapped = r#"<html><head><script>var t="<title>Fake</title>";</script><title>Real</title></head><body><header><header>inner</header>outer</header><form id="aspnetForm"><article-card>skip</article-card><main><p>Main body</p><form><input/></form></main></form></body></html>"#;
+        let reader = build_reader_html(nested_and_wrapped, "https://a.test");
+        assert!(reader.contains("Real") && !reader.contains("Fake"));
+        assert!(!reader.contains("outer") && !reader.contains("inner"));
+        assert!(!reader.contains("<form"));
+        assert!(reader.contains("Main body"));
     }
 }

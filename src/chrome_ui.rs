@@ -376,6 +376,8 @@ pub struct ChromeRenderState<'a> {
     pub tabs: &'a [Tab],
     pub active_idx: usize,
     pub bookmarks: &'a BookmarkStore,
+    pub can_back: bool,
+    pub can_forward: bool,
     pub working_set_mb: f64,
     pub blocked_count: usize,
     pub filter_enabled: bool,
@@ -506,8 +508,8 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
     h.push_str("</div>");
 
     // ── 2. Main Toolbar ──
-    let can_back = active.js_mode || !active.history_back.is_empty();
-    let can_forward = active.js_mode || !active.history_forward.is_empty();
+    let can_back = state.can_back;
+    let can_forward = state.can_forward;
     let is_bookmarked = state.bookmarks.contains_url(&active.url);
     let (lead_cls, lead_svg) = if active.url.starts_with("https://") {
         ("omni-lead secure", svg(Icon::Lock, 13))
@@ -523,6 +525,7 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
         None if active.url == "rust://home" => "",
         None => active.url.as_str(),
     };
+    let focus_key = if cfg!(target_os = "macos") { "⌘L" } else { "Ctrl+L" };
     let toolbar_cls = if state.show_bookmarks_bar { "toolbar" } else { "toolbar no-bm" };
     let _ = write!(
         h,
@@ -535,7 +538,7 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
 </div>
 <div id="omni-box" class="omni">
   <span class="{lead_cls}">{lead_svg}</span>
-  <input id="url-bar" type="text" value="{url_val}" placeholder="검색어 또는 URL 입력 (Ctrl+L · {palette_label} 명령)" />
+  <input id="url-bar" type="text" value="{url_val}" placeholder="검색어 또는 URL 입력 ({focus_key} · {palette_label} 명령)" />
   <div class="omni-end">"#,
         back_off = if can_back { "" } else { " off" },
         fwd_off = if can_forward { "" } else { " off" },
@@ -862,10 +865,7 @@ pub fn render_suggest_popup_html(rows: &[Suggestion], selected: usize, query: &s
                 (
                     favicon_html(&row.title, &row.url),
                     highlight_escaped(&truncate_chars(title, 46), query),
-                    highlight_escaped(
-                        &truncate_chars(row.url.trim_start_matches("https://"), 64),
-                        query,
-                    ),
+                    highlight_escaped(&truncate_chars(strip_url_scheme(&row.url), 64), query),
                     "badge tab",
                     "열린 탭",
                 )
@@ -875,10 +875,7 @@ pub fn render_suggest_popup_html(rows: &[Suggestion], selected: usize, query: &s
                 (
                     favicon_html(&row.title, &row.url),
                     highlight_escaped(&truncate_chars(title, 46), query),
-                    highlight_escaped(
-                        &truncate_chars(row.url.trim_start_matches("https://"), 64),
-                        query,
-                    ),
+                    highlight_escaped(&truncate_chars(strip_url_scheme(&row.url), 64), query),
                     "badge bm",
                     "북마크",
                 )
@@ -888,10 +885,7 @@ pub fn render_suggest_popup_html(rows: &[Suggestion], selected: usize, query: &s
                 (
                     favicon_html(&row.title, &row.url),
                     highlight_escaped(&truncate_chars(title, 46), query),
-                    highlight_escaped(
-                        &truncate_chars(row.url.trim_start_matches("https://"), 64),
-                        query,
-                    ),
+                    highlight_escaped(&truncate_chars(strip_url_scheme(&row.url), 64), query),
                     "badge",
                     "방문 기록",
                 )
@@ -1684,7 +1678,7 @@ pub fn render_history_page(history: &History, current_url: &str) -> String {
                 url = html_escape(&item.url),
                 fav = favicon_html(&item.title, &item.url),
                 title = html_escape(&truncate_chars(title, 44)),
-                url_short = html_escape(&truncate_chars(item.url.trim_start_matches("https://"), 44)),
+                url_short = html_escape(&truncate_chars(strip_url_scheme(&item.url), 44)),
                 cnt = item.count,
                 ago = format_relative_time(item.last),
             );
@@ -1795,20 +1789,73 @@ p { color: var(--text-2); font-size: 14px; line-height: 1.6; margin-bottom: 12px
 /// Highlights case-insensitive occurrences of `query` in `text` while HTML-escaping safely.
 fn highlight_escaped(text: &str, query: &str) -> String {
     let q = query.trim();
-    if q.is_empty() {
+    if q.is_empty() || text.is_empty() {
+        return html_escape(text);
+    }
+    let lower_q = q.to_lowercase();
+    if lower_q.is_empty() {
         return html_escape(text);
     }
     let lower_text = text.to_lowercase();
-    let lower_q = q.to_lowercase();
-    if lower_text.len() != text.len() || lower_q.is_empty() {
-        // Fallback when Unicode lowercasing shifts byte lengths (e.g. Turkish İ).
+    let ranges: Vec<(usize, usize)> = if lower_text.len() == text.len() {
+        let mut out = Vec::new();
+        let mut cursor = 0usize;
+        while let Some(rel) = lower_text[cursor..].find(&lower_q) {
+            let start = cursor + rel;
+            let end = start + lower_q.len();
+            if text.is_char_boundary(start) && text.is_char_boundary(end) {
+                out.push((start, end));
+            }
+            cursor = end.max(cursor + 1);
+        }
+        out
+    } else {
+        Vec::new()
+    };
+
+    let ranges = if !ranges.is_empty() || lower_text.len() == text.len() {
+        ranges
+    } else {
+        // Unicode fallback when `to_lowercase()` changes byte lengths (e.g. `İ` or `ẞ`).
+        let needle_chars: Vec<char> = lower_q.chars().collect();
+        let char_starts: Vec<(usize, char)> = text
+            .char_indices()
+            .flat_map(|(b, ch)| ch.to_lowercase().map(move |lc| (b, lc)))
+            .collect();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i + needle_chars.len() <= char_starts.len() {
+            let matched = char_starts[i..i + needle_chars.len()]
+                .iter()
+                .zip(&needle_chars)
+                .all(|((_, a), b)| a == b);
+            if matched {
+                let start = char_starts[i].0;
+                let end = if i + needle_chars.len() < char_starts.len() {
+                    char_starts[i + needle_chars.len()].0
+                } else {
+                    text.len()
+                };
+                if start < end && text.is_char_boundary(start) && text.is_char_boundary(end) {
+                    out.push((start, end));
+                }
+                i += needle_chars.len();
+            } else {
+                i += 1;
+            }
+        }
+        out
+    };
+
+    if ranges.is_empty() {
         return html_escape(text);
     }
     let mut out = String::with_capacity(text.len() + 32);
     let mut cursor = 0usize;
-    while let Some(rel) = lower_text[cursor..].find(&lower_q) {
-        let start = cursor + rel;
-        let end = start + lower_q.len();
+    for (start, end) in ranges {
+        if start < cursor {
+            continue;
+        }
         out.push_str(&html_escape(&text[cursor..start]));
         out.push_str(r#"<span class="hl">"#);
         out.push_str(&html_escape(&text[start..end]));
@@ -1817,6 +1864,12 @@ fn highlight_escaped(text: &str, query: &str) -> String {
     }
     out.push_str(&html_escape(&text[cursor..]));
     out
+}
+
+fn strip_url_scheme(url: &str) -> &str {
+    url.strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url)
 }
 
 fn format_relative_time(ts: u64) -> String {
@@ -1837,13 +1890,7 @@ fn format_relative_time(ts: u64) -> String {
 }
 
 fn short_host(url: &str) -> String {
-    let host = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .unwrap_or(url)
-        .split('/')
-        .next()
-        .unwrap_or("");
+    let host = strip_url_scheme(url).split('/').next().unwrap_or("");
     truncate_chars(host.strip_prefix("www.").unwrap_or(host), 18)
 }
 
@@ -1892,6 +1939,8 @@ mod tests {
             tabs: &tabs,
             active_idx: 0,
             bookmarks: &bm,
+            can_back: false,
+            can_forward: false,
             working_set_mb: 42.4,
             blocked_count: 7,
             filter_enabled: true,
@@ -1921,6 +1970,8 @@ mod tests {
             tabs: &tabs,
             active_idx: 0,
             bookmarks: &bm,
+            can_back: false,
+            can_forward: false,
             working_set_mb: 10.0,
             blocked_count: 0,
             filter_enabled: true,
@@ -2039,6 +2090,8 @@ mod tests {
             tabs: &[Tab::new(1, "https://rust-lang.org/".into())],
             active_idx: 0,
             bookmarks: &BookmarkStore::default(),
+            can_back: false,
+            can_forward: false,
             working_set_mb: 32.0,
             blocked_count: 5,
             filter_enabled: true,
@@ -2065,5 +2118,29 @@ mod tests {
         let url_size = cdoc.get_node(url_id).unwrap().final_layout().size;
         assert!(omni_size.width > 300.0 && omni_size.height >= 32.0, "omni={omni_size:?}");
         assert!(url_size.width > 200.0 && url_size.height >= 24.0, "url={url_size:?}");
+    }
+
+    #[test]
+    fn preserves_host_letters_and_unicode_highlights() {
+        let suggest = render_suggest_popup_html(
+            &[Suggestion {
+                url: "https://threads.net/@rust".into(),
+                title: "Threads".into(),
+                kind: SuggestKind::History,
+            }],
+            0,
+            "rust",
+        );
+        assert!(suggest.contains("— threads.net/@"), "{suggest}");
+        assert!(!suggest.contains("— reads.net"), "{suggest}");
+
+        let mut hist = History::load(None);
+        hist.record("https://twitch.tv/rust", "Twitch");
+        let hist_html = render_history_page(&hist, "rust://history");
+        assert!(hist_html.contains("twitch.tv"), "{hist_html}");
+
+        // Equal-byte-length net delta from `İ` (+1) and `ẞ` (-1) must not panic on non-char-boundaries.
+        let hl = highlight_escaped("İẞ Rust test", "rust");
+        assert!(hl.contains(r#"<span class="hl">Rust</span>"#), "{hl}");
     }
 }

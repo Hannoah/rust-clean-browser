@@ -111,9 +111,13 @@ impl PersistentCookieJar {
 
 impl reqwest::cookie::CookieStore for PersistentCookieJar {
     fn set_cookies(&self, headers: &mut dyn Iterator<Item = &http::HeaderValue>, url: &Url) {
-        let cookies = headers
+        let mut cookies = headers
             .filter_map(|v| v.to_str().ok())
-            .filter_map(|s| cookie_store::RawCookie::parse(s.to_owned()).ok());
+            .filter_map(|s| cookie_store::RawCookie::parse(s.to_owned()).ok())
+            .peekable();
+        if cookies.peek().is_none() {
+            return;
+        }
         if let Ok(mut store) = self.store.lock() {
             store.store_response_cookies(cookies, url);
             self.dirty.store(true, Ordering::Release);
@@ -273,6 +277,10 @@ mod tests {
         let header = header.to_str().unwrap();
         assert!(header.contains("user=abc") && header.contains("pref=dark"), "{header}");
         assert!(reloaded.cookies(&Url::parse("https://other.example.org/").unwrap()).is_none());
+        // Empty Set-Cookie iteration must not mark the jar dirty.
+        let jar2 = PersistentCookieJar::load(Some(path.clone()));
+        jar2.set_cookies(&mut std::iter::empty(), &url);
+        assert!(!jar2.dirty.load(Ordering::Acquire));
         let _ = std::fs::remove_file(path);
     }
 

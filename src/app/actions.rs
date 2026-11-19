@@ -131,9 +131,19 @@ impl BrowserApp {
                     if let Some(doc) = &mut self.tabs[self.active_tab].doc {
                         if doc.id() == doc_id {
                             doc.poll(None);
+                            self.request_redraw();
                         }
                     }
-                    self.request_redraw();
+                    if self.chrome_doc.id() == doc_id {
+                        self.chrome_doc.poll(None);
+                        self.request_redraw();
+                    }
+                    if let Some(popup) = &mut self.popup {
+                        if popup.doc.id() == doc_id {
+                            popup.doc.poll(None);
+                            popup.window.request_redraw();
+                        }
+                    }
                 }
                 AppEvent::PageLoaded {
                     tab_id,
@@ -145,7 +155,7 @@ impl BrowserApp {
                     is_spa_shell,
                     restore_scroll_y,
                 } => {
-                    if cacheable && !is_spa_shell {
+                    if cacheable && !is_spa_shell && !requires_js_engine(&final_url) {
                         let req_key = requested_url.split('#').next().unwrap_or(&requested_url);
                         let final_key = final_url.split('#').next().unwrap_or(&final_url);
                         self.page_cache.put(req_key, &final_url, &clean_html);
@@ -167,6 +177,7 @@ impl BrowserApp {
                         self.tabs[idx].is_loading = false;
                         self.set_status_note("Auto JS Mode (SPA)");
                         self.mount_or_navigate_webview(idx);
+                        self.sync_find_bar_after_doc_change();
                         self.rebuild_chrome();
                     } else if self.tabs[idx].revalidating {
                         // Background revalidation of a disk-cached page: only swap in
@@ -224,11 +235,19 @@ impl BrowserApp {
                         .as_ref()
                         .is_some_and(|d| d.id() == source_doc_id);
                     if from_active {
+                        let url_str = url.as_str();
+                        let is_builtin_action = url_str.starts_with("rust://reader-opt")
+                            || url_str.starts_with("rust://open-js")
+                            || (url_str.starts_with("rust://bookmarks?") && (url_str.contains("del=") || url_str.contains("sync=1")))
+                            || (url_str.starts_with("rust://history?") && (url_str.contains("del=") || url_str.contains("clear=1")));
                         // Ctrl+click opens a sleeping background tab (zero DOM memory until visited).
-                        if request.is_none() && primary_modifier(self.keyboard_modifiers.state()) {
-                            self.open_background_tab(url.as_str());
+                        if request.is_none()
+                            && !is_builtin_action
+                            && primary_modifier(self.keyboard_modifiers.state())
+                        {
+                            self.open_background_tab(url_str);
                         } else {
-                            self.navigate_with_request(url.as_str(), request);
+                            self.navigate_with_request(url_str, request);
                         }
                     }
                 }
@@ -251,8 +270,11 @@ impl BrowserApp {
                 } => {
                     if let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) {
                         self.tabs[idx].is_loading = !finished;
-                        if !url.is_empty() && url != "about:blank" {
+                        if !url.is_empty() && url != "about:blank" && self.tabs[idx].url != url {
                             self.tabs[idx].url = url;
+                            if !finished {
+                                self.tabs[idx].title = crate::tabs::short_title_for_url(&self.tabs[idx].url);
+                            }
                         }
                         if finished {
                             self.history.record(&self.tabs[idx].url, &self.tabs[idx].title);
@@ -263,7 +285,7 @@ impl BrowserApp {
                         self.rebuild_chrome();
                     }
                 }
-                AppEvent::OpenInNewTab(url) => self.open_new_tab(&url),
+                AppEvent::OpenInNewTab(url) => self.open_new_tab_inheriting_js(&url),
                 AppEvent::ChromeAction(action) => self.handle_chrome_action(&action, event_loop),
                 AppEvent::OpenBookmarkPopup {
                     key,

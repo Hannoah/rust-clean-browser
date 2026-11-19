@@ -339,7 +339,11 @@ fn mark_failed(key: &str) {
 fn looks_like_svg(bytes: &[u8]) -> bool {
     let head = String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]).to_ascii_lowercase();
     let head = head.trim_start_matches('\u{feff}').trim_start();
-    (head.starts_with("<svg") || head.starts_with("<?xml") || head.starts_with("<!--")) && head.contains("<svg")
+    (head.starts_with("<svg")
+        || head.starts_with("<?xml")
+        || head.starts_with("<!--")
+        || head.starts_with("<!doctype svg"))
+        && head.contains("<svg")
 }
 
 /// Stores an icon (SVG as-is; ICO/PNG/JPEG/GIF/WebP/BMP resized to 64px PNG).
@@ -442,6 +446,7 @@ mod tests {
         assert!(svg_url.ends_with(".svg") && !path.exists(), "svg replaces png");
         let _ = std::fs::remove_file(Url::parse(&svg_url).unwrap().to_file_path().unwrap());
         assert_eq!(store("bad.test", b"not an image"), None);
+        assert!(looks_like_svg(br#"<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" ""><svg/>"#));
     }
 
     #[test]
