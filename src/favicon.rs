@@ -231,12 +231,24 @@ pub fn pick_icon(links: &[Link], page: &Url) -> Option<Url> {
         let is_icon = rel.split_ascii_whitespace().any(|r| r == "icon");
         let touch = rel.split_ascii_whitespace().any(|r| r.starts_with("apple-touch-icon"));
         let href = link.href.trim().replace("&amp;", "&");
-        if !(is_icon || touch) || href.is_empty() || href.starts_with("data:") {
+        if !(is_icon || touch) || href.is_empty() {
+            continue;
+        }
+        // Only allow http(s) icon URLs; data:/javascript:/blob: are never fetched.
+        let h_lower = href.trim_start().to_ascii_lowercase();
+        if h_lower.starts_with("data:")
+            || h_lower.starts_with("javascript:")
+            || h_lower.starts_with("blob:")
+            || h_lower.starts_with("about:")
+        {
             continue;
         }
         let Ok(url) = page.join(&href) else {
             continue;
         };
+        if !matches!(url.scheme(), "http" | "https") {
+            continue;
+        }
         let svg = link.ty.contains("svg") || url.path().to_ascii_lowercase().ends_with(".svg");
         let size = link
             .sizes
@@ -346,11 +358,21 @@ fn looks_like_svg(bytes: &[u8]) -> bool {
         && head.contains("<svg")
 }
 
-/// Stores an icon (SVG as-is; ICO/PNG/JPEG/GIF/WebP/BMP resized to 64px PNG).
+/// Maximum icon download accepted (decompression-bomb guard).
+const MAX_ICON_BYTES: usize = 512 * 1024;
+
+/// Stores an icon (sanitized SVG; ICO/PNG/JPEG/GIF/WebP/BMP resized to 64px PNG).
 /// Returns `Some(changed)` on success, `None` if the bytes aren't a usable image.
 fn store(key: &str, bytes: &[u8]) -> Option<bool> {
+    if bytes.len() > MAX_ICON_BYTES {
+        return None;
+    }
     let (data, ext) = if looks_like_svg(bytes) {
-        (bytes.to_vec(), "svg")
+        if bytes.len() > 128 * 1024 {
+            return None;
+        }
+        let text = std::str::from_utf8(bytes).ok()?;
+        (crate::cleaner::sanitize_dangerous_attrs(text).into_bytes(), "svg")
     } else {
         let img = image::load_from_memory(bytes).ok()?;
         let img = if img.width() > ICON_PX || img.height() > ICON_PX {
@@ -369,7 +391,9 @@ fn store(key: &str, bytes: &[u8]) -> Option<bool> {
         return Some(false);
     }
     let _ = std::fs::create_dir_all(&dir);
-    std::fs::write(&path, &data).ok()?;
+    let tmp = dir.join(format!("{key}.{ext}.tmp"));
+    std::fs::write(&tmp, &data).ok()?;
+    std::fs::rename(&tmp, &path).ok()?;
     let other = if ext == "svg" { "png" } else { "svg" };
     let _ = std::fs::remove_file(dir.join(format!("{key}.{other}")));
     let _ = std::fs::remove_file(dir.join(format!("{key}.none")));

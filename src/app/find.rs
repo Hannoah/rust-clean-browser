@@ -99,11 +99,18 @@ impl BrowserApp {
             return;
         }
 
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
+        let t = self.anim_time();
         let found = self
             .tabs[self.active_tab]
             .doc
-            .as_ref()
-            .map(|doc| collect_doc_matches(doc, &text))
+            .as_mut()
+            .map(|doc| {
+                doc.resolve(t);
+                collect_doc_matches(doc, &text)
+            })
             .unwrap_or_default();
 
         let count = found.len();
@@ -175,8 +182,10 @@ impl BrowserApp {
         if let Some(wv) = &self.active_webview {
             let _ = wv.evaluate_script("window.getSelection()?.removeAllRanges();");
         }
-        if let Some(doc) = &mut self.tabs[self.active_tab].doc {
-            doc.clear_text_selection();
+        if self.active_tab < self.tabs.len() {
+            if let Some(doc) = &mut self.tabs[self.active_tab].doc {
+                doc.clear_text_selection();
+            }
         }
         self.close_popup();
         self.request_redraw();
@@ -208,9 +217,13 @@ impl BrowserApp {
             return;
         }
         let anim_time = self.anim_time();
-        let found = if let Some(doc) = &mut self.tabs[self.active_tab].doc {
-            doc.resolve(anim_time);
-            collect_doc_matches(doc, &query)
+        let found = if self.active_tab < self.tabs.len() {
+            if let Some(doc) = &mut self.tabs[self.active_tab].doc {
+                doc.resolve(anim_time);
+                collect_doc_matches(doc, &query)
+            } else {
+                Vec::new()
+            }
         } else {
             Vec::new()
         };
@@ -230,6 +243,9 @@ impl BrowserApp {
             Some(PopupKind::FindBar { matches, current, .. }) => matches.get(*current).copied(),
             _ => None,
         };
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
         if let Some(doc) = &mut self.tabs[self.active_tab].doc {
             if let Some(m) = target {
                 doc.set_text_selection(m.node_id, m.start, m.node_id, m.end);

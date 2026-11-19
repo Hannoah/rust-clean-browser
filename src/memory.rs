@@ -75,7 +75,17 @@ pub fn working_set_mb() -> f64 {
         .ok()
         .and_then(|s| s.split_whitespace().nth(1)?.parse::<f64>().ok())
         .unwrap_or(0.0);
-    resident_pages * 4096.0 / (1024.0 * 1024.0)
+    let page = unsafe { libc_page_size() }.max(4096) as f64;
+    resident_pages * page / (1024.0 * 1024.0)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+unsafe fn libc_page_size() -> i64 {
+    const SC_PAGESIZE: i32 = 30; // _SC_PAGESIZE on Linux
+    unsafe extern "C" {
+        fn sysconf(name: i32) -> i64;
+    }
+    unsafe { sysconf(SC_PAGESIZE) }
 }
 
 /// Ask Windows to reclaim freed heap pages from the process working set immediately

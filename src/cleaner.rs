@@ -17,7 +17,177 @@ pub fn html_escape(input: &str) -> String {
 /// bloated inline JS bundles never enter the DOM or allocate parser nodes.
 pub fn strip_scripts_and_bloat(html: &str, strip_iframes: bool) -> String {
     let tags: &[&str] = if strip_iframes { &["script", "iframe"] } else { &["script"] };
-    strip_large_comments(&strip_tag_blocks(html, tags), 256)
+    sanitize_dangerous_attrs(&strip_large_comments(&strip_tag_blocks(html, tags), 256))
+}
+
+/// Removes inline event-handler attributes (`on*`) and `javascript:` URLs from
+/// `href`/`src`/`action`/`xlink:href`, while leaving the rest of the markup intact.
+/// Tag-name stripping alone leaves `onerror`/`javascript:` payloads executable.
+pub fn sanitize_dangerous_attrs(html: &str) -> String {
+    let bytes = html.as_bytes();
+    let mut out = String::with_capacity(html.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            if let Some(rel) = bytes[i..].iter().position(|&b| b == b'>') {
+                if let Some(tag) = html.get(i..i + rel + 1) {
+                    out.push_str(&sanitize_tag(tag));
+                    i += rel + 1;
+                    continue;
+                }
+            }
+            // Unterminated `<`: copy the rest verbatim (safe direction).
+            out.push_str(&html[i..]);
+            break;
+        }
+        // Copy text up to the next `<` to preserve multi-byte UTF-8.
+        let next = bytes[i..].iter().position(|&b| b == b'<').map_or(bytes.len(), |r| i + r);
+        out.push_str(&html[i..next]);
+        i = next;
+    }
+    out
+}
+
+fn sanitize_tag(tag: &str) -> String {
+    let bytes = tag.as_bytes();
+    let mut out = String::with_capacity(tag.len());
+    let mut i = 0;
+    // Copy `<tagname` verbatim.
+    out.push('<');
+    i += 1;
+    while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>' && bytes[i] != b'/' {
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    loop {
+        // Copy whitespace.
+        let ws_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        out.push_str(&tag[ws_start..i]);
+        if i >= bytes.len() || bytes[i] == b'>' || bytes[i] == b'/' {
+            out.push_str(&tag[i..]);
+            break;
+        }
+        // Parse attribute name.
+        let name_start = i;
+        while i < bytes.len() && bytes[i] != b'=' && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>' && bytes[i] != b'/' {
+            i += 1;
+        }
+        let name = tag[name_start..i].to_ascii_lowercase();
+        // Skip whitespace before `=`.
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let mut value: Option<String> = None;
+        let mut raw_attr = tag[name_start..i].to_string();
+        if i < bytes.len() && bytes[i] == b'=' {
+            raw_attr.push('=');
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                raw_attr.push(tag.as_bytes()[i] as char);
+                i += 1;
+            }
+            if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
+                let q = bytes[i] as char;
+                raw_attr.push(q);
+                i += 1;
+                let v_start = i;
+                while i < bytes.len() && (bytes[i] as char) != q {
+                    i += 1;
+                }
+                value = Some(tag[v_start..i].to_string());
+                raw_attr.push_str(&tag[v_start..i]);
+                if i < bytes.len() {
+                    raw_attr.push(q);
+                    i += 1;
+                }
+            } else {
+                let v_start = i;
+                while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>' {
+                    i += 1;
+                }
+                value = Some(tag[v_start..i].to_string());
+                raw_attr.push_str(&tag[v_start..i]);
+            }
+        }
+        // Drop event handlers entirely.
+        if name.starts_with("on") && name.len() > 2 {
+            continue;
+        }
+        // Neutralize javascript:/data:-text/html URLs.
+        if matches!(name.as_str(), "href" | "src" | "action" | "xlink:href" | "formaction") {
+            if let Some(v) = &value {
+                let t = v.trim_start().to_ascii_lowercase();
+                if t.starts_with("javascript:") || t.starts_with("data:text/html") {
+                    continue;
+                }
+            }
+        }
+        out.push_str(&raw_attr);
+    }
+    out
+}
+
+/// Rewrites `http://` subresource/form URLs to `https://` on https pages
+/// (upgrade-insecure-requests lite). Plain hyperlinks (`<a href>`) are left alone
+/// so navigation targets never change; only `src`/`srcset`/`poster`/`data`,
+/// form `action`/`formaction`, and `<link href>` (stylesheets/icons) are upgraded.
+pub fn upgrade_mixed_content(html: &str, page_is_https: bool) -> String {
+    if !page_is_https || !html.contains("http://") {
+        return html.to_string();
+    }
+    const ATTRS: &[&str] = &["src", "srcset", "poster", "data", "action", "formaction"];
+    let bytes = html.as_bytes();
+    let mut out = String::with_capacity(html.len());
+    let mut pos = 0;
+    while let Some(rel) = html[pos..].find("http://") {
+        let abs = pos + rel;
+        let mut replaced = false;
+        // Must sit inside a tag: no `>` between the last `<` and here.
+        if let Some(tag_start) = html[..abs].rfind('<') {
+            if !html[tag_start..abs].contains('>') {
+                // Expect: attr-name WS* `=` WS* quote directly before `http://`.
+                let mut q = abs;
+                // step back over the quote
+                if q > 0 && (bytes[q - 1] == b'"' || bytes[q - 1] == b'\'') {
+                    q -= 1;
+                    while q > tag_start && bytes[q - 1].is_ascii_whitespace() {
+                        q -= 1;
+                    }
+                    if q > tag_start && bytes[q - 1] == b'=' {
+                        q -= 1;
+                        while q > tag_start && bytes[q - 1].is_ascii_whitespace() {
+                            q -= 1;
+                        }
+                        let name_end = q;
+                        while q > tag_start
+                            && !bytes[q - 1].is_ascii_whitespace()
+                            && bytes[q - 1] != b'<'
+                        {
+                            q -= 1;
+                        }
+                        let name = html[q..name_end].to_ascii_lowercase();
+                        let is_link_href =
+                            name == "href" && html[tag_start..abs].to_ascii_lowercase().starts_with("<link");
+                        if ATTRS.contains(&name.as_str()) || is_link_href {
+                            out.push_str(&html[pos..abs]);
+                            out.push_str("https://");
+                            pos = abs + "http://".len();
+                            replaced = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !replaced {
+            out.push_str(&html[pos..abs + "http://".len()]);
+            pos = abs + "http://".len();
+        }
+    }
+    out.push_str(&html[pos..]);
+    out
 }
 
 /// Decode a fetched document to UTF-8: BOM, then `<meta charset>` sniffing, then UTF-8,
@@ -123,7 +293,9 @@ pub fn process_fetched_document(bytes: &[u8], url: &str, strip_iframes: bool) ->
         || head_lower.contains("<body");
     if looks_like_html {
         let spa = is_js_spa_shell(&text);
-        Ok((strip_scripts_and_bloat(&text, strip_iframes), spa))
+        let cleaned = strip_scripts_and_bloat(&text, strip_iframes);
+        let cleaned = upgrade_mixed_content(&cleaned, url.starts_with("https://"));
+        Ok((cleaned, spa))
     } else {
         Ok((
             format!(
@@ -415,7 +587,8 @@ pub fn build_reader_html_with_options(
 
     // Extract the primary content container before stripping `<form>` so outer wrapper forms
     // (e.g. ASP.NET WebForms) do not wipe out `<article>`/`<main>`.
-    let body_fragment = strip_tag_blocks(extract_primary_fragment(&cleaned), &["form"]);
+    let body_fragment =
+        sanitize_dangerous_attrs(&strip_tag_blocks(extract_primary_fragment(&cleaned), &["form"]));
     let visible_chars = count_visible_text_chars(&body_fragment);
     let minutes = (visible_chars / 750).max(1);
     let host = url
@@ -669,6 +842,32 @@ mod tests {
         let (bare, _, _) = encoding_rs::EUC_KR.encode("<p>안녕하세요</p>");
         assert!(decode_html_bytes(&bare).contains("안녕하세요"));
         assert_eq!(decode_html_bytes("<p>é</p>".as_bytes()), "<p>é</p>");
+    }
+
+    #[test]
+    fn strips_event_handlers_and_javascript_urls() {
+        let raw = r#"<p>Hello</p><img src="x.png" onerror="alert(1)"><a href="javascript:alert(2)">x</a><a href="https://a.test">ok</a>"#;
+        let out = strip_scripts_and_bloat(raw, true);
+        assert!(!out.contains("onerror"));
+        assert!(!out.contains("javascript:"));
+        assert!(out.contains("https://a.test"));
+        // Multibyte text survives sanitization intact.
+        let kr = "<p>안녕하세요</p><img src=\"x.png\" onerror=\"alert(1)\">";
+        let kr_out = sanitize_dangerous_attrs(kr);
+        assert!(kr_out.contains("안녕하세요"));
+        assert!(!kr_out.contains("onerror"));
+    }
+
+    #[test]
+    fn upgrades_subresources_but_not_hyperlinks_on_https_pages() {
+        let raw = r#"<img src="http://a.test/i.png"><link rel="stylesheet" href="http://a.test/s.css"><form action="http://a.test/submit"><a href="http://a.test/page">x</a><p>http://a.test/text</p>"#;
+        let out = upgrade_mixed_content(raw, true);
+        assert!(out.contains(r#"src="https://a.test/i.png""#));
+        assert!(out.contains(r#"href="https://a.test/s.css""#));
+        assert!(out.contains(r#"action="https://a.test/submit""#));
+        assert!(out.contains(r#"<a href="http://a.test/page">"#));
+        assert!(out.contains("<p>http://a.test/text</p>"));
+        assert_eq!(upgrade_mixed_content(raw, false), raw);
     }
 
     #[test]

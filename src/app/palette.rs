@@ -25,7 +25,7 @@ impl BrowserApp {
         let items = self.build_palette_items("");
         let height = palette_height_for(&items);
         let scale = self.hidpi_scale.max(1.0) as f64;
-        let win_w = (self.win_size.width as f64 / scale).max(PALETTE_WIDTH as f64 + 16.0);
+        let win_w = (self.win_size.width as f64 / scale).max(336.0);
         let width = PALETTE_WIDTH.min((win_w - 16.0).round() as u32).max(320);
         let x = ((win_w - width as f64) * 0.5).max(8.0);
         let y = TITLEBAR_HEIGHT as f64 + 12.0;
@@ -231,6 +231,7 @@ impl BrowserApp {
             ("toggle-reader".into(), if active.reader_mode { "리더 모드 끄기" } else { "리더 모드 켜기" }, "방해 요소 없는 읽기 화면으로 전환", "Alt+R", PaletteIcon::Book, "reader article"),
             ("toggle-js".into(), if active.js_mode { "순수 Rust Clean 모드로 전환" } else { "JS 호환 모드 (WebView2)로 전환" }, "현재 탭의 렌더링 엔진 전환", "", PaletteIcon::Zap, "js webview blitz clean"),
             ("toggle-filter".into(), if self.net_provider.is_filter_enabled() { "트래커 차단 끄기" } else { "트래커 차단 켜기" }, "광고·추적 스크립트 및 iframe 차단 전환", "", PaletteIcon::Shield, "adblock tracker shield"),
+            ("toggle-https-only".into(), if self.prefs.https_only { "HTTPS-Only 끄기" } else { "HTTPS-Only 켜기" }, "http 주소를 https로 자동 업그레이드", "", PaletteIcon::Shield, "https tls secure upgrade"),
             ("toggle-bookmark".into(), if self.bookmarks.contains_url(&active.url) { "현재 페이지 북마크 해제" } else { "현재 페이지 북마크 추가" }, "개인 북마크에 저장/삭제", if is_mac { "⌘D" } else { "Ctrl+D" }, PaletteIcon::Bookmark, "bookmark star"),
             ("toggle-bm-bar".into(), if self.prefs.show_bookmarks_bar { "북마크 바 숨기기" } else { "북마크 바 표시하기" }, "상단 북마크 툴바 공간 전환", if is_mac { "⌘⇧B" } else { "Ctrl+Shift+B" }, PaletteIcon::Command, "bookmark bar toggle"),
             ("cycle-theme".into(), "테마 모드 전환", "시스템 / 라이트 / 다크 순환", "", PaletteIcon::Theme, "theme dark light mode"),

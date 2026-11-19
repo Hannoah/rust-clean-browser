@@ -3,6 +3,7 @@
 use super::helpers::{primary_modifier, requires_js_engine};
 use super::{AppEvent, BrowserApp};
 use crate::bookmarks::BookmarkRootKind;
+use crate::chrome_ui::short_host;
 use crate::favicon;
 use blitz_dom::Document;
 use winit::event_loop::ActiveEventLoop;
@@ -43,6 +44,7 @@ impl BrowserApp {
                 "forward" => self.history_step(true),
                 "reload" => self.reload_active_tab(),
                 "toggle-bookmark" => {
+                    self.ensure_active_valid();
                     let tab = &self.tabs[self.active_tab];
                     let added = self.bookmarks.toggle_custom(&tab.title, &tab.url);
                     self.set_status_note(if added { "북마크 추가됨" } else { "북마크 해제됨" });
@@ -56,6 +58,13 @@ impl BrowserApp {
                     self.set_status_note(if on { "트래커 차단 켜짐" } else { "트래커 차단 꺼짐" });
                     self.rebuild_chrome();
                 }
+                "toggle-https-only" => {
+                    self.prefs.https_only = !self.prefs.https_only;
+                    self.prefs.save();
+                    let on = self.prefs.https_only;
+                    self.set_status_note(if on { "HTTPS-Only 켜짐" } else { "HTTPS-Only 꺼짐" });
+                    self.rebuild_chrome();
+                }
                 "open-palette" => self.open_command_palette(event_loop),
                 "open-find" => self.open_find_bar(event_loop),
                 "cycle-theme" => self.cycle_theme(),
@@ -63,7 +72,11 @@ impl BrowserApp {
                 "trim-memory" => {
                     crate::memory::trim_process_working_set();
                     let mb = crate::memory::working_set_mb();
-                    self.set_status_note(&format!("메모리 정리됨 · {mb:.0} MB"));
+                    #[cfg(any(target_os = "windows", target_os = "macos"))]
+                    let msg = format!("메모리 정리됨 · {mb:.0} MB");
+                    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+                    let msg = format!("메모리 측정됨 · {mb:.0} MB (Linux 자동 회수)");
+                    self.set_status_note(&msg);
                     self.rebuild_chrome();
                 }
                 "dismiss-toast" => {
@@ -72,13 +85,17 @@ impl BrowserApp {
                     self.rebuild_chrome();
                 }
                 "reopen-tab" => self.reopen_closed_tab(),
-                "close-current-tab" => self.close_tab(self.active_tab, Some(event_loop)),
+                "close-current-tab" => {
+                    self.ensure_active_valid();
+                    self.close_tab(self.active_tab, Some(event_loop))
+                }
                 "sync-chrome" => {
                     let msg = match self.bookmarks.import_from_chrome() {
                         Ok(n) => format!("Chrome 북마크 {n}개 동기화"),
                         Err(e) => e,
                     };
                     self.set_status_note(&msg);
+                    self.ensure_active_valid();
                     let url = &self.tabs[self.active_tab].url;
                     if url.starts_with("rust://bookmarks") || url == "rust://home" {
                         self.load_active_tab(false, None);
@@ -119,6 +136,7 @@ impl BrowserApp {
             match ev {
                 AppEvent::Favicon(next) => {
                     self.favicon_inflight = false;
+                    self.favicon_abort = None;
                     match next {
                         favicon::Next::Done { changed } => favicons_changed |= changed,
                         favicon::Next::Then(job) => self.favicon_queue.push_front(job),
@@ -128,6 +146,7 @@ impl BrowserApp {
                     self.request_favicon_known(&page_url, &links);
                 }
                 AppEvent::RedrawDoc { doc_id } => {
+                    self.ensure_active_valid();
                     if let Some(doc) = &mut self.tabs[self.active_tab].doc {
                         if doc.id() == doc_id {
                             doc.poll(None);
@@ -165,8 +184,10 @@ impl BrowserApp {
                     }
                     #[cfg(debug_assertions)]
                     eprintln!("[event] PageLoaded tab={tab_id} seq={load_seq} spa={is_spa_shell} url={final_url}");
-                    let idx = self.active_tab;
-                    if self.tabs[idx].id != tab_id || self.tabs[idx].load_seq != load_seq {
+                    let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) else {
+                        continue;
+                    };
+                    if self.tabs[idx].load_seq != load_seq {
                         continue;
                     }
                     if (is_spa_shell || requires_js_engine(&final_url))
@@ -211,8 +232,10 @@ impl BrowserApp {
                 } => {
                     #[cfg(debug_assertions)]
                     eprintln!("[event] PageLoadFailed tab={tab_id} url={url} err={error}");
-                    let idx = self.active_tab;
-                    if self.tabs[idx].id != tab_id || self.tabs[idx].load_seq != load_seq {
+                    let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) else {
+                        continue;
+                    };
+                    if self.tabs[idx].load_seq != load_seq {
                         continue;
                     }
                     if self.tabs[idx].revalidating {
@@ -230,16 +253,29 @@ impl BrowserApp {
                     url,
                     request,
                 } => {
+                    self.ensure_active_valid();
                     let from_active = self.tabs[self.active_tab]
                         .doc
                         .as_ref()
                         .is_some_and(|d| d.id() == source_doc_id);
                     if from_active {
                         let url_str = url.as_str();
+                        // Page-initiated `file://` navigation outside our app-data dir is
+                        // blocked (local-file exfiltration lure). Typed address-bar
+                        // input still allows local files via `navigate_current`.
+                        if url.scheme() == "file" && !crate::net::is_app_data_file_url(&url) {
+                            self.set_status_note("차단됨: 페이지의 로컬 파일 접근");
+                            self.rebuild_chrome();
+                            continue;
+                        }
                         let is_builtin_action = url_str.starts_with("rust://reader-opt")
                             || url_str.starts_with("rust://open-js")
-                            || (url_str.starts_with("rust://bookmarks?") && (url_str.contains("del=") || url_str.contains("sync=1")))
-                            || (url_str.starts_with("rust://history?") && (url_str.contains("del=") || url_str.contains("clear=1")));
+                            || (url_str.starts_with("rust://bookmarks?")
+                                && (crate::chrome_ui::parse_query_param(url_str, "del").is_some()
+                                    || crate::chrome_ui::parse_query_param(url_str, "sync").as_deref() == Some("1")))
+                            || (url_str.starts_with("rust://history?")
+                                && (crate::chrome_ui::parse_query_param(url_str, "del").is_some()
+                                    || crate::chrome_ui::parse_query_param(url_str, "clear").as_deref() == Some("1")));
                         // Ctrl+click opens a sleeping background tab (zero DOM memory until visited).
                         if request.is_none()
                             && !is_builtin_action
@@ -286,6 +322,10 @@ impl BrowserApp {
                     }
                 }
                 AppEvent::OpenInNewTab(url) => self.open_new_tab_inheriting_js(&url),
+                AppEvent::DownloadBlocked(url) => {
+                    self.set_status_note(&format!("다운로드 차단됨: {}", short_host(&url)));
+                    self.rebuild_chrome();
+                }
                 AppEvent::ChromeAction(action) => self.handle_chrome_action(&action, event_loop),
                 AppEvent::OpenBookmarkPopup {
                     key,

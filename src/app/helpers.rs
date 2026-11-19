@@ -369,17 +369,23 @@ pub(super) fn normalize_url_input(raw: &str) -> String {
         return "rust://home".to_string();
     }
     let lower = trimmed.to_ascii_lowercase();
-    for scheme in ["rust://", "http://", "https://", "file://"] {
+    for scheme in ["http://", "https://", "file://"] {
         if lower.starts_with(scheme) {
             return format!("{scheme}{}", &trimmed[scheme.len()..]);
         }
     }
-    if lower.starts_with("about:")
-        || lower.starts_with("mailto:")
-        || lower.starts_with("javascript:")
-        || lower.starts_with("data:")
-    {
-        return trimmed.to_string();
+    if lower.starts_with("rust://") {
+        // Internal routes are matched case-sensitively; normalize the whole URL.
+        return lower;
+    }
+    // Dangerous or external-handler schemes never navigate directly:
+    // route them to web search instead of fetching them as documents.
+    // (about:/mailto:/javascript:/data: passthrough was an XSS/navigation bug.)
+    for scheme in ["about:", "mailto:", "javascript:", "data:", "tel:", "sms:"] {
+        if lower.starts_with(scheme) {
+            let encoded: String = url::form_urlencoded::byte_serialize(trimmed.as_bytes()).collect();
+            return format!("https://www.google.com/search?q={encoded}");
+        }
     }
     if !trimmed.contains(char::is_whitespace) {
         let host_part = trimmed.split(['/', '?', '#']).next().unwrap_or(trimmed);
@@ -423,7 +429,15 @@ mod tests {
         assert_eq!(normalize_url_input("HTTPS://Example.COM/Path"), "https://Example.COM/Path");
         assert_eq!(normalize_url_input("localhost:3000"), "http://localhost:3000");
         assert_eq!(normalize_url_input("127.0.0.1:8080/api"), "http://127.0.0.1:8080/api");
-        assert_eq!(normalize_url_input("mailto:a@b.com"), "mailto:a@b.com");
+        assert_eq!(
+            normalize_url_input("mailto:a@b.com"),
+            "https://www.google.com/search?q=mailto%3Aa%40b.com"
+        );
+        assert_eq!(normalize_url_input("RUST://BOOKMARKS"), "rust://bookmarks");
+        assert_eq!(
+            normalize_url_input("javascript:alert(1)"),
+            "https://www.google.com/search?q=javascript%3Aalert%281%29"
+        );
         assert_eq!(
             normalize_url_input("rust browser engine"),
             "https://www.google.com/search?q=rust+browser+engine"

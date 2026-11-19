@@ -140,7 +140,6 @@ impl History {
         if self.unsaved == 0 {
             return;
         }
-        self.unsaved = 0;
         let Some(path) = &self.path else {
             return;
         };
@@ -151,8 +150,11 @@ impl History {
             return;
         };
         let tmp = path.with_extension("tmp");
-        if std::fs::write(&tmp, json).is_ok() {
-            let _ = std::fs::rename(&tmp, path);
+        if std::fs::write(&tmp, json).is_err() {
+            return;
+        }
+        if std::fs::rename(&tmp, path).is_ok() {
+            self.unsaved = 0;
         }
     }
 

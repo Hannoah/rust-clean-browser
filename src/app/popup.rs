@@ -392,6 +392,17 @@ impl BrowserApp {
             }
         } else if let Some(rest) = action.strip_prefix("popup-enter:") {
             if let Ok(idx) = rest.parse::<usize>() {
+                let valid = match self.popup.as_ref().map(|p| &p.kind) {
+                    Some(PopupKind::Bookmarks { root, path, .. }) => self
+                        .bookmarks
+                        .resolve_folder(*root, path)
+                        .is_some_and(|(_, nodes)| idx < nodes.len()),
+                    Some(PopupKind::Suggest { rows, .. }) => idx < rows.len(),
+                    _ => false,
+                };
+                if !valid {
+                    return;
+                }
                 if let Some(PopupKind::Bookmarks { path, selected, .. }) =
                     self.popup.as_mut().map(|p| &mut p.kind)
                 {

@@ -67,6 +67,7 @@ impl Tab {
         }
         self.is_loading = false;
         self.revalidating = false;
+        self.pending_request = None;
     }
 
     /// Release DOM, layout trees, and raw HTML when this tab becomes inactive.

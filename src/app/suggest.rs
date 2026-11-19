@@ -26,6 +26,11 @@ impl BrowserApp {
             return;
         };
         let query = text.trim().to_string();
+        // While composing (IME preedit), don't touch suggest_query: the committed
+        // text would otherwise equal the preedit snapshot and hit the early-return below.
+        if self.url_bar_composing() {
+            return;
+        }
         if query == self.suggest_query {
             return; // caret movement etc.
         }
@@ -54,13 +59,14 @@ impl BrowserApp {
                 matches.push(s);
             }
         }
-        matches.truncate(MAX_MATCHES);
+        matches.truncate(MAX_MATCHES.saturating_sub(1));
         let typed = Suggestion {
             url: normalize_url_input(&query),
             title: query.clone(),
             kind: SuggestKind::Typed,
         };
         matches.retain(|m| m.url != typed.url);
+        matches.truncate(MAX_MATCHES.saturating_sub(1));
         if query.is_empty() || matches.is_empty() {
             if self.suggest_open() {
                 self.close_popup();

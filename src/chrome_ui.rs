@@ -1,7 +1,7 @@
 use crate::bookmarks::{BookmarkItem, BookmarkNode, BookmarkRootKind, BookmarkStore, count_urls, parse_folder_spec};
 use crate::cleaner::html_escape;
 use crate::history::{History, HistoryItem, SuggestKind, Suggestion};
-use crate::icons::{Icon, brand_emblem_svg, error_emblem_svg, svg, svg_colored};
+use crate::icons::{Icon, brand_emblem_svg, error_emblem_svg, svg};
 use crate::prefs::ThemePreference;
 use crate::tabs::Tab;
 use std::fmt::Write;
@@ -50,9 +50,6 @@ const THEME_CSS: &str = r#"
   --amber: #b45309;
   --amber-bg: #fef3c7;
   --amber-text: #78350f;
-  --indigo: #4f46e5;
-  --indigo-bg: #e0e7ff;
-  --indigo-text: #312e81;
   --hover: rgba(15, 23, 42, 0.055);
   --press: rgba(15, 23, 42, 0.11);
   --danger: #dc2626;
@@ -85,9 +82,6 @@ const THEME_CSS: &str = r#"
     --amber: #fbbf24;
     --amber-bg: #3b2a0d;
     --amber-text: #fde68a;
-    --indigo: #a5b4fc;
-    --indigo-bg: #252754;
-    --indigo-text: #e0e7ff;
     --hover: rgba(255, 255, 255, 0.075);
     --press: rgba(255, 255, 255, 0.14);
     --danger: #f87171;
@@ -117,6 +111,13 @@ kbd {
   color: var(--text-2); background: var(--surface-3);
   border: 1px solid var(--border);
   box-shadow: inset 0 -1px 0 var(--border);
+}
+a:focus-visible, .ib:focus-visible, .tile:focus-visible, .btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
 "#;
 
@@ -169,7 +170,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--fram
   font-size: 9.5px; font-weight: 700; padding: 1px 4px;
   border-radius: 4px; flex-shrink: 0; letter-spacing: 0.02em;
 }
-.tab-badge.js { background: var(--indigo-bg); color: var(--indigo); }
+.tab-badge.js { background: var(--accent-bg); color: var(--accent-text); }
 .tab-badge.reader { background: var(--green-bg); color: var(--green); }
 .tab-close {
   display: flex; align-items: center; justify-content: center;
@@ -275,7 +276,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--fram
 }
 .pill:hover { background: var(--omni-hover); color: var(--text); border-color: var(--border); }
 .pill.clean { background: var(--green-bg); color: var(--green-text); border-color: transparent; }
-.pill.js { background: var(--indigo-bg); color: var(--indigo-text); border-color: transparent; }
+.pill.js { background: var(--accent-bg); color: var(--accent-text); border-color: transparent; }
 .pill.shield-on { color: var(--green); }
 .pill.toast {
   background: var(--accent-bg); color: var(--accent-text);
@@ -326,7 +327,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--fram
 }
 "#;
 
-const CUSTOM_WINDOW_CONTROLS: bool = cfg!(target_os = "windows");
+const CUSTOM_WINDOW_CONTROLS: bool = cfg!(target_os = "windows") || cfg!(target_os = "linux");
 const TRAFFIC_LIGHT_INSET: u32 = if cfg!(target_os = "macos") { 78 } else { 8 };
 
 #[cfg(test)]
@@ -418,7 +419,10 @@ fn favicon_html(title: &str, url: &str) -> String {
 }
 
 pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
-    let active = &state.tabs[state.active_idx];
+    let active = state.tabs.get(state.active_idx).or_else(|| state.tabs.first());
+    let Some(active) = active else {
+        return "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body></body></html>".to_string();
+    };
     let sleeping_count = state
         .tabs
         .iter()
@@ -511,7 +515,10 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
     let can_back = state.can_back;
     let can_forward = state.can_forward;
     let is_bookmarked = state.bookmarks.contains_url(&active.url);
-    let (lead_cls, lead_svg) = if active.url.starts_with("https://") {
+    let idn_suspicious = is_suspicious_host(&active.url);
+    let (lead_cls, lead_svg) = if idn_suspicious {
+        ("omni-lead warn", svg(Icon::AlertTriangle, 13))
+    } else if active.url.starts_with("https://") {
         ("omni-lead secure", svg(Icon::Lock, 13))
     } else if active.url.starts_with("rust://") {
         ("omni-lead internal", svg(Icon::Compass, 14))
@@ -537,7 +544,7 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
   <div class="ib" data-action="nav:rust://home">{home}</div>
 </div>
 <div id="omni-box" class="omni">
-  <span class="{lead_cls}">{lead_svg}</span>
+  <span class="{lead_cls}"{lead_tip}>{lead_svg}</span>
   <input id="url-bar" type="text" value="{url_val}" placeholder="검색어 또는 URL 입력 ({focus_key} · {palette_label} 명령)" />
   <div class="omni-end">"#,
         back_off = if can_back { "" } else { " off" },
@@ -547,6 +554,11 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
         reload = svg(if active.is_loading { Icon::Stop } else { Icon::Reload }, 14),
         home = svg(Icon::Home, 14),
         url_val = html_escape(url_val),
+        lead_tip = if idn_suspicious {
+            " title=\"도메인에 서로 다른 문자 체계가 섞여 있습니다. 피싱 사이트일 수 있으니 주의하세요.\""
+        } else {
+            ""
+        },
     );
 
     if (active.zoom - 1.0).abs() > 0.001 {
@@ -800,7 +812,9 @@ pub fn render_bookmark_popup_html(
 
 /// Address-bar suggestion dropdown height: 38px rows + padding + 30px footer hint.
 pub fn suggest_popup_height(rows: usize) -> u32 {
-    (rows as u32) * 38 + 12 + 30
+    // Clamp like estimate_popup_height so a full suggestion list can't overflow the screen.
+    let rows = rows.min(7);
+    ((rows as u32) * 38 + 12 + 30).clamp(80, 480)
 }
 
 const SUGGEST_CSS: &str = r#"
@@ -1088,7 +1102,7 @@ pub fn render_find_bar_html(query: &str, count_label: &str, no_match: bool) -> S
 pub fn render_link_preview_html(url: &str) -> String {
     let secure = url.starts_with("https://");
     let ico = if secure {
-        svg_colored(Icon::Lock, 12, "#0f8a5f")
+        svg(Icon::Lock, 12)
     } else {
         svg(Icon::ExternalLink, 12)
     };
@@ -1104,8 +1118,9 @@ html, body {{ width: 100%; height: 100%; overflow: hidden; background: transpare
 }}
 .url {{ overflow: hidden; color: var(--text); }}
 .hint {{ color: var(--text-3); font-size: 10.5px; margin-left: 4px; flex-shrink: 0; }}
-</style></head><body><div class="pill">{ico}<span class="url">{u}</span><span class="hint">Ctrl+클릭 새 탭</span></div></body></html>"#,
+</style></head><body><div class="pill">{ico}<span class="url">{u}</span><span class="hint">{hint}</span></div></body></html>"#,
         u = html_escape(&truncate_chars(url, 72)),
+        hint = if cfg!(target_os = "macos") { "⌘+클릭 새 탭" } else { "Ctrl+클릭 새 탭" },
     )
 }
 
@@ -1202,6 +1217,7 @@ pub fn render_home_page(
     tab_count: usize,
     unloaded_count: usize,
     blocked_count: usize,
+    degraded_count: usize,
     dark_mode: bool,
 ) -> String {
     let mut tiles = String::new();
@@ -1223,8 +1239,9 @@ pub fn render_home_page(
         };
         let _ = write!(
             tiles,
-            r#"<a class="tile" href="{url}">{icon}<span class="tile-t">{title}</span><span class="tile-d">{domain}</span></a>"#,
+            r#"<a class="tile" href="{url}" title="{full}">{icon}<span class="tile-t">{title}</span><span class="tile-d">{domain}</span></a>"#,
             url = html_escape(&item.url),
+            full = html_escape(&format!("{} — {}", item.title, item.url)),
             title = html_escape(&truncate_chars(&item.title, 14)),
             domain = html_escape(&short_host(&item.url)),
         );
@@ -1240,7 +1257,8 @@ pub fn render_home_page(
             let (initial, color) = monogram_badge(title, url);
             let _ = write!(
                 tiles,
-                r#"<a class="tile" href="{url}"><span class="tile-ic" style="background:{color}">{initial}</span><span class="tile-t">{title}</span><span class="tile-d">{domain}</span></a>"#,
+                r#"<a class="tile" href="{url}" title="{full}"><span class="tile-ic" style="background:{color}">{initial}</span><span class="tile-t">{title}</span><span class="tile-d">{domain}</span></a>"#,
+                full = html_escape(&format!("{title} — {url}")),
                 domain = html_escape(&short_host(url)),
             );
         }
@@ -1303,6 +1321,7 @@ pub fn render_home_page(
       <div class="stat-box"><div class="stat-k">절전 / 전체 탭</div><div class="stat-v num">{unloaded_count} / {tab_count}</div></div>
       <div class="stat-box"><div class="stat-k">차단된 트래커</div><div class="stat-v num">{blocked_count}</div></div>
       <div class="stat-box"><div class="stat-k">방문 기록</div><div class="stat-v num">{hist_count}</div></div>
+      <div class="stat-box"><div class="stat-k">불완전 로드</div><div class="stat-v num">{degraded_count}</div></div>
     </div>
     <div class="mem-meter">
       <div class="mem-top"><span>일반 브라우저(450 MB) 대비</span><span class="num">{working_set_mb:.0} MB 사용 중</span></div>
@@ -1335,6 +1354,7 @@ pub fn render_home_page(
         hist_ico = svg(Icon::History, 16),
         bm_count = bookmarks.total_count(),
         hist_count = history.len(),
+        degraded_count = degraded_count,
     );
     if cfg!(target_os = "macos") {
         h.replace("Ctrl+", "⌘").replace("⌘Tab", "Ctrl+Tab").replace("⌘클릭", "⌘+클릭")
@@ -1722,6 +1742,29 @@ fn kind_prefix(kind: BookmarkRootKind) -> &'static str {
     }
 }
 
+/// True when a host looks like an IDN homograph lure: punycode labels or mixed
+/// Latin + Cyrillic/Greek/fullwidth characters (e.g. `аpple.com` in Cyrillic).
+/// Pure non-Latin hosts (e.g. 한글 도메인) are NOT flagged.
+pub(crate) fn is_suspicious_host(url: &str) -> bool {
+    // Use the raw host text: `Url` normalizes IDNs to punycode, which would
+    // flag every legitimate non-Latin domain (e.g. 한글.kr -> xn--...).
+    let after_scheme = url.split("://").nth(1).unwrap_or(url);
+    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority.rsplit('@').next().unwrap_or("");
+    let host = host_port.split(':').next().unwrap_or("");
+    if host.is_empty() {
+        return false;
+    }
+    if host.to_ascii_lowercase().split('.').any(|label| label.starts_with("xn--")) {
+        return true;
+    }
+    let has_latin = host.chars().any(|c| c.is_ascii_alphabetic());
+    let has_lookalike = host.chars().any(|c| {
+        matches!(c, '\u{0400}'..='\u{04FF}' | '\u{0370}'..='\u{03FF}' | '\u{FF00}'..='\u{FFEF}')
+    });
+    has_latin && has_lookalike
+}
+
 pub fn parse_query_param(url: &str, key: &str) -> Option<String> {
     let (_, query) = url.split_once('?')?;
     let query = query.split('#').next().unwrap_or(query);
@@ -1889,14 +1932,15 @@ fn format_relative_time(ts: u64) -> String {
     }
 }
 
-fn short_host(url: &str) -> String {
+pub(crate) fn short_host(url: &str) -> String {
     let host = strip_url_scheme(url).split('/').next().unwrap_or("");
     truncate_chars(host.strip_prefix("www.").unwrap_or(host), 18)
 }
 
 fn monogram_badge(title: &str, url: &str) -> (char, &'static str) {
+    // Brand-cohesive badge hues: browser blue, shield teal/green, warm amber, slate.
     const PALETTE: &[&str] = &[
-        "#1b6ef3", "#0f8a5f", "#d97706", "#7c3aed", "#db2777", "#0891b2", "#dc2626", "#4f46e5",
+        "#1b6ef3", "#0f8a5f", "#0891b2", "#1d4ed8", "#0d9488", "#b45309", "#475569", "#0369a1",
     ];
     let host = short_host(url);
     let source = if !host.is_empty() { host.as_str() } else { title };
@@ -1922,6 +1966,15 @@ pub fn truncate_chars(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flags_idn_homographs_but_not_pure_hangul_hosts() {
+        assert!(is_suspicious_host("https://xn--pple-43d.com/"));
+        assert!(is_suspicious_host("https://\u{0430}pple.com/")); // Cyrillic а + latin
+        assert!(!is_suspicious_host("https://www.rust-lang.org/"));
+        assert!(!is_suspicious_host("https://한글.kr/"));
+        assert!(!is_suspicious_host("rust://home"));
+    }
 
     #[test]
     fn maps_fluent_icon_entities_to_unicode() {
@@ -2017,7 +2070,7 @@ mod tests {
         let bm = BookmarkStore::default();
         let mut hist = History::load(None);
         hist.record("https://doc.rust-lang.org/book/", "The Rust Programming Language");
-        let home = render_home_page(&bm, &hist, 38.0, 3, 2, 14, true);
+        let home = render_home_page(&bm, &hist, 38.0, 3, 2, 14, 1, true);
         assert!(home.contains("The Rust Programming Language"));
         assert!(home.contains("38 MB"));
 

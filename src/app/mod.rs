@@ -98,6 +98,8 @@ pub enum AppEvent {
         finished: bool,
     },
     OpenInNewTab(String),
+    /// A WebView download was denied for lack of a consent UI.
+    DownloadBlocked(String),
     /// A queued favicon fetch finished.
     Favicon(favicon::Next),
     /// `<link>`s of the page shown in the JS-mode WebView.
@@ -162,6 +164,7 @@ pub struct BrowserApp {
     /// Pending favicon downloads, fetched one at a time while no page is loading.
     favicon_queue: VecDeque<favicon::Job>,
     favicon_inflight: bool,
+    favicon_abort: Option<AbortController>,
 
     win_size: PhysicalSize<u32>,
     hidpi_scale: f32,
@@ -263,6 +266,7 @@ impl BrowserApp {
             page_cache: DiskPageCache::new(crate::bookmarks::app_data_dir().map(|p| p.join("pages"))),
             favicon_queue: VecDeque::new(),
             favicon_inflight: false,
+            favicon_abort: None,
             win_size: PhysicalSize::new(1280, 820),
             hidpi_scale: 1.0,
             os_color_scheme: ColorScheme::Light,
@@ -307,6 +311,16 @@ impl BrowserApp {
         winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state())
     }
 
+    fn ensure_active_valid(&mut self) {
+        if self.tabs.is_empty() {
+            self.tabs.push(Tab::new(self.next_tab_id, "rust://home".to_string()));
+            self.next_tab_id += 1;
+            self.active_tab = 0;
+        } else if self.active_tab >= self.tabs.len() {
+            self.active_tab = self.tabs.len() - 1;
+        }
+    }
+
     pub(super) fn chrome_height(&self) -> u32 {
         chrome_height(self.prefs.show_bookmarks_bar)
     }
@@ -325,6 +339,7 @@ impl BrowserApp {
 
     pub(super) fn apply_effective_color_scheme(&mut self) {
         self.color_scheme = self.effective_color_scheme();
+        self.ensure_active_valid();
         let tab = &self.tabs[self.active_tab];
         if tab.url.starts_with("rust://") {
             let scroll = self.current_scroll_y();
@@ -404,6 +419,7 @@ impl BrowserApp {
 
     /// Re-applies size / scale / colour scheme to the chrome, the page and the WebView.
     fn sync_viewports(&mut self) {
+        self.ensure_active_valid();
         let chrome_vp = self.chrome_viewport();
         self.chrome_doc.set_viewport(chrome_vp);
         let content_vp = self.content_viewport(self.tabs[self.active_tab].zoom);
@@ -453,6 +469,12 @@ impl BrowserApp {
     }
 
     fn pump_favicons(&mut self) {
+        self.ensure_active_valid();
+        // Watchdog: if a previous fetch never called back, don't stall the queue forever.
+        if self.favicon_inflight && self.favicon_queue.len() > 32 {
+            self.favicon_inflight = false;
+            self.favicon_abort = None;
+        }
         if self.favicon_inflight || self.tabs[self.active_tab].is_loading {
             return;
         }
@@ -461,7 +483,11 @@ impl BrowserApp {
         };
         self.favicon_inflight = true;
         let (bus_ok, bus_fail) = (self.bus.clone(), self.bus.clone());
-        let signal = AbortController::default().signal;
+        // Keep the controller alive for the fetch lifetime; dropping it
+        // mid-fetch could cancel the signal on some providers.
+        let abort = AbortController::default();
+        let signal = abort.signal.clone();
+        self.favicon_abort = Some(abort);
         match job {
             favicon::Job::Page { key, url } => {
                 let (key2, url2) = (key.clone(), url.clone());
@@ -887,7 +913,13 @@ impl ApplicationHandler for BrowserApp {
                 .with_min_surface_size(LogicalSize::new(520.0, 360.0))
                 .with_surface_size(LogicalSize::new(1280.0, 820.0))
                 .with_window_icon(app_icon());
-            let win: Arc<dyn Window> = Arc::from(event_loop.create_window(main_window_style(attrs)).unwrap());
+            let win: Arc<dyn Window> = match event_loop.create_window(main_window_style(attrs)) {
+                Ok(w) => Arc::from(w),
+                Err(e) => {
+                    eprintln!("[winit] create_window failed: {e}");
+                    return;
+                }
+            };
             bus::enable_window_ime(&*win);
             self.maximized = win.is_maximized();
             self.hidpi_scale = win.scale_factor() as f32;

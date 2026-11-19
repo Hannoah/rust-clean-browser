@@ -52,6 +52,22 @@ const BLOCKED_TRACKER_DOMAINS: &[&str] = &[
     "fullstory.com",
 ];
 
+/// True when a `file://` URL points inside our own app-data dir (favicon cache, etc.).
+pub(crate) fn is_app_data_file_url(url: &Url) -> bool {
+    let Ok(path) = url.to_file_path() else {
+        return false;
+    };
+    // Reject `..` escapes: `starts_with` is component-wise and would otherwise
+    // still match `base/../elsewhere`.
+    if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return false;
+    }
+    let Some(base) = crate::bookmarks::app_data_dir() else {
+        return false;
+    };
+    path.starts_with(base)
+}
+
 pub fn is_blocked_url(url: &Url) -> bool {
     let Some(host) = url.host_str() else {
         return false;
@@ -90,7 +106,7 @@ impl PersistentCookieJar {
         let Some(path) = &self.path else {
             return;
         };
-        if !self.dirty.swap(false, Ordering::AcqRel) {
+        if !self.dirty.load(Ordering::Acquire) {
             return;
         }
         let mut buf = Vec::new();
@@ -98,13 +114,19 @@ impl PersistentCookieJar {
             if cookie_store::serde::json::save_incl_expired_and_nonpersistent(&store, &mut buf).is_err() {
                 return;
             }
+        } else {
+            return;
         }
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
         let tmp = path.with_extension("tmp");
-        if std::fs::write(&tmp, &buf).is_ok() {
-            let _ = std::fs::rename(&tmp, path);
+        if std::fs::write(&tmp, &buf).is_err() {
+            return;
+        }
+        if std::fs::rename(&tmp, path).is_ok() {
+            // Only clear dirty after the data actually reached disk.
+            self.dirty.store(false, Ordering::Release);
         }
     }
 }
@@ -126,22 +148,34 @@ impl reqwest::cookie::CookieStore for PersistentCookieJar {
 
     fn cookies(&self, url: &Url) -> Option<http::HeaderValue> {
         let store = self.store.lock().ok()?;
-        let header = store
-            .get_request_values(url)
-            .map(|(name, value)| format!("{name}={value}"))
-            .collect::<Vec<_>>()
-            .join("; ");
-        if header.is_empty() {
-            None
-        } else {
-            http::HeaderValue::from_str(&header).ok()
+        // Drop only the offending pair instead of the whole header when one
+        // value contains characters illegal in a HeaderValue.
+        let mut pairs: Vec<String> = Vec::new();
+        for (name, value) in store.get_request_values(url) {
+            let pair = format!("{name}={value}");
+            if http::HeaderValue::from_str(&pair).is_ok() {
+                pairs.push(pair);
+            }
         }
+        if pairs.is_empty() {
+            return None;
+        }
+        let mut header = pairs.join("; ");
+        // Last-resort sanitization: strip non-visible-ASCII rather than dropping all cookies.
+        if http::HeaderValue::from_str(&header).is_err() {
+            header = header
+                .chars()
+                .filter(|c| matches!(*c, '\x20'..='\x7E') && *c != '\x7F')
+                .collect();
+        }
+        http::HeaderValue::from_str(&header).ok()
     }
 }
 
 pub struct CleanNetProvider {
     inner: Arc<BlitzNetProvider>,
     pub blocked_count: Arc<AtomicUsize>,
+    pub masked_failures: Arc<AtomicUsize>,
     pub filter_enabled: AtomicBool,
     pub cookies: Arc<PersistentCookieJar>,
 }
@@ -152,6 +186,7 @@ impl CleanNetProvider {
             inner: Arc::new(BlitzNetProvider::with_cookie_provider(waker, Arc::clone(&cookies))),
             cookies,
             blocked_count: Arc::new(AtomicUsize::new(0)),
+            masked_failures: Arc::new(AtomicUsize::new(0)),
             filter_enabled: AtomicBool::new(true),
         }
     }
@@ -187,6 +222,10 @@ impl CleanNetProvider {
     pub fn blocked_total(&self) -> usize {
         self.blocked_count.load(Ordering::Relaxed)
     }
+
+    pub fn masked_failure_total(&self) -> usize {
+        self.masked_failures.load(Ordering::Relaxed)
+    }
 }
 
 /// Ensures subresource handlers ALWAYS resolve (even on HTTP 4xx/5xx, timeout, or tracker block),
@@ -194,6 +233,7 @@ impl CleanNetProvider {
 struct SafeSubresourceHandler {
     url: String,
     inner: Option<Box<dyn NetHandler>>,
+    masked_failures: Arc<AtomicUsize>,
 }
 
 impl NetHandler for SafeSubresourceHandler {
@@ -207,6 +247,9 @@ impl NetHandler for SafeSubresourceHandler {
 impl Drop for SafeSubresourceHandler {
     fn drop(&mut self) {
         if let Some(h) = self.inner.take() {
+            // A subresource that never resolved (error/timeout/tracker-block):
+            // counted so the UI can show degraded loads instead of failing silently.
+            self.masked_failures.fetch_add(1, Ordering::Relaxed);
             h.bytes(std::mem::take(&mut self.url), Bytes::new());
         }
     }
@@ -215,6 +258,13 @@ impl Drop for SafeSubresourceHandler {
 impl NetProvider for CleanNetProvider {
     fn fetch(&self, doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
         let url_str = request.url.to_string();
+        // Subresource `file://` reads are confined to our own app-data dir (cached
+        // favicons). Anything else is a local-file inclusion attempt by page markup.
+        // Top-level `file://` navigation still goes through `fetch_document`.
+        if request.url.scheme() == "file" && !is_app_data_file_url(&request.url) {
+            handler.bytes(url_str, Bytes::new());
+            return;
+        }
         if self.is_filter_enabled() && is_blocked_url(&request.url) {
             self.blocked_count.fetch_add(1, Ordering::Relaxed);
             // Resolve cleanly with empty bytes so critical resource counters never hang.
@@ -227,6 +277,7 @@ impl NetProvider for CleanNetProvider {
             Box::new(SafeSubresourceHandler {
                 url: url_str,
                 inner: Some(handler),
+                masked_failures: Arc::clone(&self.masked_failures),
             }),
         );
     }
@@ -282,6 +333,21 @@ mod tests {
         jar2.set_cookies(&mut std::iter::empty(), &url);
         assert!(!jar2.dirty.load(Ordering::Acquire));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn confines_file_subresources_to_app_data() {
+        let base = crate::bookmarks::app_data_dir().expect("app data dir");
+        let inside = url::Url::from_file_path(base.join("favicons2").join("x.png")).unwrap();
+        assert!(is_app_data_file_url(&inside));
+        let outside = url::Url::parse("file:///C:/Windows/win.ini").unwrap();
+        assert!(!is_app_data_file_url(&outside));
+        let escape = url::Url::parse(&format!(
+            "file://{}",
+            base.join("..").join("other").to_string_lossy().replace('\\', "/")
+        ))
+        .unwrap();
+        assert!(!is_app_data_file_url(&escape));
     }
 
     #[test]

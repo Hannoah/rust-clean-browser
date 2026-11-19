@@ -669,8 +669,8 @@ impl InnerWebView {
 
       if let Ok(settings4) = settings.cast::<ICoreWebView2Settings4>() {
         settings4.SetIsGeneralAutofillEnabled(attributes.general_autofill_enabled)?;
-        // rust-browser patch: offer to save & autofill passwords like Edge does.
-        settings4.SetIsPasswordAutosaveEnabled(true)?;
+        // rust-browser patch: never autosave passwords (no master-password protection).
+        settings4.SetIsPasswordAutosaveEnabled(false)?;
       }
 
       if let Ok(settings5) = settings.cast::<ICoreWebView2Settings5>() {

@@ -30,21 +30,36 @@ impl DiskPageCache {
         }
     }
 
+    fn cache_key(url: &str) -> String {
+        url.split('#').next().unwrap_or(url).to_string()
+    }
+
     fn path_for(&self, url: &str) -> Option<PathBuf> {
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        url.split('#').next().unwrap_or(url).hash(&mut h);
+        Self::cache_key(url).hash(&mut h);
         Some(self.dir.as_ref()?.join(format!("{:016x}.html", h.finish())))
     }
 
     pub fn get(&self, url: &str) -> Option<CachedDoc> {
         let path = self.path_for(url)?;
-        let age = std::fs::metadata(&path).ok()?.modified().ok()?.elapsed().unwrap_or_default();
+        let meta = std::fs::metadata(&path).ok()?;
+        // Bound allocation: put() caps pages at MAX_PAGE_BYTES; refuse oversized files.
+        if meta.len() > (MAX_PAGE_BYTES as u64) + 4096 {
+            let _ = std::fs::remove_file(&path);
+            return None;
+        }
+        let age = meta.modified().ok()?.elapsed().unwrap_or_default();
         if age > MAX_AGE {
             let _ = std::fs::remove_file(&path);
             return None;
         }
         let text = std::fs::read_to_string(&path).ok()?;
-        let (final_url, html) = text.split_once('\n')?;
+        let (req_key, rest) = text.split_once('\n')?;
+        let (final_url, html) = rest.split_once('\n')?;
+        // Verify the stored request key to survive 64-bit hash collisions.
+        if req_key != Self::cache_key(url) {
+            return None;
+        }
         Some(CachedDoc {
             final_url: final_url.to_string(),
             html: Arc::from(html),
@@ -55,18 +70,24 @@ impl DiskPageCache {
         if html.len() > MAX_PAGE_BYTES || final_url.contains('\n') {
             return;
         }
+        let req_key = Self::cache_key(url);
+        if req_key.contains('\n') {
+            return;
+        }
         let Some(path) = self.path_for(url) else {
             return;
         };
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let mut buf = String::with_capacity(final_url.len() + 1 + html.len());
+        let mut buf = String::with_capacity(req_key.len() + final_url.len() + 2 + html.len());
+        buf.push_str(&req_key);
+        buf.push('\n');
         buf.push_str(final_url);
         buf.push('\n');
         buf.push_str(html);
         let tmp = path.with_extension("tmp");
-        if std::fs::write(&tmp, buf).is_ok() {
+        if std::fs::write(&tmp, &buf).is_ok() {
             let _ = std::fs::rename(&tmp, &path);
         }
         self.writes_since_prune += 1;
@@ -87,8 +108,14 @@ impl DiskPageCache {
         let mut files: Vec<(SystemTime, u64, PathBuf)> = entries
             .flatten()
             .filter_map(|e| {
+                let path = e.path();
+                // Crashed-write leftovers must not count toward the budget.
+                if path.extension().is_some_and(|x| x == "tmp") {
+                    let _ = std::fs::remove_file(&path);
+                    return None;
+                }
                 let meta = e.metadata().ok()?;
-                Some((meta.modified().ok()?, meta.len(), e.path()))
+                Some((meta.modified().ok()?, meta.len(), path))
             })
             .collect();
         files.sort_by_key(|f| std::cmp::Reverse(f.0)); // newest first

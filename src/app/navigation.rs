@@ -129,12 +129,14 @@ impl BrowserApp {
         let bus_title = self.bus.clone();
         let bus_load = self.bus.clone();
         let bus_new = self.bus.clone();
+        let bus_dl = self.bus.clone();
 
         let builder = if let Some(ctx) = self.web_context.as_mut() {
             WebViewBuilder::new_with_web_context(ctx)
         } else {
             WebViewBuilder::new()
-        };
+        }
+        .with_general_autofill_enabled(false);
 
         struct WinHandle<'a>(&'a dyn Window);
         impl wry::raw_window_handle::HasWindowHandle for WinHandle<'_> {
@@ -165,6 +167,12 @@ impl BrowserApp {
                 bus_new.send(AppEvent::OpenInNewTab(target_url));
                 NewWindowResponse::Deny
             })
+            // Drive-by downloads have no consent UI in this browser: deny and
+            // surface a toast instead of dropping files into Downloads silently.
+            .with_download_started_handler(move |url, _path| {
+                bus_dl.send(AppEvent::DownloadBlocked(url));
+                false
+            })
             .build_as_child(&win_handle);
 
         match built {
@@ -194,9 +202,10 @@ impl BrowserApp {
         let doc = self.build_content_doc(&err_html, "rust://error", None, self.tabs[tab_idx].zoom);
         let tab = &mut self.tabs[tab_idx];
         tab.doc = Some(doc);
+        // Always clear the spinner; a None title keeps the previous title text.
+        tab.is_loading = false;
         if let Some(t) = title {
             tab.title = t.to_string();
-            tab.is_loading = false;
         }
         if tab_idx == self.active_tab {
             self.sync_find_bar_after_doc_change();
@@ -204,6 +213,13 @@ impl BrowserApp {
     }
 
     pub(super) fn load_active_tab(&mut self, bypass_cache: bool, restore_scroll_y: Option<f64>) {
+        self.ensure_active_valid();
+        // HTTPS-Only: upgrade plain-http navigations before anything else touches them.
+        if self.prefs.https_only && self.tabs[self.active_tab].url.starts_with("http://") {
+            let upgraded = format!("https://{}", &self.tabs[self.active_tab].url["http://".len()..]);
+            self.tabs[self.active_tab].url = upgraded;
+            self.set_status_note("HTTPS로 업그레이드됨");
+        }
         let idx = self.active_tab;
         let url = self.tabs[idx].url.clone();
         let tab_id = self.tabs[idx].id;
@@ -220,7 +236,7 @@ impl BrowserApp {
             self.tabs[idx].js_mode = false;
             let dark = self.color_scheme == ColorScheme::Dark;
             let html = if url.starts_with("rust://bookmarks") {
-                if url.contains("sync=1") {
+                if parse_query_param(&url, "sync").as_deref() == Some("1") {
                     match self.bookmarks.import_from_chrome() {
                         Ok(n) => self.set_status_note(&format!("Chrome 북마크 {n}개 동기화")),
                         Err(e) => self.set_status_note(&e),
@@ -235,7 +251,7 @@ impl BrowserApp {
                 let drop_target = self.bm_drag.as_ref().and_then(|d| d.hover_folder.as_deref());
                 render_bookmarks_page(&self.bookmarks, &self.tabs[idx].url, drop_target)
             } else if url.starts_with("rust://history") {
-                if url.contains("clear=1") {
+                if parse_query_param(&url, "clear").as_deref() == Some("1") {
                     self.history.clear();
                     self.set_status_note("방문 기록 비워짐");
                     self.tabs[idx].url = "rust://history".to_string();
@@ -255,6 +271,7 @@ impl BrowserApp {
                     self.tabs.len(),
                     unloaded,
                     self.net_provider.blocked_total(),
+                    self.net_provider.masked_failure_total(),
                     dark,
                 )
             };
@@ -338,23 +355,29 @@ impl BrowserApp {
         self.net_provider.fetch_document(
             request,
             signal,
-            move |final_url, bytes| match process_fetched_document(&bytes, &final_url, strip_iframes) {
-                Ok((clean_html, is_spa_shell)) => bus_ok.send(AppEvent::PageLoaded {
-                    tab_id,
-                    load_seq,
-                    requested_url,
-                    cacheable,
-                    final_url,
-                    clean_html: Arc::from(clean_html),
-                    is_spa_shell,
-                    restore_scroll_y,
-                }),
-                Err(reason) => bus_ok.send(AppEvent::PageLoadFailed {
-                    tab_id,
-                    load_seq,
-                    url: fail_url_2,
-                    error: reason,
-                }),
+            move |final_url, bytes| {
+                match process_fetched_document(&bytes, &final_url, strip_iframes) {
+                    Ok((clean_html, is_spa_shell)) => {
+                        bus_ok.send(AppEvent::PageLoaded {
+                            tab_id,
+                            load_seq,
+                            requested_url,
+                            cacheable,
+                            final_url,
+                            clean_html: Arc::from(clean_html),
+                            is_spa_shell,
+                            restore_scroll_y,
+                        });
+                    }
+                    Err(reason) => {
+                        bus_ok.send(AppEvent::PageLoadFailed {
+                            tab_id,
+                            load_seq,
+                            url: fail_url_2,
+                            error: reason,
+                        });
+                    }
+                }
             },
             move |err| {
                 bus_fail.send(AppEvent::PageLoadFailed {
@@ -374,6 +397,9 @@ impl BrowserApp {
     pub(super) fn navigate_with_request(&mut self, raw_input: &str, request: Option<Request>) {
         self.close_popup();
         let target = normalize_url_input(raw_input);
+        if crate::chrome_ui::is_suspicious_host(&target) {
+            self.set_status_note("주의: 도메인 문자 체계가 수상합니다. 피싱 확인 후 진행하세요");
+        }
 
         // Internal action routes from Reader Mode toolbar & Error page.
         if target.starts_with("rust://reader-opt") {
@@ -403,6 +429,19 @@ impl BrowserApp {
         if request.is_none() && !self.tabs[idx].js_mode && cur_base == new_base {
             if let (Some((_, frag)), Some(doc)) = (target.split_once('#'), &mut self.tabs[idx].doc) {
                 doc.scroll_to_fragment(frag);
+                // Record fragment navigations so Back restores the prior fragment/scroll.
+                if current_url != target {
+                    let scroll_y = self.current_scroll_y();
+                    let prev_js = self.tabs[idx].js_mode;
+                    let prev_force = self.tabs[idx].force_blitz;
+                    self.tabs[idx].history_back.push(HistoryEntry {
+                        url: current_url,
+                        scroll_y,
+                        js_mode: prev_js,
+                        force_blitz: prev_force,
+                    });
+                    self.tabs[idx].history_forward.clear();
+                }
                 self.tabs[idx].url = target;
                 self.chrome_focused = false;
                 self.rebuild_chrome();
@@ -420,7 +459,7 @@ impl BrowserApp {
             let prev_js = self.tabs[idx].js_mode;
             let prev_force = self.tabs[idx].force_blitz;
             self.tabs[idx].history_back.push(HistoryEntry {
-                url: current_url,
+                url: current_url.clone(),
                 scroll_y,
                 js_mode: prev_js,
                 force_blitz: prev_force,
@@ -428,19 +467,21 @@ impl BrowserApp {
             self.tabs[idx].history_forward.clear();
             self.tabs[idx].js_mode = false;
         }
+        let same_url = current_url == target;
         self.tabs[idx].url = target;
         self.tabs[idx].scroll_y = 0.0;
         self.tabs[idx].force_blitz = false;
         self.tabs[idx].pending_request = request;
         self.chrome_focused = false;
         self.chrome_doc.clear_focus();
-        self.load_active_tab(false, None);
+        // Same-URL address-bar navigation must revalidate, not serve memory cache instantly.
+        self.load_active_tab(same_url, None);
     }
 
     pub(super) fn current_scroll_y(&self) -> f64 {
-        self.tabs[self.active_tab]
-            .doc
-            .as_ref()
+        self.tabs
+            .get(self.active_tab)
+            .and_then(|t| t.doc.as_ref())
             .map_or(0.0, |d| d.viewport_scroll().y)
     }
 
@@ -492,6 +533,13 @@ impl BrowserApp {
 
     /// Ctrl+click: add a sleeping tab right after the active one without loading it.
     pub(super) fn open_background_tab(&mut self, url: &str) {
+        if let Ok(parsed) = Url::parse(url) {
+            if parsed.scheme() == "file" && !crate::net::is_app_data_file_url(&parsed) {
+                self.set_status_note("차단됨: 페이지의 로컬 파일 접근");
+                self.rebuild_chrome();
+                return;
+            }
+        }
         let id = self.next_tab_id;
         self.next_tab_id += 1;
         self.tabs.insert(self.active_tab + 1, Tab::new(id, url.to_string()));
@@ -559,6 +607,7 @@ impl BrowserApp {
 
     /// Back (`forward == false`) or forward one history entry, restoring its scroll position.
     pub(super) fn history_step(&mut self, forward: bool) {
+        self.ensure_active_valid();
         let idx = self.active_tab;
         if self.tabs[idx].js_mode {
             if let Some(wv) = &self.active_webview {
@@ -570,6 +619,41 @@ impl BrowserApp {
                 if can_step {
                     let res = if forward { wv.go_forward() } else { wv.go_back() };
                     if res.is_ok() {
+                        // Keep tab stacks in sync optimistically; WebViewPageLoad
+                        // will correct tab.url asynchronously when the page lands.
+                        let scroll_y = self.current_scroll_y();
+                        let cur = self.tabs[idx].url.clone();
+                        // Move current URL to the opposite stack as a placeholder so
+                        // rapid back/forward doesn't desync; real URL arrives via event.
+                        if forward {
+                            let entry = self.tabs[idx].history_forward.pop();
+                            if let Some(e) = entry {
+                                let cur_js = self.tabs[idx].js_mode;
+                                let cur_force = self.tabs[idx].force_blitz;
+                                self.tabs[idx].history_back.push(HistoryEntry {
+                                    url: cur,
+                                    scroll_y,
+                                    js_mode: cur_js,
+                                    force_blitz: cur_force,
+                                });
+                                self.tabs[idx].url = e.url;
+                                self.tabs[idx].scroll_y = e.scroll_y;
+                            }
+                        } else {
+                            let entry = self.tabs[idx].history_back.pop();
+                            if let Some(e) = entry {
+                                let cur_js = self.tabs[idx].js_mode;
+                                let cur_force = self.tabs[idx].force_blitz;
+                                self.tabs[idx].history_forward.push(HistoryEntry {
+                                    url: cur,
+                                    scroll_y,
+                                    js_mode: cur_js,
+                                    force_blitz: cur_force,
+                                });
+                                self.tabs[idx].url = e.url;
+                                self.tabs[idx].scroll_y = e.scroll_y;
+                            }
+                        }
                         self.rebuild_chrome();
                         return;
                     }

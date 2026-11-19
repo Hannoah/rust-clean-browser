@@ -22,8 +22,10 @@ pub(super) struct AppBus {
 
 impl AppBus {
     pub(super) fn send(&self, ev: AppEvent) {
-        let _ = self.tx.send(ev);
-        self.winit_proxy.wake_up();
+        // Don't wake the loop when the receiver is gone: the event is lost either way.
+        if self.tx.send(ev).is_ok() {
+            self.winit_proxy.wake_up();
+        }
     }
 }
 

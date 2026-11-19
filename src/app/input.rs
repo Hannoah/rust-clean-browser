@@ -349,23 +349,23 @@ impl BrowserApp {
 
     fn ctrl_shortcut(&mut self, code: KeyCode, shift: bool, event_loop: &dyn ActiveEventLoop) -> bool {
         let n = self.tabs.len();
+        if n == 0 {
+            return false;
+        }
         match code {
                 KeyCode::KeyT if shift => self.reopen_closed_tab(),
                 KeyCode::Tab if shift => self.switch_tab((self.active_tab + n - 1) % n),
                 KeyCode::Tab => self.switch_tab((self.active_tab + 1) % n),
                 KeyCode::PageUp => self.switch_tab((self.active_tab + n - 1) % n),
                 KeyCode::PageDown => self.switch_tab((self.active_tab + 1) % n),
-                KeyCode::Digit1
-                | KeyCode::Digit2
-                | KeyCode::Digit3
-                | KeyCode::Digit4
-                | KeyCode::Digit5
-                | KeyCode::Digit6
-                | KeyCode::Digit7
-                | KeyCode::Digit8 => {
-                    let i = code as usize - KeyCode::Digit1 as usize;
-                    self.switch_tab(i.min(n - 1));
-                }
+                KeyCode::Digit1 => self.switch_tab(0.min(n - 1)),
+                KeyCode::Digit2 => self.switch_tab(1.min(n - 1)),
+                KeyCode::Digit3 => self.switch_tab(2.min(n - 1)),
+                KeyCode::Digit4 => self.switch_tab(3.min(n - 1)),
+                KeyCode::Digit5 => self.switch_tab(4.min(n - 1)),
+                KeyCode::Digit6 => self.switch_tab(5.min(n - 1)),
+                KeyCode::Digit7 => self.switch_tab(6.min(n - 1)),
+                KeyCode::Digit8 => self.switch_tab(7.min(n - 1)),
                 KeyCode::Digit9 => self.switch_tab(n - 1),
                 KeyCode::KeyD => self.handle_chrome_action("toggle-bookmark", event_loop),
                 KeyCode::KeyK => self.open_command_palette(event_loop),
@@ -502,15 +502,23 @@ impl BrowserApp {
             let (_, ch) = self.content_phys_size();
             ch as f64 / self.hidpi_scale.max(1.0) as f64 / self.tabs[self.active_tab].zoom.max(0.1) as f64
         };
+        if self.active_tab >= self.tabs.len() {
+            return false;
+        }
         let Some(doc) = &mut self.tabs[self.active_tab].doc else {
             return false;
         };
-        let typing = doc
-            .get_focussed_node_id()
-            .and_then(|id| doc.get_node(id))
+        let focused = doc.get_focussed_node_id().and_then(|id| doc.get_node(id));
+        let typing = focused
+            .as_ref()
             .and_then(|n| n.element_data())
             .is_some_and(|el| el.text_input_data().is_some());
         if typing {
+            return false;
+        }
+        // Space activates focused buttons/links/checkboxes; only scroll when
+        // focus is on the page body (no element focused).
+        if matches!(code, KeyCode::Space) && focused.is_some() {
             return false;
         }
         let dy = match code {
@@ -616,7 +624,7 @@ impl BrowserApp {
 
     fn content_coords(&self, pos: PhysicalPosition<f64>) -> PointerCoords {
         let logical: LogicalPosition<f32> = pos.to_logical(self.hidpi_scale as f64);
-        let doc = self.tabs[self.active_tab].doc.as_ref();
+        let doc = self.tabs.get(self.active_tab).and_then(|t| t.doc.as_ref());
         let zoom = doc.map_or(1.0, |d| d.viewport().zoom);
         let scroll = doc.map_or(blitz_dom::Point { x: 0.0, y: 0.0 }, |d| d.viewport_scroll());
         let client_x = logical.x / zoom;
@@ -635,8 +643,10 @@ impl BrowserApp {
     fn dispatch_to(&mut self, to_chrome: bool, ev: UiEvent) {
         if to_chrome {
             self.dispatch_chrome_ui(ev);
-        } else if let Some(doc) = &mut self.tabs[self.active_tab].doc {
-            doc.handle_ui_event(ev);
+        } else if self.active_tab < self.tabs.len() {
+            if let Some(doc) = &mut self.tabs[self.active_tab].doc {
+                doc.handle_ui_event(ev);
+            }
         }
     }
 

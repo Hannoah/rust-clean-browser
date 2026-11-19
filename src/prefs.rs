@@ -39,6 +39,8 @@ pub struct UiPrefs {
     pub theme: ThemePreference,
     pub show_bookmarks_bar: bool,
     pub reader: ReaderOptions,
+    /// Upgrade `http://` navigations to `https://` automatically.
+    pub https_only: bool,
 }
 
 impl Default for UiPrefs {
@@ -47,6 +49,7 @@ impl Default for UiPrefs {
             theme: ThemePreference::System,
             show_bookmarks_bar: true,
             reader: ReaderOptions::default(),
+            https_only: false,
         }
     }
 }

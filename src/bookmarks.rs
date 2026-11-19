@@ -293,8 +293,13 @@ impl BookmarkStore {
         let bm_title = item.title.clone();
 
         if src_kind == dst_kind && src_parent.len() < dst_path.len() {
-            self.insert_into_folder(dst_kind, &dst_path, item)?;
-            let _ = self.remove_item(src_kind, src_parent, src_idx);
+            self.insert_into_folder(dst_kind, &dst_path, item.clone())?;
+            if let Err(e) = self.remove_item(src_kind, src_parent, src_idx) {
+                // Roll back the insert so a failed move can't duplicate the item.
+                let _ = self.remove_item(dst_kind, &dst_path, self.resolve_folder(dst_kind, &dst_path).map(|(_, n)| n.len().saturating_sub(1)).unwrap_or(0));
+                let _ = item;
+                return Err(e);
+            }
         } else {
             let _ = self.remove_item(src_kind, src_parent, src_idx)?;
             self.insert_into_folder(dst_kind, &dst_path, item)?;
