@@ -283,6 +283,21 @@ pub fn uses_social_login_sdk(raw_html: &str) -> bool {
     MARKERS.iter().any(|m| lower.contains(m))
 }
 
+/// A local `.html` you opened yourself (resume builder, dashboard, tool) that runs scripts or has
+/// inline handlers is an app, not an article: Clean mode would strip its JS and kill every button.
+pub fn is_local_script_app(url: &str, raw_html: &str) -> bool {
+    if !url.starts_with("file://") {
+        return false;
+    }
+    let lower = raw_html.to_ascii_lowercase();
+    // `<script type="application/json">` data blocks alone don't count.
+    let runs_js = lower.match_indices("<script").any(|(i, _)| {
+        let tag = &lower[i..lower[i..].find('>').map_or(lower.len(), |e| i + e)];
+        !(tag.contains("application/json") || tag.contains("ld+json"))
+    });
+    runs_js || lower.contains(" onclick=")
+}
+
 /// Decode, classify and clean a fetched document in one go (runs on the network thread).
 /// Returns `(clean_html, is_spa_shell)`.
 pub fn process_fetched_document(bytes: &[u8], url: &str, strip_iframes: bool) -> Result<(String, bool), String> {
@@ -311,7 +326,7 @@ pub fn process_fetched_document(bytes: &[u8], url: &str, strip_iframes: bool) ->
         || head_lower.contains("<head")
         || head_lower.contains("<body");
     if looks_like_html {
-        let spa = is_js_spa_shell(&text) || uses_social_login_sdk(&text);
+        let spa = is_js_spa_shell(&text) || uses_social_login_sdk(&text) || is_local_script_app(url, &text);
         let cleaned = strip_scripts_and_bloat(&text, strip_iframes);
         let cleaned = upgrade_mixed_content(&cleaned, url.starts_with("https://"));
         Ok((cleaned, spa))
@@ -930,6 +945,16 @@ mod tests {
 
         let article_like = r#"<!doctype html><html><head><script src="a.js"></script></head><body><article><h1>Rust Browser</h1><p>This is a full server-rendered article with plenty of readable content and links.</p></article></body></html>"#;
         assert!(!is_js_spa_shell(article_like));
+    }
+
+    #[test]
+    fn local_script_apps_open_in_js_mode() {
+        let app = r#"<html><body><button onclick="go()">x</button><script>function go(){}</script></body></html>"#;
+        assert!(is_local_script_app("file:///C:/a/index.html", app));
+        assert!(!is_local_script_app("https://e.test/", app));
+        let data_only = r#"<html><body><p>hi</p><script type="application/json">{}</script></body></html>"#;
+        assert!(!is_local_script_app("file:///C:/a.html", data_only));
+        assert!(!is_local_script_app("file:///C:/a.html", "<html><body>static</body></html>"));
     }
 
     #[test]
