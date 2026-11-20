@@ -3,6 +3,7 @@
 mod app;
 mod bookmarks;
 mod chrome_ui;
+mod cite;
 mod cleaner;
 mod events;
 mod favicon;

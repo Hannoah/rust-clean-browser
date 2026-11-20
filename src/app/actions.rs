@@ -9,6 +9,21 @@ use blitz_dom::Document;
 use winit::event_loop::ActiveEventLoop;
 
 impl BrowserApp {
+    /// Copy the active page's citation (`ieee`/`apa`/`slide`/`mla`) to the clipboard.
+    fn copy_citation(&mut self, style: &str) {
+        self.ensure_active_valid();
+        let tab = &self.tabs[self.active_tab];
+        let msg = match crate::cite::citation(style, &tab.title, &tab.url, tab.raw_html.as_deref()) {
+            Some(text) => match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
+                Ok(()) => "출처가 클립보드에 복사됨",
+                Err(_) => "클립보드 접근 실패",
+            },
+            None => "웹 페이지에서만 출처를 만들 수 있음",
+        };
+        self.set_status_note(msg);
+        self.rebuild_chrome();
+    }
+
     pub(super) fn handle_chrome_action(&mut self, action: &str, event_loop: &dyn ActiveEventLoop) {
         if let Some(rest) = action.strip_prefix("tab:") {
             if let Ok(idx) = rest.parse() {
@@ -18,6 +33,8 @@ impl BrowserApp {
             if let Ok(idx) = rest.parse() {
                 self.close_tab(idx, Some(event_loop));
             }
+        } else if let Some(style) = action.strip_prefix("cite:") {
+            self.copy_citation(style);
         } else if let Some(url) = action.strip_prefix("nav-bg:") {
             self.open_background_tab(url);
         } else if let Some(url) = action.strip_prefix("nav:") {
