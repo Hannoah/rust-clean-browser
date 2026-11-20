@@ -1,14 +1,52 @@
 //! `data-action` clicks from the browser UI and the async `AppEvent` queue.
 
-use super::helpers::{primary_modifier, requires_js_engine};
+use super::helpers::{arg_to_url, focus_main_window, primary_modifier, requires_js_engine};
 use super::{AppEvent, BrowserApp};
 use crate::bookmarks::BookmarkRootKind;
 use crate::chrome_ui::short_host;
 use crate::favicon;
 use blitz_dom::Document;
+use std::sync::Arc;
 use winit::event_loop::ActiveEventLoop;
 
 impl BrowserApp {
+    /// Translate the page (Korean <-> English, direction auto-detected) or restore the original.
+    pub(super) fn toggle_translate(&mut self) {
+        self.ensure_active_valid();
+        let idx = self.active_tab;
+        let tab_id = self.tabs[idx].id;
+        let tab = &mut self.tabs[idx];
+        if tab.translated.take().is_some() {
+            if let Some(raw) = tab.raw_html.clone() {
+                let url = tab.url.clone();
+                let scroll = self.current_scroll_y();
+                self.apply_html_to_tab(idx, url, raw, Some(scroll));
+            }
+            self.set_status_note("원문으로 복원됨");
+            return self.rebuild_chrome();
+        }
+        let Some(raw) = tab.raw_html.clone().filter(|_| !tab.js_mode && !tab.url.starts_with("rust://")) else {
+            self.set_status_note("번역은 Clean 모드의 웹 페이지에서만 가능 (JS 모드 제외)");
+            return self.rebuild_chrome();
+        };
+        let segs = crate::translate::segments(&raw);
+        if segs.is_empty() {
+            self.set_status_note("번역할 텍스트가 없음");
+            return self.rebuild_chrome();
+        }
+        let tl = crate::translate::target_lang(&segs);
+        self.set_status_note(if tl == "en" { "영어로 번역 중…" } else { "한국어로 번역 중…" });
+        self.rebuild_chrome();
+        let bus = self.bus.clone();
+        let texts = segs.iter().map(|s| s.text.clone()).collect();
+        tokio::spawn(async move {
+            let result = crate::translate::translate(texts, tl)
+                .await
+                .map(|tr| Arc::<str>::from(crate::translate::apply(&raw, &segs, &tr)));
+            bus.send(AppEvent::Translated { tab_id, source: raw, tl, result });
+        });
+    }
+
     /// Copy the active page's citation (`ieee`/`apa`/`slide`/`mla`) to the clipboard.
     fn copy_citation(&mut self, style: &str) {
         self.ensure_active_valid();
@@ -67,6 +105,7 @@ impl BrowserApp {
                     self.set_status_note(if added { "북마크 추가됨" } else { "북마크 해제됨" });
                     self.rebuild_chrome();
                 }
+                "translate" => self.toggle_translate(),
                 "toggle-js" => self.toggle_js_mode(),
                 "toggle-reader" => self.toggle_reader_mode(),
                 "toggle-filter" => {
@@ -302,6 +341,32 @@ impl BrowserApp {
                         } else {
                             self.navigate_with_request(url_str, request);
                         }
+                    }
+                }
+                AppEvent::Translated { tab_id, source, tl, result } => {
+                    let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) else { continue };
+                    // Ignore if the tab navigated away (or unloaded) while translating.
+                    if !self.tabs[idx].raw_html.as_ref().is_some_and(|r| Arc::ptr_eq(r, &source)) {
+                        continue;
+                    }
+                    match result {
+                        Ok(html) => {
+                            let url = self.tabs[idx].url.clone();
+                            let scroll = self.current_scroll_y();
+                            self.tabs[idx].translated = Some(Arc::clone(&html));
+                            self.apply_html_to_tab(idx, url, html, Some(scroll));
+                            let to = if tl == "en" { "영어" } else { "한국어" };
+                            self.set_status_note(&format!("{to}로 번역됨 · Alt+T로 원문 보기"));
+                        }
+                        Err(e) => self.set_status_note(&e),
+                    }
+                    self.rebuild_chrome();
+                }
+                AppEvent::OpenUrl(arg) => {
+                    self.open_new_tab(&arg_to_url(&arg));
+                    if let Some(win) = &self.window {
+                        win.set_minimized(false);
+                        focus_main_window(&**win, true);
                     }
                 }
                 AppEvent::WebViewTitleChanged { tab_id, title } => {

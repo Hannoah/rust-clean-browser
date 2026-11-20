@@ -33,7 +33,7 @@ use crate::prefs::{ThemePreference, UiPrefs};
 use crate::tabs::{HtmlCache, Tab, short_title_for_url};
 use bus::{AppBus, BrowserNavProvider, BrowserShellProvider, ChromeEventHandler};
 use helpers::{
-    ACTION_MOD, app_icon, main_window_style, normalize_url_input, synthetic_key, wait_for_images,
+    ACTION_MOD, app_icon, arg_to_url, main_window_style, synthetic_key, wait_for_images,
 };
 
 use anyrender::{PaintScene, WindowRenderer};
@@ -88,6 +88,15 @@ pub enum AppEvent {
         /// Set for non-GET navigations (form POST).
         request: Option<Request>,
     },
+    /// Page translation finished for the tab showing `source`.
+    Translated {
+        tab_id: u64,
+        source: Arc<str>,
+        tl: &'static str,
+        result: Result<Arc<str>, String>,
+    },
+    /// Another launch (e.g. double-clicked .html file) forwarded a path/URL to this instance.
+    OpenUrl(String),
     WebViewTitleChanged {
         tab_id: u64,
         title: String,
@@ -213,6 +222,8 @@ impl BrowserApp {
     ) -> Self {
         let (tx, rx) = channel();
         let bus = AppBus { tx, winit_proxy };
+        let forwarded = bus.clone();
+        crate::single::listen(move |u| forwarded.send(AppEvent::OpenUrl(u)));
         let shared_font_ctx = FontContext::default();
         let cookie_jar = Arc::new(PersistentCookieJar::load(
             crate::bookmarks::app_data_dir().map(|p| p.join("cookies.json")),
@@ -222,14 +233,8 @@ impl BrowserApp {
         let bookmarks = bookmarks.join().unwrap_or_default();
 
         let start_url = initial_url
-            .map(|u| {
-                // Local files (e.g. opened via the .html file association) become file:// URLs.
-                let path = std::path::Path::new(&u);
-                match std::path::absolute(path).ok().filter(|p| p.is_file()) {
-                    Some(abs) => Url::from_file_path(abs).map(String::from).unwrap_or(u),
-                    None => normalize_url_input(&u),
-                }
-            })
+            // Local files (e.g. opened via the .html file association) become file:// URLs.
+            .map(|u| arg_to_url(&u))
             .unwrap_or_else(|| "rust://home".to_string());
 
         let chrome_doc = HtmlDocument::from_html(
@@ -345,7 +350,7 @@ impl BrowserApp {
             let scroll = self.current_scroll_y();
             self.load_active_tab(false, Some(scroll));
         } else if tab.reader_mode {
-            if let Some(raw) = tab.raw_html.clone() {
+            if let Some(raw) = tab.shown_html() {
                 let url = tab.url.clone();
                 let scroll = self.current_scroll_y();
                 self.apply_html_to_tab(self.active_tab, url, raw, Some(scroll));
@@ -664,10 +669,15 @@ impl BrowserApp {
         tab.title = title;
         tab.is_loading = false;
         tab.abort_controller = Some(abort_ctrl);
-        tab.raw_html = Some(Arc::clone(&clean_html));
+        // Showing the translated copy (set by the Translated event): keep the original in `raw_html`.
+        let translated = tab.translated.as_ref().is_some_and(|t| Arc::ptr_eq(t, &clean_html));
+        if !translated {
+            tab.raw_html = Some(Arc::clone(&clean_html));
+            tab.translated = None;
+        }
         tab.doc = Some(doc);
 
-        if !final_url.starts_with("rust://") {
+        if !translated && !final_url.starts_with("rust://") {
             let cache_url = final_url.split('#').next().unwrap_or(&final_url).to_string();
             self.html_cache.insert(cache_url, clean_html);
         }

@@ -229,6 +229,7 @@ impl BrowserApp {
             ("new-tab".into(), "새 탭 열기", "빈 대시보드 및 주소창 포커스", if is_mac { "⌘T" } else { "Ctrl+T" }, PaletteIcon::Command, "new tab"),
             ("open-find".into(), "페이지 내 찾기", "현재 페이지에서 텍스트 검색", if is_mac { "⌘F" } else { "Ctrl+F" }, PaletteIcon::Search, "find search"),
             ("toggle-reader".into(), if active.reader_mode { "리더 모드 끄기" } else { "리더 모드 켜기" }, "방해 요소 없는 읽기 화면으로 전환", "Alt+R", PaletteIcon::Book, "reader article"),
+            ("translate".into(), if active.translated.is_some() { "원문 보기 (번역 끄기)" } else { "한영 번역 (자동 방향 감지)" }, "한글 페이지는 영어로, 그 외는 한국어로 · 본문이 Google로 전송됨", "Alt+T", PaletteIcon::Book, "translate 번역 영어 한국어 korean english"),
             ("toggle-js".into(), if active.js_mode { "순수 Rust Clean 모드로 전환" } else { "JS 호환 모드 (WebView2)로 전환" }, "현재 탭의 렌더링 엔진 전환", "", PaletteIcon::Zap, "js webview blitz clean"),
             ("toggle-filter".into(), if self.net_provider.is_filter_enabled() { "트래커 차단 끄기" } else { "트래커 차단 켜기" }, "광고·추적 스크립트 및 iframe 차단 전환", "", PaletteIcon::Shield, "adblock tracker shield"),
             ("toggle-https-only".into(), if self.prefs.https_only { "HTTPS-Only 끄기" } else { "HTTPS-Only 켜기" }, "http 주소를 https로 자동 업그레이드", "", PaletteIcon::Shield, "https tls secure upgrade"),

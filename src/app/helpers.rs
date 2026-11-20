@@ -363,6 +363,14 @@ pub(super) fn popup_window_style(attrs: WindowAttributes) -> WindowAttributes {
     }
 }
 
+/// A CLI/forwarded argument -> URL: existing local files become `file://`, the rest is normalized.
+pub(super) fn arg_to_url(arg: &str) -> String {
+    match std::path::absolute(arg).ok().filter(|p| p.is_file()) {
+        Some(abs) => url::Url::from_file_path(abs).map_or_else(|_| arg.to_string(), String::from),
+        None => normalize_url_input(arg),
+    }
+}
+
 pub(super) fn normalize_url_input(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {

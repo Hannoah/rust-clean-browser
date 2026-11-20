@@ -199,6 +199,7 @@ impl BrowserApp {
         let err_html = render_error_page(url, message, dark);
         self.tabs[tab_idx].doc = None;
         self.tabs[tab_idx].raw_html = None;
+        self.tabs[tab_idx].translated = None;
         let doc = self.build_content_doc(&err_html, "rust://error", None, self.tabs[tab_idx].zoom);
         let tab = &mut self.tabs[tab_idx];
         tab.doc = Some(doc);
@@ -283,6 +284,7 @@ impl BrowserApp {
             tab.title = short_title_for_url(&url);
             tab.doc = Some(doc);
             tab.raw_html = None;
+            tab.translated = None;
             tab.is_loading = false;
             self.sync_find_bar_after_doc_change();
             self.rebuild_chrome();
@@ -756,7 +758,7 @@ impl BrowserApp {
         }
         self.prefs.save();
         let idx = self.active_tab;
-        if let Some(raw) = self.tabs[idx].raw_html.clone() {
+        if let Some(raw) = self.tabs[idx].shown_html() {
             let url = self.tabs[idx].url.clone();
             let scroll = self.current_scroll_y();
             self.apply_html_to_tab(idx, url, raw, Some(scroll));
@@ -775,7 +777,7 @@ impl BrowserApp {
             return;
         }
         self.tabs[idx].reader_mode = !self.tabs[idx].reader_mode;
-        if let Some(raw) = self.tabs[idx].raw_html.clone() {
+        if let Some(raw) = self.tabs[idx].shown_html() {
             let url = self.tabs[idx].url.clone();
             let scroll = self.current_scroll_y();
             self.apply_html_to_tab(idx, url, raw, Some(scroll));

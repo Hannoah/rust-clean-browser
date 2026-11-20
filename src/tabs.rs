@@ -35,6 +35,8 @@ pub struct Tab {
     pub doc: Option<HtmlDocument>,
     /// Retained only while this tab is active (for instant Reader Mode toggle).
     pub raw_html: Option<Arc<str>>,
+    /// Translated copy of `raw_html` while page translation is on (display only; never cached).
+    pub translated: Option<Arc<str>>,
 }
 
 impl Tab {
@@ -57,6 +59,7 @@ impl Tab {
             abort_controller: None,
             doc: None,
             raw_html: None,
+            translated: None,
         }
     }
 
@@ -80,7 +83,13 @@ impl Tab {
         self.cancel_inflight();
         self.doc = None;
         self.raw_html = None;
+        self.translated = None;
         had_doc
+    }
+
+    /// HTML to rebuild the document from: the translation when active, else the original.
+    pub fn shown_html(&self) -> Option<Arc<str>> {
+        self.translated.clone().or_else(|| self.raw_html.clone())
     }
 
     pub fn is_loaded(&self) -> bool {

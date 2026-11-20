@@ -13,12 +13,19 @@ mod memory;
 mod net;
 mod page_cache;
 mod prefs;
+mod single;
 mod tabs;
+mod translate;
 
 use app::BrowserApp;
 use winit::event_loop::{ControlFlow, EventLoop};
 
 fn main() {
+    // A file/URL launched while the browser is already running opens as a tab there.
+    let initial_url = std::env::args().nth(1);
+    if initial_url.as_deref().is_some_and(single::forward) {
+        return;
+    }
     // Parse Chrome's bookmark file while the runtime and window system initialise.
     let bookmarks = std::thread::spawn(bookmarks::BookmarkStore::load);
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -34,7 +41,6 @@ fn main() {
     let event_loop = EventLoop::new().expect("failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let initial_url = std::env::args().nth(1);
     let proxy = event_loop.create_proxy();
     let app = BrowserApp::new(proxy, initial_url, bookmarks);
     event_loop.run_app(app).expect("event loop error");

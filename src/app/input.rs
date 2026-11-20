@@ -398,6 +398,7 @@ impl BrowserApp {
             KeyCode::ArrowRight => self.history_step(true),
             KeyCode::KeyD => self.focus_url_bar(),
             KeyCode::KeyR => self.toggle_reader_mode(),
+            KeyCode::KeyT => self.toggle_translate(),
             KeyCode::Home => self.navigate_current("rust://home"),
             KeyCode::Enter | KeyCode::NumpadEnter if self.url_bar_focused() => {
                 if !self.suggest_open_new_tab() {

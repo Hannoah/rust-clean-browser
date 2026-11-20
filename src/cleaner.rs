@@ -511,7 +511,7 @@ pub fn extract_title(html: &str) -> Option<String> {
     None
 }
 
-fn decode_basic_entities(s: &str) -> String {
+pub(crate) fn decode_basic_entities(s: &str) -> String {
     s.replace("&amp;", "&")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
