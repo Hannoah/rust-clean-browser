@@ -264,6 +264,25 @@ fn find_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
+/// Error for PDF/image/archive responses; the app hands those to WebView2's built-in viewers.
+pub const NOT_HTML_ERR: &str = "HTML 문서가 아닌 바이너리/이미지/PDF 파일입니다.";
+
+/// Pages embedding a Google/Apple/Kakao/Naver sign-in SDK only work with scripts running
+/// (the widget renders in JS and talks to a popup), so they must open in JS mode.
+pub fn uses_social_login_sdk(raw_html: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "accounts.google.com/gsi/client",
+        "apis.google.com/js/platform.js",
+        "apis.google.com/js/api:client",
+        "accounts.google.com/o/oauth2",
+        "appleid.cdn-apple.com/appleauth",
+        "developers.kakao.com/sdk",
+        "static.nid.naver.com/js/naveridlogin",
+    ];
+    let lower = raw_html.to_ascii_lowercase();
+    MARKERS.iter().any(|m| lower.contains(m))
+}
+
 /// Decode, classify and clean a fetched document in one go (runs on the network thread).
 /// Returns `(clean_html, is_spa_shell)`.
 pub fn process_fetched_document(bytes: &[u8], url: &str, strip_iframes: bool) -> Result<(String, bool), String> {
@@ -273,7 +292,7 @@ pub fn process_fetched_document(bytes: &[u8], url: &str, strip_iframes: bool) ->
         || bytes.starts_with(b"PK\x03\x04")
         || bytes.starts_with(b"GIF8")
     {
-        return Err("HTML 문서가 아닌 바이너리/이미지/PDF 파일입니다.".to_string());
+        return Err(NOT_HTML_ERR.to_string());
     }
     let text = decode_html_bytes(bytes);
     let trimmed = text.trim_start();
@@ -292,7 +311,7 @@ pub fn process_fetched_document(bytes: &[u8], url: &str, strip_iframes: bool) ->
         || head_lower.contains("<head")
         || head_lower.contains("<body");
     if looks_like_html {
-        let spa = is_js_spa_shell(&text);
+        let spa = is_js_spa_shell(&text) || uses_social_login_sdk(&text);
         let cleaned = strip_scripts_and_bloat(&text, strip_iframes);
         let cleaned = upgrade_mixed_content(&cleaned, url.starts_with("https://"));
         Ok((cleaned, spa))

@@ -203,9 +203,42 @@ pub(super) fn resume_webview(wv: &WebView) {
     let _ = wv;
 }
 
+/// `true` when the URL path names a PDF (`.pdf`, any case; query/fragment ignored).
+pub(super) fn is_pdf_url(url: &str) -> bool {
+    Url::parse(url).is_ok_and(|u| u.path().to_ascii_lowercase().ends_with(".pdf"))
+}
+
+/// Should `window.open` get a real popup window (keeps `window.opener` / `window.close()`) instead
+/// of a new tab? Sign-in popups talk back to their opener, so a detached tab ends up blank.
+pub(super) fn wants_native_popup(url: &str, has_window_features: bool) -> bool {
+    const AUTH_HOSTS: &[&str] = &[
+        "accounts.google.com",
+        "login.microsoftonline.com",
+        "login.live.com",
+        "appleid.apple.com",
+        "kauth.kakao.com",
+        "nid.naver.com",
+        "api.twitter.com",
+        "discord.com",
+    ];
+    if has_window_features || url == "about:blank" {
+        return true;
+    }
+    let Some(host) = Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_owned)) else {
+        return false;
+    };
+    AUTH_HOSTS.contains(&host.as_str())
+        || (host == "github.com" && url.contains("/login/oauth"))
+        || (host.ends_with("facebook.com") && url.contains("/dialog/"))
+}
+
 /// Hosts whose sign-in / app flows only work with a real JS engine and the Windows account SSO
 /// (Microsoft Entra Conditional Access checks device compliance via WebView2's OS-account SSO).
 pub(super) fn requires_js_engine(url: &str) -> bool {
+    // PDFs are shown by WebView2's built-in viewer (search, zoom, thumbnails, print, annotate).
+    if is_pdf_url(url) {
+        return true;
+    }
     const JS_HOSTS: &[&str] = &[
         "login.microsoftonline.com",
         "login.microsoft.com",
@@ -414,6 +447,17 @@ mod tests {
     use super::*;
     use blitz_dom::DocumentConfig;
     use blitz_traits::shell::{ColorScheme, Viewport};
+
+    #[test]
+    fn pdf_urls_use_js_engine_and_popups_are_detected() {
+        assert!(requires_js_engine("https://example.com/files/Report.PDF?download=1#page=3"));
+        assert!(requires_js_engine("file:///C:/docs/a.pdf"));
+        assert!(!requires_js_engine("https://example.com/pdf-guide.html"));
+        assert!(wants_native_popup("https://accounts.google.com/o/oauth2/auth?x=1", false));
+        assert!(wants_native_popup("about:blank", false));
+        assert!(wants_native_popup("https://site.example/x", true));
+        assert!(!wants_native_popup("https://site.example/x", false));
+    }
 
     #[test]
     fn sign_in_hosts_use_js_engine() {

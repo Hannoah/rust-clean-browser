@@ -79,6 +79,7 @@ Root: HKA; Subkey: "Software\Clients\StartMenuInternet\RustCleanBrowser\Capabili
 Root: HKA; Subkey: "Software\Clients\StartMenuInternet\RustCleanBrowser\Capabilities\URLAssociations"; ValueType: string; ValueName: "https"; ValueData: "RustCleanBrowserURL"; Tasks: registerbrowser
 Root: HKA; Subkey: "Software\Clients\StartMenuInternet\RustCleanBrowser\Capabilities\FileAssociations"; ValueType: string; ValueName: ".htm"; ValueData: "RustCleanBrowserHTML"; Tasks: registerbrowser
 Root: HKA; Subkey: "Software\Clients\StartMenuInternet\RustCleanBrowser\Capabilities\FileAssociations"; ValueType: string; ValueName: ".html"; ValueData: "RustCleanBrowserHTML"; Tasks: registerbrowser
+Root: HKA; Subkey: "Software\Clients\StartMenuInternet\RustCleanBrowser\Capabilities\FileAssociations"; ValueType: string; ValueName: ".pdf"; ValueData: "RustCleanBrowserPDF"; Tasks: registerbrowser
 Root: HKA; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "{#AppName}"; ValueData: "Software\Clients\StartMenuInternet\RustCleanBrowser\Capabilities"; Flags: uninsdeletevalue; Tasks: registerbrowser
 ; ProgIDs used by the associations above.
 Root: HKA; Subkey: "Software\Classes\RustCleanBrowserURL"; ValueType: string; ValueData: "{#AppName} URL"; Flags: uninsdeletekey; Tasks: registerbrowser
@@ -88,6 +89,9 @@ Root: HKA; Subkey: "Software\Classes\RustCleanBrowserURL\shell\open\command"; Va
 Root: HKA; Subkey: "Software\Classes\RustCleanBrowserHTML"; ValueType: string; ValueData: "{#AppName} HTML Document"; Flags: uninsdeletekey; Tasks: registerbrowser
 Root: HKA; Subkey: "Software\Classes\RustCleanBrowserHTML\DefaultIcon"; ValueType: string; ValueData: "{app}\{#AppExe},0"; Tasks: registerbrowser
 Root: HKA; Subkey: "Software\Classes\RustCleanBrowserHTML\shell\open\command"; ValueType: string; ValueData: """{app}\{#AppExe}"" ""%1"""; Tasks: registerbrowser
+Root: HKA; Subkey: "Software\Classes\RustCleanBrowserPDF"; ValueType: string; ValueData: "{#AppName} PDF Document"; Flags: uninsdeletekey; Tasks: registerbrowser
+Root: HKA; Subkey: "Software\Classes\RustCleanBrowserPDF\DefaultIcon"; ValueType: string; ValueData: "{app}\{#AppExe},0"; Tasks: registerbrowser
+Root: HKA; Subkey: "Software\Classes\RustCleanBrowserPDF\shell\open\command"; ValueType: string; ValueData: """{app}\{#AppExe}"" ""%1"""; Tasks: registerbrowser
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent

@@ -130,6 +130,7 @@ impl BrowserApp {
         let bus_load = self.bus.clone();
         let bus_new = self.bus.clone();
         let bus_dl = self.bus.clone();
+        let bus_done = self.bus.clone();
 
         let builder = if let Some(ctx) = self.web_context.as_mut() {
             WebViewBuilder::new_with_web_context(ctx)
@@ -163,15 +164,39 @@ impl BrowserApp {
                     finished,
                 });
             })
-            .with_new_window_req_handler(move |target_url, _features| {
-                bus_new.send(AppEvent::OpenInNewTab(target_url));
-                NewWindowResponse::Deny
+            // Sign-in / scripted popups (`window.open` with features, about:blank, OAuth hosts) keep
+            // their `window.opener` link via WebView2's own popup window; plain links become tabs.
+            // At most 3 native popups per 10s so a page can't spam windows.
+            .with_new_window_req_handler({
+                let budget = std::cell::Cell::new((std::time::Instant::now(), 0u32));
+                move |target_url, features| {
+                    let wanted = cfg!(windows)
+                        && super::helpers::wants_native_popup(
+                            &target_url,
+                            features.size.is_some() || features.position.is_some(),
+                        );
+                    let (since, n) = budget.get();
+                    let fresh = since.elapsed() > std::time::Duration::from_secs(10);
+                    if wanted && (fresh || n < 3) {
+                        budget.set(if fresh { (std::time::Instant::now(), 1) } else { (since, n + 1) });
+                        return NewWindowResponse::Allow;
+                    }
+                    bus_new.send(AppEvent::OpenInNewTab(target_url));
+                    NewWindowResponse::Deny
+                }
             })
             // Drive-by downloads have no consent UI in this browser: deny and
             // surface a toast instead of dropping files into Downloads silently.
+            // Exception: PDFs (the viewer's Save button, attachment PDFs) save to Downloads.
             .with_download_started_handler(move |url, _path| {
+                if super::helpers::is_pdf_url(&url) {
+                    return true;
+                }
                 bus_dl.send(AppEvent::DownloadBlocked(url));
                 false
+            })
+            .with_download_completed_handler(move |_url, path, success| {
+                bus_done.send(AppEvent::DownloadDone { path, success });
             })
             .build_as_child(&win_handle);
 
