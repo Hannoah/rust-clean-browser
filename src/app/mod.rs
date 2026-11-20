@@ -109,6 +109,8 @@ pub enum AppEvent {
     OpenInNewTab(String),
     /// A WebView download was denied for lack of a consent UI.
     DownloadBlocked(String),
+    /// An allowed (PDF) download finished.
+    DownloadDone { path: Option<std::path::PathBuf>, success: bool },
     /// A queued favicon fetch finished.
     Favicon(favicon::Next),
     /// `<link>`s of the page shown in the JS-mode WebView.

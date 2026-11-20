@@ -294,6 +294,19 @@ impl BrowserApp {
                     if self.tabs[idx].load_seq != load_seq {
                         continue;
                     }
+                    // PDF / image / media without a telltale extension: let WebView2's viewers render it.
+                    if error.starts_with(crate::cleaner::NOT_HTML_ERR)
+                        && !self.tabs[idx].js_mode
+                        && !self.tabs[idx].force_blitz
+                        && (url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://"))
+                    {
+                        self.tabs[idx].url = url;
+                        self.tabs[idx].is_loading = false;
+                        self.set_status_note("WebView2 뷰어로 열기");
+                        self.mount_or_navigate_webview(idx);
+                        self.rebuild_chrome();
+                        continue;
+                    }
                     if self.tabs[idx].revalidating {
                         // Offline / server error: keep showing the cached copy.
                         self.tabs[idx].revalidating = false;
@@ -403,7 +416,19 @@ impl BrowserApp {
                         self.rebuild_chrome();
                     }
                 }
+                // A denied `about:blank` popup has nothing to show; never open it as a blank tab.
+                AppEvent::OpenInNewTab(url) if url == "about:blank" => {}
                 AppEvent::OpenInNewTab(url) => self.open_new_tab_inheriting_js(&url),
+                AppEvent::DownloadDone { path, success } => {
+                    let name = path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
+                    let msg = match (success, name) {
+                        (true, Some(n)) => format!("다운로드 폴더에 저장됨: {n}"),
+                        (true, None) => "저장 완료".to_string(),
+                        (false, _) => "저장 실패".to_string(),
+                    };
+                    self.set_status_note(&msg);
+                    self.rebuild_chrome();
+                }
                 AppEvent::DownloadBlocked(url) => {
                     self.set_status_note(&format!("다운로드 차단됨: {}", short_host(&url)));
                     self.rebuild_chrome();
