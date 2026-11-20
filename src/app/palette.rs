@@ -225,7 +225,7 @@ impl BrowserApp {
         }
 
         // 2. Commands
-        let commands: Vec<(String, &'static str, &'static str, &'static str, PaletteIcon, &'static str)> = vec![
+        let mut commands: Vec<(String, &'static str, &'static str, &'static str, PaletteIcon, &'static str)> = vec![
             ("new-tab".into(), "새 탭 열기", "빈 대시보드 및 주소창 포커스", if is_mac { "⌘T" } else { "Ctrl+T" }, PaletteIcon::Command, "new tab"),
             ("open-find".into(), "페이지 내 찾기", "현재 페이지에서 텍스트 검색", if is_mac { "⌘F" } else { "Ctrl+F" }, PaletteIcon::Search, "find search"),
             ("toggle-reader".into(), if active.reader_mode { "리더 모드 끄기" } else { "리더 모드 켜기" }, "방해 요소 없는 읽기 화면으로 전환", "Alt+R", PaletteIcon::Book, "reader article"),
@@ -248,6 +248,20 @@ impl BrowserApp {
             ("close-current-tab".into(), "현재 탭 닫기", "현재 보고 있는 탭 닫기", if is_mac { "⌘W" } else { "Ctrl+W" }, PaletteIcon::Tab, "close tab"),
             ("zoom-reset".into(), "화면 배율 100% 초기화", "확대/축소 기본값으로 되돌리기", if is_mac { "⌘0" } else { "Ctrl+0" }, PaletteIcon::Command, "zoom reset"),
         ];
+
+        if active.is_pdf() {
+            commands.insert(
+                0,
+                (
+                    "pdf-editor".into(),
+                    if active.editing_pdf() { "PDF 필기 모드 끄기 (기본 뷰어)" } else { "PDF 필기 모드 (형광펜·그리기·메모)" },
+                    "형광펜, 손글씨, 텍스트 메모, 이미지 삽입 후 주석 포함 저장",
+                    "Alt+E",
+                    PaletteIcon::Book,
+                    "pdf 필기 메모 밑줄 형광펜 주석 annotate highlight draw note edit",
+                ),
+            );
+        }
 
         for (action, title, subtitle, shortcut, icon_kind, keywords) in commands {
             if !q.is_empty()

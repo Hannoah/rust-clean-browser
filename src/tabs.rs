@@ -37,6 +37,10 @@ pub struct Tab {
     pub raw_html: Option<Arc<str>>,
     /// Translated copy of `raw_html` while page translation is on (display only; never cached).
     pub translated: Option<Arc<str>>,
+    /// URL known to be a PDF even though its path doesn't say so (detected from the response).
+    pub pdf_hint: Option<String>,
+    /// URL being shown in the pdf.js annotator; only valid while it equals `url`.
+    pub pdf_editor: Option<String>,
 }
 
 impl Tab {
@@ -60,6 +64,8 @@ impl Tab {
             doc: None,
             raw_html: None,
             translated: None,
+            pdf_hint: None,
+            pdf_editor: None,
         }
     }
 
@@ -90,6 +96,16 @@ impl Tab {
     /// HTML to rebuild the document from: the translation when active, else the original.
     pub fn shown_html(&self) -> Option<Arc<str>> {
         self.translated.clone().or_else(|| self.raw_html.clone())
+    }
+
+    /// A PDF shown by WebView2 (viewer or annotator).
+    pub fn is_pdf(&self) -> bool {
+        self.js_mode && (crate::pdfjs::is_pdf_url(&self.url) || self.pdf_hint.as_deref() == Some(&self.url))
+    }
+
+    /// Showing this tab's PDF in the pdf.js annotator.
+    pub fn editing_pdf(&self) -> bool {
+        self.pdf_editor.as_deref() == Some(&self.url)
     }
 
     pub fn is_loaded(&self) -> bool {

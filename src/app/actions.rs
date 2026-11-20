@@ -106,6 +106,7 @@ impl BrowserApp {
                     self.rebuild_chrome();
                 }
                 "translate" => self.toggle_translate(),
+                "pdf-editor" => self.toggle_pdf_editor(),
                 "toggle-js" => self.toggle_js_mode(),
                 "toggle-reader" => self.toggle_reader_mode(),
                 "toggle-filter" => {
@@ -300,6 +301,7 @@ impl BrowserApp {
                         && !self.tabs[idx].force_blitz
                         && (url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://"))
                     {
+                        self.tabs[idx].pdf_hint = Some(url.clone());
                         self.tabs[idx].url = url;
                         self.tabs[idx].is_loading = false;
                         self.set_status_note("WebView2 뷰어로 열기");
@@ -401,7 +403,8 @@ impl BrowserApp {
                 } => {
                     if let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) {
                         self.tabs[idx].is_loading = !finished;
-                        if !url.is_empty() && url != "about:blank" && self.tabs[idx].url != url {
+                        // The annotator's own viewer URL must not replace the PDF's real URL.
+                        if !url.is_empty() && url != "about:blank" && self.tabs[idx].url != url && !self.tabs[idx].editing_pdf() {
                             self.tabs[idx].url = url;
                             if !finished {
                                 self.tabs[idx].title = crate::tabs::short_title_for_url(&self.tabs[idx].url);

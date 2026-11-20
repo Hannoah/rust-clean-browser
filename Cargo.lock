@@ -3134,6 +3134,7 @@ dependencies = [
  "keyboard-types",
  "kurbo",
  "libc",
+ "miniz_oxide 0.8.9",
  "peniko",
  "reqwest",
  "serde",

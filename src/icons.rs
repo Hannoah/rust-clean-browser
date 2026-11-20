@@ -42,6 +42,7 @@ pub enum Icon {
     ExternalLink,
     Check,
     PanelTop,
+    Pencil,
 }
 
 impl Icon {
@@ -82,6 +83,7 @@ impl Icon {
             Icon::BookOpen => {
                 r#"<path d="M8 4.2C6.8 3.2 4.8 2.8 2.5 3.2v9.2c2.3-.4 4.3 0 5.5 1 1.2-1 3.2-1.4 5.5-1V3.2c-2.3-.4-4.3 0-5.5 1z"/><path d="M8 4.2v9.2"/>"#
             }
+            Icon::Pencil => r#"<path d="M11.2 2.6l2.2 2.2-7.6 7.6-3 .8.8-3 7.6-7.6z"/><path d="M9.8 4l2.2 2.2"/>"#,
             Icon::Zap => r#"<path d="M9 2L4 9h4l-1 5 5-7H8l1-5z"/>"#,
             Icon::Code => r#"<path d="M5.5 4.8L2.3 8l3.2 3.2M10.5 4.8L13.7 8l-3.2 3.2M9 3.2L7 12.8"/>"#,
             Icon::ShieldCheck => {

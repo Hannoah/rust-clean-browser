@@ -599,6 +599,13 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
         );
     }
 
+    // PDF tabs: one-click switch between WebView2's viewer and the pdf.js annotator.
+    let pdf_btn = if active.is_pdf() {
+        let (cls, label) = if active.editing_pdf() { ("pill js", "필기 끄기") } else { ("pill", "필기") };
+        format!(r#"<div class="{cls}" data-action="pdf-editor">{}<span>{label}</span></div>"#, svg(Icon::Pencil, 12))
+    } else {
+        String::new()
+    };
     let (engine_cls, engine_svg, engine_label) = if active.js_mode {
         ("pill js", svg(Icon::Code, 12), "JS")
     } else {
@@ -620,7 +627,7 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
 
     let _ = write!(
         h,
-        r#"<div class="{engine_cls}" data-action="toggle-js">{engine_svg}<span>{engine_label}</span></div>
+        r#"{pdf_btn}<div class="{engine_cls}" data-action="toggle-js">{engine_svg}<span>{engine_label}</span></div>
   <div class="{shield_cls}" data-action="toggle-filter">{shield_svg}<span>{shield_label}</span></div>
   <div class="pill num" data-action="trim-memory">{cpu_svg}<span>{ram_label}</span></div>
   <div class="vsep"></div>

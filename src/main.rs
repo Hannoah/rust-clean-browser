@@ -12,6 +12,7 @@ mod icons;
 mod memory;
 mod net;
 mod page_cache;
+mod pdfjs;
 mod prefs;
 mod single;
 mod tabs;

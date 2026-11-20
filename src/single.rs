@@ -14,6 +14,12 @@ use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// 128 random bits as hex. `RandomState` is seeded from the OS RNG: unpredictable without a dependency.
+pub fn random_token() -> String {
+    let rand = || RandomState::new().build_hasher().finish();
+    format!("{:016x}{:016x}", rand(), rand())
+}
+
 fn info_path() -> Option<PathBuf> {
     app_data_dir().map(|d| d.join("instance"))
 }
@@ -42,9 +48,7 @@ pub fn listen(on_url: impl Fn(String) + Send + 'static) {
     let Some(path) = info_path() else { return };
     let Ok(listener) = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)) else { return };
     let Ok(addr) = listener.local_addr() else { return };
-    // RandomState is seeded from the OS RNG: unpredictable without adding a dependency.
-    let rand = || RandomState::new().build_hasher().finish();
-    let token = format!("{:016x}{:016x}", rand(), rand());
+    let token = random_token();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
