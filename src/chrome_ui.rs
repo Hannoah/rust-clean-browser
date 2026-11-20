@@ -2134,7 +2134,7 @@ mod tests {
         );
         assert!(suggest_html.contains("열린 탭"));
         assert!(render_error_page("https://a.test/", "timeout", true).contains("rust://open-js"));
-        assert!(render_link_preview_html("https://rust-lang.org/").contains("Ctrl+클릭 새 탭"));
+        assert!(render_link_preview_html("https://rust-lang.org/").contains("+클릭 새 탭"));
         assert_eq!(chrome_height(false), TITLEBAR_HEIGHT + TOOLBAR_HEIGHT);
         assert_eq!(chrome_height(true), TITLEBAR_HEIGHT + TOOLBAR_HEIGHT + BMBAR_HEIGHT);
 
