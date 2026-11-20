@@ -1,7 +1,11 @@
 초경량 순수 Rust 웹 브라우저 — 적은 메모리, 빠른 로딩, Chrome 북마크 연동.
 *Ultra-lightweight pure-Rust web browser — low memory, instant page loads, Chrome bookmark import.*
 
-## 이번 버전 (v0.4.4)
+## 이번 버전 (v0.4.5)
+
+- **로컬 HTML 앱 호환**: `file://`로 연 `.html`에 실행되는 스크립트나 `onclick` 핸들러가 있으면 자동으로 JS 모드로 열기 (Clean 모드가 스크립트를 제거해 빈 화면/버튼 먹통이던 문제 수정)
+
+### v0.4.4
 
 - **PDF 지원 대폭 강화**
   - `.pdf` 주소·로컬 파일·확장자 없는 PDF 응답을 WebView2 내장 뷰어(검색·확대/축소·회전·인쇄·저장·목차)로 자동 열기, 뷰어 저장은 다운로드 폴더로(그 외 다운로드는 계속 차단)
