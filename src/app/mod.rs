@@ -212,6 +212,8 @@ pub struct BrowserApp {
     bm_drag: Option<BookmarkDrag>,
     /// Active horizontal drag of a tab on the tab strip to reorder tabs.
     tab_drag: Option<TabDrag>,
+    /// PDFs opened in the pdf.js annotator (see `pdfjs.rs`).
+    pdf_sources: Arc<crate::pdfjs::PdfSources>,
     /// Set when clicking an unfocused `#url-bar`, so a click without drag selects all text.
     url_bar_select_all_on_click: Option<PhysicalPosition<f64>>,
 }
@@ -254,6 +256,7 @@ impl BrowserApp {
             _ => ColorScheme::Light,
         };
         let mut app = Self {
+            pdf_sources: Arc::default(),
             window: None,
             renderer: VelloCpuWindowRenderer::new(),
             bus,

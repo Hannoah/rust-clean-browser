@@ -203,11 +203,6 @@ pub(super) fn resume_webview(wv: &WebView) {
     let _ = wv;
 }
 
-/// `true` when the URL path names a PDF (`.pdf`, any case; query/fragment ignored).
-pub(super) fn is_pdf_url(url: &str) -> bool {
-    Url::parse(url).is_ok_and(|u| u.path().to_ascii_lowercase().ends_with(".pdf"))
-}
-
 /// Should `window.open` get a real popup window (keeps `window.opener` / `window.close()`) instead
 /// of a new tab? Sign-in popups talk back to their opener, so a detached tab ends up blank.
 pub(super) fn wants_native_popup(url: &str, has_window_features: bool) -> bool {
@@ -236,7 +231,7 @@ pub(super) fn wants_native_popup(url: &str, has_window_features: bool) -> bool {
 /// (Microsoft Entra Conditional Access checks device compliance via WebView2's OS-account SSO).
 pub(super) fn requires_js_engine(url: &str) -> bool {
     // PDFs are shown by WebView2's built-in viewer (search, zoom, thumbnails, print, annotate).
-    if is_pdf_url(url) {
+    if crate::pdfjs::is_pdf_url(url) {
         return true;
     }
     const JS_HOSTS: &[&str] = &[

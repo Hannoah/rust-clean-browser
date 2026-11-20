@@ -91,6 +91,8 @@ impl BrowserApp {
             return;
         }
         let tab_id = self.tabs[tab_idx].id;
+        // The annotator is addressed by its own viewer URL; `tab.url` stays the PDF's real URL.
+        let load = if self.tabs[tab_idx].editing_pdf() { self.pdf_sources.editor_url(&url) } else { url.clone() };
         self.tabs[tab_idx].unload();
         self.tabs[tab_idx].js_mode = true;
 
@@ -112,7 +114,7 @@ impl BrowserApp {
             self.tabs[tab_idx].is_loading = true;
             let _ = wv.set_bounds(self.webview_bounds());
             let _ = wv.zoom(self.tabs[tab_idx].zoom as f64);
-            let _ = wv.load_url(&url);
+            let _ = wv.load_url(&load);
             return;
         }
 
@@ -151,7 +153,13 @@ impl BrowserApp {
         let win_handle = WinHandle(&*win);
 
         let built = builder
-            .with_url(&url)
+            .with_url(&load)
+            .with_initialization_script(crate::pdfjs::INIT_SCRIPT)
+            .with_asynchronous_custom_protocol("rcbpdf".into(), {
+                let (sources, jar, rt) =
+                    (Arc::clone(&self.pdf_sources), Arc::clone(&self.net_provider.cookies), tokio::runtime::Handle::current());
+                move |_id, req, responder| crate::pdfjs::handle(&sources, &jar, &rt, req, responder)
+            })
             .with_bounds(bounds)
             .with_document_title_changed_handler(move |title| {
                 bus_title.send(AppEvent::WebViewTitleChanged { tab_id, title });
@@ -189,7 +197,7 @@ impl BrowserApp {
             // surface a toast instead of dropping files into Downloads silently.
             // Exception: PDFs (the viewer's Save button, attachment PDFs) save to Downloads.
             .with_download_started_handler(move |url, _path| {
-                if super::helpers::is_pdf_url(&url) {
+                if crate::pdfjs::is_pdf_url(&url) || url.starts_with(crate::pdfjs::BLOB_PREFIX) {
                     return true;
                 }
                 bus_dl.send(AppEvent::DownloadBlocked(url));
@@ -788,6 +796,26 @@ impl BrowserApp {
             let scroll = self.current_scroll_y();
             self.apply_html_to_tab(idx, url, raw, Some(scroll));
         }
+    }
+
+    /// PDF tab: switch between WebView2's viewer and the pdf.js annotator (highlight/draw/text/save).
+    pub(super) fn toggle_pdf_editor(&mut self) {
+        self.ensure_active_valid();
+        let idx = self.active_tab;
+        let tab = &mut self.tabs[idx];
+        if !tab.is_pdf() {
+            self.set_status_note("PDF 문서에서만 사용할 수 있음");
+            return self.rebuild_chrome();
+        }
+        tab.pdf_editor = if tab.editing_pdf() { None } else { Some(tab.url.clone()) };
+        let on = tab.editing_pdf();
+        self.set_status_note(if on {
+            "PDF 필기 모드 · 상단 도구로 형광펜·그리기·텍스트 추가, 저장 버튼으로 주석 포함 저장"
+        } else {
+            "기본 PDF 뷰어로 전환"
+        });
+        self.mount_or_navigate_webview(idx);
+        self.rebuild_chrome();
     }
 
     pub(super) fn toggle_reader_mode(&mut self) {

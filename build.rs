@@ -2,6 +2,41 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Every file under `dir` as (path relative to `root` with `/`, absolute path).
+fn collect(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    let mut entries: Vec<_> = entries.flatten().collect();
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        let p = e.path();
+        if p.is_dir() {
+            collect(root, &p, out);
+        } else if let Ok(rel) = p.strip_prefix(root) {
+            out.push((rel.to_string_lossy().replace('\\', "/"), p.clone()));
+        }
+    }
+}
+
+/// Embeds the pdf.js annotator (`vendor/pdfjs`), deflate-compressed, as `FILES` for `src/pdfjs.rs`.
+fn embed_pdfjs(out_path: &Path) {
+    println!("cargo:rerun-if-changed=vendor/pdfjs");
+    let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap_or_default()).join("vendor").join("pdfjs");
+    let mut files = Vec::new();
+    collect(&root, &root, &mut files);
+    // LICENSE ships with the source tree, not in the served app.
+    files.retain(|(rel, _)| rel != "LICENSE");
+    let mut code = String::from("pub static FILES: &[(&str, &[u8])] = &[\n");
+    for (i, (rel, path)) in files.iter().enumerate() {
+        let Ok(data) = fs::read(path) else { continue };
+        let z = out_path.join(format!("pdfjs_{i}.z"));
+        if fs::write(&z, miniz_oxide::deflate::compress_to_vec(&data, 9)).is_ok() {
+            code.push_str(&format!("    ({rel:?}, include_bytes!({:?})),\n", z.display().to_string()));
+        }
+    }
+    code.push_str("];\n");
+    let _ = fs::write(out_path.join("pdfjs_assets.rs"), code);
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
@@ -9,6 +44,7 @@ fn main() {
         return;
     };
     let out_path = PathBuf::from(&out_dir);
+    embed_pdfjs(&out_path);
 
     // OUT_DIR looks like: target/<profile>/build/<pkg>-<hash>/out
     let Some(profile_dir) = out_path.ancestors().nth(3).map(Path::to_path_buf) else {
