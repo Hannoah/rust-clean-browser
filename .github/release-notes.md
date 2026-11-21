@@ -1,7 +1,14 @@
 초경량 순수 Rust 웹 브라우저 — 적은 메모리, 빠른 로딩, Chrome 북마크 연동.
 *Ultra-lightweight pure-Rust web browser — low memory, instant page loads, Chrome bookmark import.*
 
-## 이번 버전 (v0.4.5)
+## 이번 버전 (v0.4.6)
+
+- **로그인 쿠키 암호화 저장**: Windows에서 `cookies.json`을 DPAPI로 사용자 계정에 묶어 암호화(그 외 플랫폼은 파일 권한 0600). 기존 평문 파일은 그대로 읽히고 다음 저장 때 암호화됩니다 (이전 버전으로 되돌리면 암호화된 쿠키를 읽지 못해 다시 로그인해야 함)
+- **HTML 살균 강화**: 따옴표 안의 `>`로 `onclick` 등이 걸러지지 않던 문제, 공백/엔티티로 위장한 `javascript:` URL, 닫히지 않은 태그가 살균 없이 통과하던 문제 수정
+- 단일 인스턴스·PDF 토큰을 OS 난수(CSPRNG)로 생성, 내부 캐시 크기 상한, 번역은 비공식 Google 엔드포인트라 실패할 수 있음을 README에 명시
+- 내부: PR용 CI(fmt·clippy·test) 추가, clippy 경고 전부 해소, 코드 포맷 통일
+
+### v0.4.5
 
 - **로컬 HTML 앱 호환**: `file://`로 연 `.html`에 실행되는 스크립트나 `onclick` 핸들러가 있으면 자동으로 JS 모드로 열기 (Clean 모드가 스크립트를 제거해 빈 화면/버튼 먹통이던 문제 수정)
 
