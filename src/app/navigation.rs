@@ -3,8 +3,7 @@
 use super::helpers::{RESIZE_EDGE, normalize_url_input, persist_session_cookies, requires_js_engine};
 use super::{AppEvent, BrowserApp, ClosedTab};
 use crate::chrome_ui::{
-    parse_query_param, render_bookmarks_page, render_error_page, render_history_page,
-    render_home_page,
+    parse_query_param, render_bookmarks_page, render_error_page, render_history_page, render_home_page,
 };
 use crate::cleaner::{ReaderFont, ReaderTheme, ReaderWidth, process_fetched_document};
 use crate::memory::{trim_process_working_set, working_set_mb};
@@ -27,7 +26,11 @@ impl BrowserApp {
         let logical_h = ((self.win_size.height as f64) / scale).round().max(1.0) as u32;
         let chrome_h = self.chrome_height();
         // Leave a thin frame around the child WebView so window edges stay resizable.
-        let inset = if self.maximized || !cfg!(target_os = "windows") { 0 } else { RESIZE_EDGE };
+        let inset = if self.maximized || !cfg!(target_os = "windows") {
+            0
+        } else {
+            RESIZE_EDGE
+        };
         let content_h = logical_h.saturating_sub(chrome_h + inset).max(1);
         WryRect {
             position: dpi::LogicalPosition::new(inset as i32, chrome_h as i32).into(),
@@ -77,10 +80,10 @@ impl BrowserApp {
 
     /// Frees the parked WebView if it belongs to `tab_id` (e.g. that tab was closed).
     fn drop_parked_webview(&mut self, tab_id: u64) {
-        if let Some(pos) = self.parked_webviews.iter().position(|(id, _)| *id == tab_id) {
-            if let Some((_, wv)) = self.parked_webviews.remove(pos) {
-                self.discard_webview(wv);
-            }
+        if let Some(pos) = self.parked_webviews.iter().position(|(id, _)| *id == tab_id)
+            && let Some((_, wv)) = self.parked_webviews.remove(pos)
+        {
+            self.discard_webview(wv);
         }
     }
 
@@ -92,22 +95,25 @@ impl BrowserApp {
         }
         let tab_id = self.tabs[tab_idx].id;
         // The annotator is addressed by its own viewer URL; `tab.url` stays the PDF's real URL.
-        let load = if self.tabs[tab_idx].editing_pdf() { self.pdf_sources.editor_url(&url) } else { url.clone() };
+        let load = if self.tabs[tab_idx].editing_pdf() {
+            self.pdf_sources.editor_url(&url)
+        } else {
+            url.clone()
+        };
         self.tabs[tab_idx].unload();
         self.tabs[tab_idx].js_mode = true;
 
         // Returning to a parked tab: wake and show its live WebView as-is.
-        if self.active_webview.is_none() {
-            if let Some(pos) = self.parked_webviews.iter().position(|(id, _)| *id == tab_id) {
-                if let Some((_, wv)) = self.parked_webviews.remove(pos) {
-                    super::helpers::resume_webview(&wv);
-                    let _ = wv.set_bounds(self.webview_bounds());
-                    let _ = wv.set_visible(true);
-                    let _ = wv.zoom(self.tabs[tab_idx].zoom as f64);
-                    self.active_webview = Some(wv);
-                    return;
-                }
-            }
+        if self.active_webview.is_none()
+            && let Some(pos) = self.parked_webviews.iter().position(|(id, _)| *id == tab_id)
+            && let Some((_, wv)) = self.parked_webviews.remove(pos)
+        {
+            super::helpers::resume_webview(&wv);
+            let _ = wv.set_bounds(self.webview_bounds());
+            let _ = wv.set_visible(true);
+            let _ = wv.zoom(self.tabs[tab_idx].zoom as f64);
+            self.active_webview = Some(wv);
+            return;
         }
 
         if let Some(wv) = &self.active_webview {
@@ -145,8 +151,7 @@ impl BrowserApp {
         impl wry::raw_window_handle::HasWindowHandle for WinHandle<'_> {
             fn window_handle(
                 &self,
-            ) -> Result<wry::raw_window_handle::WindowHandle<'_>, wry::raw_window_handle::HandleError>
-            {
+            ) -> Result<wry::raw_window_handle::WindowHandle<'_>, wry::raw_window_handle::HandleError> {
                 self.0.window_handle()
             }
         }
@@ -156,8 +161,11 @@ impl BrowserApp {
             .with_url(&load)
             .with_initialization_script(crate::pdfjs::INIT_SCRIPT)
             .with_asynchronous_custom_protocol("rcbpdf".into(), {
-                let (sources, jar, rt) =
-                    (Arc::clone(&self.pdf_sources), Arc::clone(&self.net_provider.cookies), tokio::runtime::Handle::current());
+                let (sources, jar, rt) = (
+                    Arc::clone(&self.pdf_sources),
+                    Arc::clone(&self.net_provider.cookies),
+                    tokio::runtime::Handle::current(),
+                );
                 move |_id, req, responder| crate::pdfjs::handle(&sources, &jar, &rt, req, responder)
             })
             .with_bounds(bounds)
@@ -186,7 +194,11 @@ impl BrowserApp {
                     let (since, n) = budget.get();
                     let fresh = since.elapsed() > std::time::Duration::from_secs(10);
                     if wanted && (fresh || n < 3) {
-                        budget.set(if fresh { (std::time::Instant::now(), 1) } else { (since, n + 1) });
+                        budget.set(if fresh {
+                            (std::time::Instant::now(), 1)
+                        } else {
+                            (since, n + 1)
+                        });
                         return NewWindowResponse::Allow;
                     }
                     bus_new.send(AppEvent::OpenInNewTab(target_url));
@@ -341,15 +353,17 @@ impl BrowserApp {
         let cache_key = url.split('#').next().unwrap_or(&url);
         let use_cache = !bypass_cache && pending_request.is_none();
         // Fast path: compact HTML cache hit (no DOM held in RAM when sleeping!)
-        if use_cache {
-            if let Some(cached) = self.html_cache.get(cache_key) {
-                self.apply_html_to_tab(idx, url, cached.raw_html, restore_scroll_y);
-                return;
-            }
+        if use_cache && let Some(cached) = self.html_cache.get(cache_key) {
+            self.apply_html_to_tab(idx, url, cached.raw_html, restore_scroll_y);
+            return;
         }
 
         // Disk cache hit: render the last copy instantly, then revalidate in the background.
-        let disk_hit = if use_cache { self.page_cache.get(cache_key) } else { None };
+        let disk_hit = if use_cache {
+            self.page_cache.get(cache_key)
+        } else {
+            None
+        };
 
         let Ok(parsed_url) = Url::parse(&url) else {
             self.show_error(idx, &url, "잘못된 URL 형식입니다.", Some("Invalid URL"));
@@ -390,28 +404,26 @@ impl BrowserApp {
         self.net_provider.fetch_document(
             request,
             signal,
-            move |final_url, bytes| {
-                match process_fetched_document(&bytes, &final_url, strip_iframes) {
-                    Ok((clean_html, is_spa_shell)) => {
-                        bus_ok.send(AppEvent::PageLoaded {
-                            tab_id,
-                            load_seq,
-                            requested_url,
-                            cacheable,
-                            final_url,
-                            clean_html: Arc::from(clean_html),
-                            is_spa_shell,
-                            restore_scroll_y,
-                        });
-                    }
-                    Err(reason) => {
-                        bus_ok.send(AppEvent::PageLoadFailed {
-                            tab_id,
-                            load_seq,
-                            url: fail_url_2,
-                            error: reason,
-                        });
-                    }
+            move |final_url, bytes| match process_fetched_document(&bytes, &final_url, strip_iframes) {
+                Ok((clean_html, is_spa_shell)) => {
+                    bus_ok.send(AppEvent::PageLoaded {
+                        tab_id,
+                        load_seq,
+                        requested_url,
+                        cacheable,
+                        final_url,
+                        clean_html: Arc::from(clean_html),
+                        is_spa_shell,
+                        restore_scroll_y,
+                    });
+                }
+                Err(reason) => {
+                    bus_ok.send(AppEvent::PageLoadFailed {
+                        tab_id,
+                        load_seq,
+                        url: fail_url_2,
+                        error: reason,
+                    });
                 }
             },
             move |err| {
@@ -461,27 +473,29 @@ impl BrowserApp {
         // Same-document #fragment jump without refetching
         let cur_base = current_url.split('#').next().unwrap_or(&current_url);
         let new_base = target.split('#').next().unwrap_or(&target);
-        if request.is_none() && !self.tabs[idx].js_mode && cur_base == new_base {
-            if let (Some((_, frag)), Some(doc)) = (target.split_once('#'), &mut self.tabs[idx].doc) {
-                doc.scroll_to_fragment(frag);
-                // Record fragment navigations so Back restores the prior fragment/scroll.
-                if current_url != target {
-                    let scroll_y = self.current_scroll_y();
-                    let prev_js = self.tabs[idx].js_mode;
-                    let prev_force = self.tabs[idx].force_blitz;
-                    self.tabs[idx].history_back.push(HistoryEntry {
-                        url: current_url,
-                        scroll_y,
-                        js_mode: prev_js,
-                        force_blitz: prev_force,
-                    });
-                    self.tabs[idx].history_forward.clear();
-                }
-                self.tabs[idx].url = target;
-                self.chrome_focused = false;
-                self.rebuild_chrome();
-                return;
+        if request.is_none()
+            && !self.tabs[idx].js_mode
+            && cur_base == new_base
+            && let (Some((_, frag)), Some(doc)) = (target.split_once('#'), &mut self.tabs[idx].doc)
+        {
+            doc.scroll_to_fragment(frag);
+            // Record fragment navigations so Back restores the prior fragment/scroll.
+            if current_url != target {
+                let scroll_y = self.current_scroll_y();
+                let prev_js = self.tabs[idx].js_mode;
+                let prev_force = self.tabs[idx].force_blitz;
+                self.tabs[idx].history_back.push(HistoryEntry {
+                    url: current_url,
+                    scroll_y,
+                    js_mode: prev_js,
+                    force_blitz: prev_force,
+                });
+                self.tabs[idx].history_forward.clear();
             }
+            self.tabs[idx].url = target;
+            self.chrome_focused = false;
+            self.rebuild_chrome();
+            return;
         }
 
         // Navigating to a new URL in the active tab invalidates any active/parked WebView so
@@ -548,8 +562,7 @@ impl BrowserApp {
     /// Used for `window.open` / `target="_blank"` inside a JS-mode WebView so authenticated
     /// links keep using WebView2.
     pub(super) fn open_new_tab_inheriting_js(&mut self, url: &str) {
-        let inherit_js = self.tabs.get(self.active_tab).is_some_and(|t| t.js_mode)
-            && !url.starts_with("rust://");
+        let inherit_js = self.tabs.get(self.active_tab).is_some_and(|t| t.js_mode) && !url.starts_with("rust://");
         self.open_new_tab_with_js(url, inherit_js);
     }
 
@@ -568,12 +581,13 @@ impl BrowserApp {
 
     /// Ctrl+click: add a sleeping tab right after the active one without loading it.
     pub(super) fn open_background_tab(&mut self, url: &str) {
-        if let Ok(parsed) = Url::parse(url) {
-            if parsed.scheme() == "file" && !crate::net::is_app_data_file_url(&parsed) {
-                self.set_status_note("차단됨: 페이지의 로컬 파일 접근");
-                self.rebuild_chrome();
-                return;
-            }
+        if let Ok(parsed) = Url::parse(url)
+            && parsed.scheme() == "file"
+            && !crate::net::is_app_data_file_url(&parsed)
+        {
+            self.set_status_note("차단됨: 페이지의 로컬 파일 접근");
+            self.rebuild_chrome();
+            return;
         }
         let id = self.next_tab_id;
         self.next_tab_id += 1;
@@ -644,61 +658,65 @@ impl BrowserApp {
     pub(super) fn history_step(&mut self, forward: bool) {
         self.ensure_active_valid();
         let idx = self.active_tab;
-        if self.tabs[idx].js_mode {
-            if let Some(wv) = &self.active_webview {
-                let can_step = if forward {
-                    wv.can_go_forward().unwrap_or(false)
-                } else {
-                    wv.can_go_back().unwrap_or(false)
-                };
-                if can_step {
-                    let res = if forward { wv.go_forward() } else { wv.go_back() };
-                    if res.is_ok() {
-                        // Keep tab stacks in sync optimistically; WebViewPageLoad
-                        // will correct tab.url asynchronously when the page lands.
-                        let scroll_y = self.current_scroll_y();
-                        let cur = self.tabs[idx].url.clone();
-                        // Move current URL to the opposite stack as a placeholder so
-                        // rapid back/forward doesn't desync; real URL arrives via event.
-                        if forward {
-                            let entry = self.tabs[idx].history_forward.pop();
-                            if let Some(e) = entry {
-                                let cur_js = self.tabs[idx].js_mode;
-                                let cur_force = self.tabs[idx].force_blitz;
-                                self.tabs[idx].history_back.push(HistoryEntry {
-                                    url: cur,
-                                    scroll_y,
-                                    js_mode: cur_js,
-                                    force_blitz: cur_force,
-                                });
-                                self.tabs[idx].url = e.url;
-                                self.tabs[idx].scroll_y = e.scroll_y;
-                            }
-                        } else {
-                            let entry = self.tabs[idx].history_back.pop();
-                            if let Some(e) = entry {
-                                let cur_js = self.tabs[idx].js_mode;
-                                let cur_force = self.tabs[idx].force_blitz;
-                                self.tabs[idx].history_forward.push(HistoryEntry {
-                                    url: cur,
-                                    scroll_y,
-                                    js_mode: cur_js,
-                                    force_blitz: cur_force,
-                                });
-                                self.tabs[idx].url = e.url;
-                                self.tabs[idx].scroll_y = e.scroll_y;
-                            }
+        if self.tabs[idx].js_mode
+            && let Some(wv) = &self.active_webview
+        {
+            let can_step = if forward {
+                wv.can_go_forward().unwrap_or(false)
+            } else {
+                wv.can_go_back().unwrap_or(false)
+            };
+            if can_step {
+                let res = if forward { wv.go_forward() } else { wv.go_back() };
+                if res.is_ok() {
+                    // Keep tab stacks in sync optimistically; WebViewPageLoad
+                    // will correct tab.url asynchronously when the page lands.
+                    let scroll_y = self.current_scroll_y();
+                    let cur = self.tabs[idx].url.clone();
+                    // Move current URL to the opposite stack as a placeholder so
+                    // rapid back/forward doesn't desync; real URL arrives via event.
+                    if forward {
+                        let entry = self.tabs[idx].history_forward.pop();
+                        if let Some(e) = entry {
+                            let cur_js = self.tabs[idx].js_mode;
+                            let cur_force = self.tabs[idx].force_blitz;
+                            self.tabs[idx].history_back.push(HistoryEntry {
+                                url: cur,
+                                scroll_y,
+                                js_mode: cur_js,
+                                force_blitz: cur_force,
+                            });
+                            self.tabs[idx].url = e.url;
+                            self.tabs[idx].scroll_y = e.scroll_y;
                         }
-                        self.rebuild_chrome();
-                        return;
+                    } else {
+                        let entry = self.tabs[idx].history_back.pop();
+                        if let Some(e) = entry {
+                            let cur_js = self.tabs[idx].js_mode;
+                            let cur_force = self.tabs[idx].force_blitz;
+                            self.tabs[idx].history_forward.push(HistoryEntry {
+                                url: cur,
+                                scroll_y,
+                                js_mode: cur_js,
+                                force_blitz: cur_force,
+                            });
+                            self.tabs[idx].url = e.url;
+                            self.tabs[idx].scroll_y = e.scroll_y;
+                        }
                     }
+                    self.rebuild_chrome();
+                    return;
                 }
             }
         }
         let scroll_y = self.current_scroll_y();
         let entry = {
             let tab = &mut self.tabs[idx];
-            let from = if forward { &mut tab.history_forward } else { &mut tab.history_back };
+            let from = if forward {
+                &mut tab.history_forward
+            } else {
+                &mut tab.history_back
+            };
             from.pop()
         };
         let Some(entry) = entry else {
@@ -706,7 +724,11 @@ impl BrowserApp {
         };
         self.destroy_active_webview();
         let tab = &mut self.tabs[idx];
-        let to = if forward { &mut tab.history_back } else { &mut tab.history_forward };
+        let to = if forward {
+            &mut tab.history_back
+        } else {
+            &mut tab.history_forward
+        };
         to.push(HistoryEntry {
             url: std::mem::replace(&mut tab.url, entry.url),
             scroll_y,

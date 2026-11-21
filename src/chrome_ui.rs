@@ -365,7 +365,7 @@ fn substitute_icon_entities(html: &str) -> String {
             out.push_str(sub);
             rest = &entity[8..];
         } else {
-            out.push_str("&");
+            out.push('&');
             rest = &entity[1..];
         }
     }
@@ -533,7 +533,11 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
         None => active.url.as_str(),
     };
     let focus_key = if cfg!(target_os = "macos") { "⌘L" } else { "Ctrl+L" };
-    let toolbar_cls = if state.show_bookmarks_bar { "toolbar" } else { "toolbar no-bm" };
+    let toolbar_cls = if state.show_bookmarks_bar {
+        "toolbar"
+    } else {
+        "toolbar no-bm"
+    };
     let _ = write!(
         h,
         r#"<div class="{toolbar_cls}">
@@ -601,8 +605,15 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
 
     // PDF tabs: one-click switch between WebView2's viewer and the pdf.js annotator.
     let pdf_btn = if active.is_pdf() {
-        let (cls, label) = if active.editing_pdf() { ("pill js", "필기 끄기") } else { ("pill", "필기") };
-        format!(r#"<div class="{cls}" data-action="pdf-editor">{}<span>{label}</span></div>"#, svg(Icon::Pencil, 12))
+        let (cls, label) = if active.editing_pdf() {
+            ("pill js", "필기 끄기")
+        } else {
+            ("pill", "필기")
+        };
+        format!(
+            r#"<div class="{cls}" data-action="pdf-editor">{}<span>{label}</span></div>"#,
+            svg(Icon::Pencil, 12)
+        )
     } else {
         String::new()
     };
@@ -612,7 +623,11 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
         ("pill clean", svg(Icon::Zap, 12), "Clean")
     };
     let (shield_cls, shield_svg, shield_label) = if state.filter_enabled {
-        ("pill shield-on num", svg(Icon::ShieldCheck, 13), state.blocked_count.to_string())
+        (
+            "pill shield-on num",
+            svg(Icon::ShieldCheck, 13),
+            state.blocked_count.to_string(),
+        )
     } else {
         ("pill", svg(Icon::ShieldOff, 13), "OFF".to_string())
     };
@@ -681,7 +696,9 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
             }
         }
         if rendered == 0 {
-            h.push_str(r#"<span class="bm-empty">북마크를 추가하려면 주소창의 ☆를 누르세요 · Ctrl+Shift+B 숨기기</span>"#);
+            h.push_str(
+                r#"<span class="bm-empty">북마크를 추가하려면 주소창의 ☆를 누르세요 · Ctrl+Shift+B 숨기기</span>"#,
+            );
         }
         h.push_str(r#"</div><div class="bm-right">"#);
         if state.bookmarks.bar.len() > shown_bar {
@@ -882,7 +899,11 @@ pub fn render_suggest_popup_html(rows: &[Suggestion], selected: usize, query: &s
                 "이동",
             ),
             SuggestKind::OpenTab => {
-                let title = if row.title.trim().is_empty() { &row.url } else { &row.title };
+                let title = if row.title.trim().is_empty() {
+                    &row.url
+                } else {
+                    &row.title
+                };
                 (
                     favicon_html(&row.title, &row.url),
                     highlight_escaped(&truncate_chars(title, 46), query),
@@ -892,7 +913,11 @@ pub fn render_suggest_popup_html(rows: &[Suggestion], selected: usize, query: &s
                 )
             }
             SuggestKind::Bookmark => {
-                let title = if row.title.trim().is_empty() { &row.url } else { &row.title };
+                let title = if row.title.trim().is_empty() {
+                    &row.url
+                } else {
+                    &row.title
+                };
                 (
                     favicon_html(&row.title, &row.url),
                     highlight_escaped(&truncate_chars(title, 46), query),
@@ -902,7 +927,11 @@ pub fn render_suggest_popup_html(rows: &[Suggestion], selected: usize, query: &s
                 )
             }
             SuggestKind::History => {
-                let title = if row.title.trim().is_empty() { &row.url } else { &row.title };
+                let title = if row.title.trim().is_empty() {
+                    &row.url
+                } else {
+                    &row.title
+                };
                 (
                     favicon_html(&row.title, &row.url),
                     highlight_escaped(&truncate_chars(title, 46), query),
@@ -1127,7 +1156,11 @@ html, body {{ width: 100%; height: 100%; overflow: hidden; background: transpare
 .hint {{ color: var(--text-3); font-size: 10.5px; margin-left: 4px; flex-shrink: 0; }}
 </style></head><body><div class="pill">{ico}<span class="url">{u}</span><span class="hint">{hint}</span></div></body></html>"#,
         u = html_escape(&truncate_chars(url, 72)),
-        hint = if cfg!(target_os = "macos") { "⌘+클릭 새 탭" } else { "Ctrl+클릭 새 탭" },
+        hint = if cfg!(target_os = "macos") {
+            "⌘+클릭 새 탭"
+        } else {
+            "Ctrl+클릭 새 탭"
+        },
     )
 }
 
@@ -1217,6 +1250,8 @@ body { background: var(--surface-2); padding: 48px 28px 64px; }
 .key-item { display: inline-flex; align-items: center; gap: 5px; }
 "#;
 
+// ponytail: positional args are all plain stats; bundle into a struct if a 9th shows up.
+#[allow(clippy::too_many_arguments)]
 pub fn render_home_page(
     bookmarks: &BookmarkStore,
     history: &History,
@@ -1238,7 +1273,10 @@ pub fn render_home_page(
         .take(10);
     for item in urls {
         let icon = match crate::favicon::cached_icon_url(&item.url) {
-            Some(src) => format!(r#"<span class="tile-ic img"><img src="{}" /></span>"#, html_escape(&src)),
+            Some(src) => format!(
+                r#"<span class="tile-ic img"><img src="{}" /></span>"#,
+                html_escape(&src)
+            ),
             None => {
                 let (initial, color) = monogram_badge(&item.title, &item.url);
                 format!(r#"<span class="tile-ic" style="background:{color}">{initial}</span>"#)
@@ -1277,7 +1315,11 @@ pub fn render_home_page(
         recent_html.push_str(r#"<div class="hempty">최근 방문한 페이지가 여기에 표시됩니다.</div>"#);
     } else {
         for item in &recent_items {
-            let label = if item.title.trim().is_empty() { &item.url } else { &item.title };
+            let label = if item.title.trim().is_empty() {
+                &item.url
+            } else {
+                &item.title
+            };
             let _ = write!(
                 recent_html,
                 r#"<a class="hrow" href="{url}">{fav}<span class="hrow-t">{title}</span><span class="hrow-time num">{ago}</span></a>"#,
@@ -1364,7 +1406,9 @@ pub fn render_home_page(
         degraded_count = degraded_count,
     );
     if cfg!(target_os = "macos") {
-        h.replace("Ctrl+", "⌘").replace("⌘Tab", "Ctrl+Tab").replace("⌘클릭", "⌘+클릭")
+        h.replace("Ctrl+", "⌘")
+            .replace("⌘Tab", "Ctrl+Tab")
+            .replace("⌘클릭", "⌘+클릭")
     } else {
         h
     }
@@ -1441,11 +1485,7 @@ body { background: var(--surface-2); }
 "#;
 
 /// Chrome-style 2-column Bookmark Manager (`rust://bookmarks`, `?folder=...`, `?q=...`).
-pub fn render_bookmarks_page(
-    bookmarks: &BookmarkStore,
-    current_url: &str,
-    drop_target_folder: Option<&str>,
-) -> String {
+pub fn render_bookmarks_page(bookmarks: &BookmarkStore, current_url: &str, drop_target_folder: Option<&str>) -> String {
     let query = parse_query_param(current_url, "q");
     let folder_param = parse_query_param(current_url, "folder");
 
@@ -1697,7 +1737,11 @@ pub fn render_history_page(history: &History, current_url: &str) -> String {
         }
         let _ = write!(body, r#"<div class="group-t">{label}</div><div class="card">"#);
         for item in list {
-            let title = if item.title.trim().is_empty() { &item.url } else { &item.title };
+            let title = if item.title.trim().is_empty() {
+                &item.url
+            } else {
+                &item.title
+            };
             let del_q: String = url::form_urlencoded::byte_serialize(item.url.as_bytes()).collect();
             let _ = write!(
                 body,
@@ -1762,13 +1806,17 @@ pub(crate) fn is_suspicious_host(url: &str) -> bool {
     if host.is_empty() {
         return false;
     }
-    if host.to_ascii_lowercase().split('.').any(|label| label.starts_with("xn--")) {
+    if host
+        .to_ascii_lowercase()
+        .split('.')
+        .any(|label| label.starts_with("xn--"))
+    {
         return true;
     }
     let has_latin = host.chars().any(|c| c.is_ascii_alphabetic());
-    let has_lookalike = host.chars().any(|c| {
-        matches!(c, '\u{0400}'..='\u{04FF}' | '\u{0370}'..='\u{03FF}' | '\u{FF00}'..='\u{FFEF}')
-    });
+    let has_lookalike = host
+        .chars()
+        .any(|c| matches!(c, '\u{0400}'..='\u{04FF}' | '\u{0370}'..='\u{03FF}' | '\u{FF00}'..='\u{FFEF}'));
     has_latin && has_lookalike
 }
 
@@ -1956,7 +2004,9 @@ fn monogram_badge(title: &str, url: &str) -> (char, &'static str) {
         .find(|c| c.is_alphanumeric())
         .map(|c| c.to_ascii_uppercase())
         .unwrap_or('•');
-    let hash: usize = url.bytes().fold(0usize, |acc, b| acc.wrapping_mul(31).wrapping_add(b as usize));
+    let hash: usize = url
+        .bytes()
+        .fold(0usize, |acc, b| acc.wrapping_mul(31).wrapping_add(b as usize));
     (ch, PALETTE[hash % PALETTE.len()])
 }
 
@@ -2050,7 +2100,12 @@ mod tests {
         let mut doc = blitz_html::HtmlDocument::from_html(
             &html,
             blitz_dom::DocumentConfig {
-                viewport: Some(blitz_traits::shell::Viewport::new(800, 120, 1.0, blitz_traits::shell::ColorScheme::Light)),
+                viewport: Some(blitz_traits::shell::Viewport::new(
+                    800,
+                    120,
+                    1.0,
+                    blitz_traits::shell::ColorScheme::Light,
+                )),
                 style_threading: blitz_dom::StyleThreading::Sequential,
                 ..Default::default()
             },
@@ -2087,7 +2142,12 @@ mod tests {
         let mut doc = blitz_html::HtmlDocument::from_html(
             &home,
             blitz_dom::DocumentConfig {
-                viewport: Some(blitz_traits::shell::Viewport::new(1024, 768, 1.0, blitz_traits::shell::ColorScheme::Dark)),
+                viewport: Some(blitz_traits::shell::Viewport::new(
+                    1024,
+                    768,
+                    1.0,
+                    blitz_traits::shell::ColorScheme::Dark,
+                )),
                 style_threading: blitz_dom::StyleThreading::Sequential,
                 ..Default::default()
             },
@@ -2098,16 +2158,14 @@ mod tests {
 
     #[test]
     fn palette_find_suggest_and_error_render_and_resolve_in_blitz() {
-        let entries = vec![
-            PaletteEntry {
-                action: "new-tab".into(),
-                category: "빠른 명령",
-                title: "새 탭 열기".into(),
-                subtitle: "대시보드".into(),
-                shortcut: "Ctrl+T",
-                icon_kind: PaletteIcon::Command,
-            },
-        ];
+        let entries = vec![PaletteEntry {
+            action: "new-tab".into(),
+            category: "빠른 명령",
+            title: "새 탭 열기".into(),
+            subtitle: "대시보드".into(),
+            shortcut: "Ctrl+T",
+            icon_kind: PaletteIcon::Command,
+        }];
         let list_html = render_command_palette_list_html(&entries, 0, "새 탭");
         let palette_html = render_command_palette_shell_html("새 탭", &list_html);
         assert!(palette_html.contains("id=\"palette-input\""));
@@ -2116,7 +2174,12 @@ mod tests {
         let mut pdoc = blitz_html::HtmlDocument::from_html(
             &palette_html,
             blitz_dom::DocumentConfig {
-                viewport: Some(blitz_traits::shell::Viewport::new(PALETTE_WIDTH, 240, 1.0, blitz_traits::shell::ColorScheme::Dark)),
+                viewport: Some(blitz_traits::shell::Viewport::new(
+                    PALETTE_WIDTH,
+                    240,
+                    1.0,
+                    blitz_traits::shell::ColorScheme::Dark,
+                )),
                 html_parser_provider: Some(std::sync::Arc::new(blitz_html::HtmlProvider)),
                 style_threading: blitz_dom::StyleThreading::Sequential,
                 ..Default::default()
@@ -2124,7 +2187,8 @@ mod tests {
         );
         pdoc.resolve(0.0);
         let list_id = pdoc.get_element_by_id("palette-list").expect("palette-list");
-        pdoc.mutate().set_inner_html(list_id, &render_command_palette_list_html(&[], 0, "none"));
+        pdoc.mutate()
+            .set_inner_html(list_id, &render_command_palette_list_html(&[], 0, "none"));
         pdoc.resolve(0.1);
         assert!(pdoc.get_element_by_id("palette-sel").is_none());
 
@@ -2166,7 +2230,12 @@ mod tests {
         let mut cdoc = blitz_html::HtmlDocument::from_html(
             &chrome_html,
             blitz_dom::DocumentConfig {
-                viewport: Some(blitz_traits::shell::Viewport::new(1280, chrome_height(true), 1.0, blitz_traits::shell::ColorScheme::Dark)),
+                viewport: Some(blitz_traits::shell::Viewport::new(
+                    1280,
+                    chrome_height(true),
+                    1.0,
+                    blitz_traits::shell::ColorScheme::Dark,
+                )),
                 style_threading: blitz_dom::StyleThreading::Sequential,
                 ..Default::default()
             },
@@ -2176,7 +2245,10 @@ mod tests {
         let url_id = cdoc.get_element_by_id("url-bar").expect("url-bar");
         let omni_size = cdoc.get_node(omni_id).unwrap().final_layout().size;
         let url_size = cdoc.get_node(url_id).unwrap().final_layout().size;
-        assert!(omni_size.width > 300.0 && omni_size.height >= 32.0, "omni={omni_size:?}");
+        assert!(
+            omni_size.width > 300.0 && omni_size.height >= 32.0,
+            "omni={omni_size:?}"
+        );
         assert!(url_size.width > 200.0 && url_size.height >= 24.0, "url={url_size:?}");
     }
 

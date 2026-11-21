@@ -41,8 +41,7 @@ impl BrowserApp {
         let q_lower = query.to_lowercase();
         for tab in &self.tabs {
             if tab.url.starts_with("http")
-                && (tab.title.to_lowercase().contains(&q_lower)
-                    || tab.url.to_lowercase().contains(&q_lower))
+                && (tab.title.to_lowercase().contains(&q_lower) || tab.url.to_lowercase().contains(&q_lower))
             {
                 matches.push(Suggestion {
                     url: tab.url.clone(),
@@ -81,8 +80,16 @@ impl BrowserApp {
             std::iter::once(typed).chain(matches).collect()
         };
 
-        if let Some(popup) = self.popup.as_mut().filter(|p| matches!(p.kind, PopupKind::Suggest { .. })) {
-            popup.kind = PopupKind::Suggest { rows, selected: 0, query };
+        if let Some(popup) = self
+            .popup
+            .as_mut()
+            .filter(|p| matches!(p.kind, PopupKind::Suggest { .. }))
+        {
+            popup.kind = PopupKind::Suggest {
+                rows,
+                selected: 0,
+                query,
+            };
             self.refresh_popup();
             return;
         }
@@ -94,16 +101,18 @@ impl BrowserApp {
         let Some((x, y, width)) = self.url_bar_rect() else {
             return;
         };
-        let kind = PopupKind::Suggest { rows, selected: 0, query };
+        let kind = PopupKind::Suggest {
+            rows,
+            selected: 0,
+            query,
+        };
         self.show_popup(event_loop, POPUP_KEY.to_string(), kind, x, y + 4.0, width, false);
     }
 
     /// `Alt+Enter` in the address bar: opens the highlighted suggestion (if open) in a new tab.
     pub(super) fn suggest_open_new_tab(&mut self) -> bool {
         let url = match self.popup.as_ref().map(|p| &p.kind) {
-            Some(PopupKind::Suggest { rows, selected, .. }) => {
-                rows.get(*selected).map(|r| r.url.clone())
-            }
+            Some(PopupKind::Suggest { rows, selected, .. }) => rows.get(*selected).map(|r| r.url.clone()),
             _ => None,
         };
         let Some(url) = url else {
@@ -129,11 +138,9 @@ impl BrowserApp {
                 let url = row.url.clone();
                 let is_open_tab = row.kind == SuggestKind::OpenTab;
                 self.close_popup();
-                if is_open_tab {
-                    if let Some(idx) = self.tabs.iter().position(|t| t.url == url) {
-                        self.switch_tab(idx);
-                        return true;
-                    }
+                if is_open_tab && let Some(idx) = self.tabs.iter().position(|t| t.url == url) {
+                    self.switch_tab(idx);
+                    return true;
                 }
                 self.navigate_current(&url);
                 return true;
@@ -157,6 +164,10 @@ impl BrowserApp {
         let node = self.chrome_doc.get_node(id)?;
         let pos = node.absolute_position(0.0, 0.0);
         let size = node.final_layout().size;
-        Some((pos.x as f64, (pos.y + size.height) as f64, size.width.round().max(260.0) as u32))
+        Some((
+            pos.x as f64,
+            (pos.y + size.height) as f64,
+            size.width.round().max(260.0) as u32,
+        ))
     }
 }

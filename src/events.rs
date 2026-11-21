@@ -1,6 +1,4 @@
-use blitz_traits::events::{
-    BlitzImeEvent, BlitzKeyEvent, BlitzPointerId, KeyState, PointerDetails,
-};
+use blitz_traits::events::{BlitzImeEvent, BlitzKeyEvent, BlitzPointerId, KeyState, PointerDetails};
 use blitz_traits::shell::ColorScheme;
 use keyboard_types::{Code, Key, Modifiers, NamedKey};
 use winit::event::{ButtonSource, ElementState, Ime, KeyEvent as WinitKeyEvent, PointerKind, PointerSource};
@@ -50,9 +48,7 @@ pub fn winit_key_event_to_blitz(event: &WinitKeyEvent, mods: WinitModifiers) -> 
 pub fn pointer_source_to_blitz(source: &PointerSource) -> BlitzPointerId {
     match source {
         PointerSource::Mouse => BlitzPointerId::Mouse,
-        PointerSource::Touch { finger_id, .. } => {
-            BlitzPointerId::Finger(finger_id.into_raw() as u64)
-        }
+        PointerSource::Touch { finger_id, .. } => BlitzPointerId::Finger(finger_id.into_raw() as u64),
         PointerSource::TabletTool { .. } => BlitzPointerId::Pen,
         _ => BlitzPointerId::Mouse,
     }
@@ -71,9 +67,7 @@ pub fn button_source_to_blitz(source: &ButtonSource) -> BlitzPointerId {
     match source {
         ButtonSource::Mouse(_) => BlitzPointerId::Mouse,
         ButtonSource::TabletTool { .. } => BlitzPointerId::Pen,
-        ButtonSource::Touch { finger_id, .. } => {
-            BlitzPointerId::Finger(finger_id.into_raw() as u64)
-        }
+        ButtonSource::Touch { finger_id, .. } => BlitzPointerId::Finger(finger_id.into_raw() as u64),
         _ => BlitzPointerId::Mouse,
     }
 }
@@ -85,10 +79,7 @@ pub fn pointer_source_to_blitz_details(source: &PointerSource) -> PointerDetails
             ..PointerDetails::default()
         },
         PointerSource::TabletTool { data, .. } => PointerDetails {
-            pressure: data
-                .force
-                .map(|f| f.normalized(data.angle))
-                .unwrap_or(0.0),
+            pressure: data.force.map(|f| f.normalized(data.angle)).unwrap_or(0.0),
             tangential_pressure: data.tangential_force.unwrap_or(0.0),
             tilt_x: data.tilt.map(|t| t.x).unwrap_or(0),
             tilt_y: data.tilt.map(|t| t.y).unwrap_or(0),

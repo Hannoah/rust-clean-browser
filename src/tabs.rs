@@ -174,10 +174,7 @@ impl HtmlCache {
     }
 
     fn total_bytes(&self) -> usize {
-        self.entries
-            .iter()
-            .map(|e| e.raw_html.len() + e.url.len())
-            .sum()
+        self.entries.iter().map(|e| e.raw_html.len() + e.url.len()).sum()
     }
 }
 

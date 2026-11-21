@@ -1,22 +1,20 @@
 //! Main-window input: keyboard shortcuts, pointer routing (chrome vs. content), frameless
 //! window resize / drag.
 
-use super::{BookmarkDrag, BrowserApp, TabDrag};
 use super::helpers::{
-    RESIZE_EDGE, focus_main_window, is_primary_mouse_button_down, mouse_button, normalize_url_input,
-    pointer_event, primary_modifier, resize_cursor, wheel_delta,
+    RESIZE_EDGE, focus_main_window, is_primary_mouse_button_down, mouse_button, normalize_url_input, pointer_event,
+    primary_modifier, resize_cursor, wheel_delta,
 };
+use super::{BookmarkDrag, BrowserApp, TabDrag};
 use crate::chrome_ui::TITLEBAR_HEIGHT;
 use crate::events::{
-    button_source_to_blitz, pointer_kind_to_blitz, pointer_source_to_blitz,
-    pointer_source_to_blitz_details, theme_to_color_scheme, winit_ime_to_blitz,
-    winit_key_event_to_blitz,
+    button_source_to_blitz, pointer_kind_to_blitz, pointer_source_to_blitz, pointer_source_to_blitz_details,
+    theme_to_color_scheme, winit_ime_to_blitz, winit_key_event_to_blitz,
 };
 use anyrender::WindowRenderer;
 use blitz_dom::{Document, LocalName};
 use blitz_traits::events::{
-    BlitzPointerId, BlitzWheelEvent, MouseEventButton, MouseEventButtons, PointerCoords,
-    PointerDetails, UiEvent,
+    BlitzPointerId, BlitzWheelEvent, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent,
 };
 use std::time::Instant;
 use winit::cursor::{Cursor, CursorIcon};
@@ -34,13 +32,13 @@ impl BrowserApp {
                 self.buttons = MouseEventButtons::None;
                 self.tab_drag = None;
                 self.url_bar_select_all_on_click = None;
-                if let Some(drag) = self.bm_drag.take() {
-                    if drag.active {
-                        if let Some(win) = &self.window {
-                            win.set_cursor(Cursor::Icon(CursorIcon::Default));
-                        }
-                        self.rebuild_chrome();
+                if let Some(drag) = self.bm_drag.take()
+                    && drag.active
+                {
+                    if let Some(win) = &self.window {
+                        win.set_cursor(Cursor::Icon(CursorIcon::Default));
                     }
+                    self.rebuild_chrome();
                 }
             }
             WindowEvent::ThemeChanged(theme) => {
@@ -77,12 +75,11 @@ impl BrowserApp {
                 self.request_redraw();
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state.is_pressed() {
-                    if let PhysicalKey::Code(code) = event.physical_key {
-                        if self.handle_shortcut(code, event_loop) {
-                            return;
-                        }
-                    }
+                if event.state.is_pressed()
+                    && let PhysicalKey::Code(code) = event.physical_key
+                    && self.handle_shortcut(code, event_loop)
+                {
+                    return;
                 }
                 let key_data = winit_key_event_to_blitz(&event, self.keyboard_modifiers.state());
                 self.dispatch_focused(if event.state.is_pressed() {
@@ -118,13 +115,13 @@ impl BrowserApp {
                 if (self.tab_drag.is_some() || self.bm_drag.is_some()) && !is_primary_mouse_button_down() {
                     self.buttons &= !MouseEventButtons::from(MouseEventButton::Main);
                     self.tab_drag = None;
-                    if let Some(drag) = self.bm_drag.take() {
-                        if drag.active {
-                            if let Some(win) = &self.window {
-                                win.set_cursor(Cursor::Icon(CursorIcon::Default));
-                            }
-                            self.rebuild_chrome();
+                    if let Some(drag) = self.bm_drag.take()
+                        && drag.active
+                    {
+                        if let Some(win) = &self.window {
+                            win.set_cursor(Cursor::Icon(CursorIcon::Default));
                         }
+                        self.rebuild_chrome();
                     }
                 }
                 let resize = self.resize_direction_at(position);
@@ -168,10 +165,10 @@ impl BrowserApp {
                 let id = pointer_source_to_blitz(&source);
                 let now_in_chrome = self.is_in_chrome(position);
                 // Crossing the chrome/content boundary: the side we left gets a PointerLeave.
-                if let Some(was_in_chrome) = self.pointer_in_chrome {
-                    if was_in_chrome != now_in_chrome {
-                        self.send_pointer_leave(id, primary, position, was_in_chrome);
-                    }
+                if let Some(was_in_chrome) = self.pointer_in_chrome
+                    && was_in_chrome != now_in_chrome
+                {
+                    self.send_pointer_leave(id, primary, position, was_in_chrome);
                 }
                 self.pointer_in_chrome = Some(now_in_chrome);
                 let ev = pointer_event(
@@ -232,10 +229,8 @@ impl BrowserApp {
                         self.chrome_doc.clear_focus();
                         self.url_bar_select_all_on_click = None;
                     }
-                    if in_chrome {
-                        if let Some(doc) = &mut self.tabs[self.active_tab].doc {
-                            doc.clear_focus();
-                        }
+                    if in_chrome && let Some(doc) = &mut self.tabs[self.active_tab].doc {
+                        doc.clear_focus();
                     }
                     self.chrome_focused = hit_url_bar;
                     if in_chrome {
@@ -269,27 +264,23 @@ impl BrowserApp {
                         });
                     }
                 } else if btn == MouseEventButton::Main {
-                    if let Some(tdrag) = self.tab_drag.take() {
-                        if tdrag.active && position.y / (self.hidpi_scale as f64) <= (TITLEBAR_HEIGHT + 16) as f64 {
-                            self.bm_drag = None;
-                            if let Some(win) = &self.window {
-                                win.set_cursor(Cursor::Icon(CursorIcon::Default));
-                            }
-                            self.request_redraw();
-                            return;
+                    if let Some(tdrag) = self.tab_drag.take()
+                        && tdrag.active
+                        && position.y / (self.hidpi_scale as f64) <= (TITLEBAR_HEIGHT + 16) as f64
+                    {
+                        self.bm_drag = None;
+                        if let Some(win) = &self.window {
+                            win.set_cursor(Cursor::Icon(CursorIcon::Default));
                         }
+                        self.request_redraw();
+                        return;
                     }
-                    if let Some(drag) = self.bm_drag.take() {
-                        if drag.active {
-                            self.finish_bm_drag(drag, position);
-                            self.send_pointer_leave(
-                                button_source_to_blitz(&button),
-                                primary,
-                                position,
-                                in_chrome,
-                            );
-                            return;
-                        }
+                    if let Some(drag) = self.bm_drag.take()
+                        && drag.active
+                    {
+                        self.finish_bm_drag(drag, position);
+                        self.send_pointer_leave(button_source_to_blitz(&button), primary, position, in_chrome);
+                        return;
                     }
                 }
 
@@ -319,17 +310,15 @@ impl BrowserApp {
                 self.process_app_events(event_loop);
                 self.request_redraw();
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                if !self.is_in_chrome(self.pointer_pos) {
-                    let ev = UiEvent::Wheel(BlitzWheelEvent {
-                        delta: wheel_delta(delta),
-                        coords: self.content_coords(self.pointer_pos),
-                        buttons: self.buttons,
-                        mods: self.mods(),
-                        element: Default::default(),
-                    });
-                    self.dispatch_to(false, ev);
-                }
+            WindowEvent::MouseWheel { delta, .. } if !self.is_in_chrome(self.pointer_pos) => {
+                let ev = UiEvent::Wheel(BlitzWheelEvent {
+                    delta: wheel_delta(delta),
+                    coords: self.content_coords(self.pointer_pos),
+                    buttons: self.buttons,
+                    mods: self.mods(),
+                    element: Default::default(),
+                });
+                self.dispatch_to(false, ev);
             }
             _ => {}
         }
@@ -353,41 +342,41 @@ impl BrowserApp {
             return false;
         }
         match code {
-                KeyCode::KeyT if shift => self.reopen_closed_tab(),
-                KeyCode::Tab if shift => self.switch_tab((self.active_tab + n - 1) % n),
-                KeyCode::Tab => self.switch_tab((self.active_tab + 1) % n),
-                KeyCode::PageUp => self.switch_tab((self.active_tab + n - 1) % n),
-                KeyCode::PageDown => self.switch_tab((self.active_tab + 1) % n),
-                KeyCode::Digit1 => self.switch_tab(0.min(n - 1)),
-                KeyCode::Digit2 => self.switch_tab(1.min(n - 1)),
-                KeyCode::Digit3 => self.switch_tab(2.min(n - 1)),
-                KeyCode::Digit4 => self.switch_tab(3.min(n - 1)),
-                KeyCode::Digit5 => self.switch_tab(4.min(n - 1)),
-                KeyCode::Digit6 => self.switch_tab(5.min(n - 1)),
-                KeyCode::Digit7 => self.switch_tab(6.min(n - 1)),
-                KeyCode::Digit8 => self.switch_tab(7.min(n - 1)),
-                KeyCode::Digit9 => self.switch_tab(n - 1),
-                KeyCode::KeyD => self.handle_chrome_action("toggle-bookmark", event_loop),
-                KeyCode::KeyK => self.open_command_palette(event_loop),
-                KeyCode::KeyP if shift => self.open_command_palette(event_loop),
-                KeyCode::KeyF => self.open_find_bar(event_loop),
-                KeyCode::KeyH => self.navigate_current("rust://history"),
-                KeyCode::KeyB if shift => self.toggle_bookmarks_bar(),
-                KeyCode::KeyQ if cfg!(target_os = "macos") => self.exit_app(event_loop),
-                KeyCode::BracketLeft => self.history_step(false),
-                KeyCode::BracketRight => self.history_step(true),
-                KeyCode::KeyO if shift => self.navigate_current("rust://bookmarks"),
-                KeyCode::KeyT => {
-                    self.open_new_tab("rust://home");
-                    self.focus_url_bar();
-                }
-                KeyCode::KeyW | KeyCode::F4 => self.close_tab(self.active_tab, Some(event_loop)),
-                KeyCode::KeyL => self.focus_url_bar(),
-                KeyCode::KeyR => self.reload_active_tab(),
-                KeyCode::Equal | KeyCode::NumpadAdd => self.set_zoom(self.tabs[self.active_tab].zoom + 0.1),
-                KeyCode::Minus | KeyCode::NumpadSubtract => self.set_zoom(self.tabs[self.active_tab].zoom - 0.1),
-                KeyCode::Digit0 | KeyCode::Numpad0 => self.set_zoom(1.0),
-                _ => return false,
+            KeyCode::KeyT if shift => self.reopen_closed_tab(),
+            KeyCode::Tab if shift => self.switch_tab((self.active_tab + n - 1) % n),
+            KeyCode::Tab => self.switch_tab((self.active_tab + 1) % n),
+            KeyCode::PageUp => self.switch_tab((self.active_tab + n - 1) % n),
+            KeyCode::PageDown => self.switch_tab((self.active_tab + 1) % n),
+            KeyCode::Digit1 => self.switch_tab(0),
+            KeyCode::Digit2 => self.switch_tab(1.min(n - 1)),
+            KeyCode::Digit3 => self.switch_tab(2.min(n - 1)),
+            KeyCode::Digit4 => self.switch_tab(3.min(n - 1)),
+            KeyCode::Digit5 => self.switch_tab(4.min(n - 1)),
+            KeyCode::Digit6 => self.switch_tab(5.min(n - 1)),
+            KeyCode::Digit7 => self.switch_tab(6.min(n - 1)),
+            KeyCode::Digit8 => self.switch_tab(7.min(n - 1)),
+            KeyCode::Digit9 => self.switch_tab(n - 1),
+            KeyCode::KeyD => self.handle_chrome_action("toggle-bookmark", event_loop),
+            KeyCode::KeyK => self.open_command_palette(event_loop),
+            KeyCode::KeyP if shift => self.open_command_palette(event_loop),
+            KeyCode::KeyF => self.open_find_bar(event_loop),
+            KeyCode::KeyH => self.navigate_current("rust://history"),
+            KeyCode::KeyB if shift => self.toggle_bookmarks_bar(),
+            KeyCode::KeyQ if cfg!(target_os = "macos") => self.exit_app(event_loop),
+            KeyCode::BracketLeft => self.history_step(false),
+            KeyCode::BracketRight => self.history_step(true),
+            KeyCode::KeyO if shift => self.navigate_current("rust://bookmarks"),
+            KeyCode::KeyT => {
+                self.open_new_tab("rust://home");
+                self.focus_url_bar();
+            }
+            KeyCode::KeyW | KeyCode::F4 => self.close_tab(self.active_tab, Some(event_loop)),
+            KeyCode::KeyL => self.focus_url_bar(),
+            KeyCode::KeyR => self.reload_active_tab(),
+            KeyCode::Equal | KeyCode::NumpadAdd => self.set_zoom(self.tabs[self.active_tab].zoom + 0.1),
+            KeyCode::Minus | KeyCode::NumpadSubtract => self.set_zoom(self.tabs[self.active_tab].zoom - 0.1),
+            KeyCode::Digit0 | KeyCode::Numpad0 => self.set_zoom(1.0),
+            _ => return false,
         }
         true
     }
@@ -402,12 +391,12 @@ impl BrowserApp {
             KeyCode::KeyE => self.toggle_pdf_editor(),
             KeyCode::Home => self.navigate_current("rust://home"),
             KeyCode::Enter | KeyCode::NumpadEnter if self.url_bar_focused() => {
-                if !self.suggest_open_new_tab() {
-                    if let Some(text) = self.read_url_bar_text() {
-                        let target = normalize_url_input(&text);
-                        self.close_popup();
-                        self.open_new_tab(&target);
-                    }
+                if !self.suggest_open_new_tab()
+                    && let Some(text) = self.read_url_bar_text()
+                {
+                    let target = normalize_url_input(&text);
+                    self.close_popup();
+                    self.open_new_tab(&target);
                 }
             }
             _ => return false,
@@ -468,29 +457,29 @@ impl BrowserApp {
             }
             return true;
         }
-        if self.tabs[self.active_tab].url.starts_with("rust://bookmarks") {
-            if let Some(q) = self.focused_builtin_input("bm-search") {
-                let next_url = if q.is_empty() {
-                    "rust://bookmarks".to_string()
-                } else {
-                    let encoded: String = url::form_urlencoded::byte_serialize(q.as_bytes()).collect();
-                    format!("rust://bookmarks?q={encoded}")
-                };
-                self.navigate_current(&next_url);
-                return true;
-            }
+        if self.tabs[self.active_tab].url.starts_with("rust://bookmarks")
+            && let Some(q) = self.focused_builtin_input("bm-search")
+        {
+            let next_url = if q.is_empty() {
+                "rust://bookmarks".to_string()
+            } else {
+                let encoded: String = url::form_urlencoded::byte_serialize(q.as_bytes()).collect();
+                format!("rust://bookmarks?q={encoded}")
+            };
+            self.navigate_current(&next_url);
+            return true;
         }
-        if self.tabs[self.active_tab].url.starts_with("rust://history") {
-            if let Some(q) = self.focused_builtin_input("hist-search") {
-                let next_url = if q.is_empty() {
-                    "rust://history".to_string()
-                } else {
-                    let encoded: String = url::form_urlencoded::byte_serialize(q.as_bytes()).collect();
-                    format!("rust://history?q={encoded}")
-                };
-                self.navigate_current(&next_url);
-                return true;
-            }
+        if self.tabs[self.active_tab].url.starts_with("rust://history")
+            && let Some(q) = self.focused_builtin_input("hist-search")
+        {
+            let next_url = if q.is_empty() {
+                "rust://history".to_string()
+            } else {
+                let encoded: String = url::form_urlencoded::byte_serialize(q.as_bytes()).collect();
+                format!("rust://history?q={encoded}")
+            };
+            self.navigate_current(&next_url);
+            return true;
         }
         false
     }
@@ -645,10 +634,10 @@ impl BrowserApp {
     fn dispatch_to(&mut self, to_chrome: bool, ev: UiEvent) {
         if to_chrome {
             self.dispatch_chrome_ui(ev);
-        } else if self.active_tab < self.tabs.len() {
-            if let Some(doc) = &mut self.tabs[self.active_tab].doc {
-                doc.handle_ui_event(ev);
-            }
+        } else if self.active_tab < self.tabs.len()
+            && let Some(doc) = &mut self.tabs[self.active_tab].doc
+        {
+            doc.handle_ui_event(ev);
         }
     }
 
@@ -683,7 +672,9 @@ impl BrowserApp {
                     return false;
                 }
                 if el.attr(LocalName::from("id")) == Some("url-bar")
-                    || el.attr(LocalName::from("class")).is_some_and(|c| c.split_whitespace().any(|k| k == "omni"))
+                    || el
+                        .attr(LocalName::from("class"))
+                        .is_some_and(|c| c.split_whitespace().any(|k| k == "omni"))
                 {
                     return true;
                 }
@@ -702,19 +693,18 @@ impl BrowserApp {
             let mut cur = doc.get_hover_node_id();
             while let Some(id) = cur {
                 let node = doc.get_node(id)?;
-                if let Some(el) = node.element_data() {
-                    if &*el.name.local == "a" {
-                        if let Some(raw) = el.attr(LocalName::from("href")) {
-                            let trimmed = raw.trim();
-                            if !trimmed.is_empty() && !trimmed.starts_with('#') && !trimmed.starts_with("javascript:") {
-                                return Some(
-                                    url::Url::parse(&self.tabs[self.active_tab].url)
-                                        .and_then(|base| base.join(trimmed))
-                                        .map(String::from)
-                                        .unwrap_or_else(|_| trimmed.to_string()),
-                                );
-                            }
-                        }
+                if let Some(el) = node.element_data()
+                    && &*el.name.local == "a"
+                    && let Some(raw) = el.attr(LocalName::from("href"))
+                {
+                    let trimmed = raw.trim();
+                    if !trimmed.is_empty() && !trimmed.starts_with('#') && !trimmed.starts_with("javascript:") {
+                        return Some(
+                            url::Url::parse(&self.tabs[self.active_tab].url)
+                                .and_then(|base| base.join(trimmed))
+                                .map(String::from)
+                                .unwrap_or_else(|_| trimmed.to_string()),
+                        );
                     }
                 }
                 cur = node.parent;
@@ -738,17 +728,17 @@ impl BrowserApp {
         let mut node_id = self.chrome_doc.element_from_point(lx, (TITLEBAR_HEIGHT as f32) * 0.55);
         while let Some(id) = node_id {
             let node = self.chrome_doc.get_node(id)?;
-            if let Some(el) = node.element_data() {
-                if let Some(act) = el.attr(LocalName::from("data-action")) {
-                    if act.starts_with("close-tab:") {
-                        return None;
-                    }
-                    if let Some(idx_str) = act.strip_prefix("tab:") {
-                        let idx = idx_str.parse::<usize>().ok()?;
-                        let pos = node.absolute_position(0.0, 0.0);
-                        let w = node.final_layout().size.width;
-                        return Some((idx, pos.x, w));
-                    }
+            if let Some(el) = node.element_data()
+                && let Some(act) = el.attr(LocalName::from("data-action"))
+            {
+                if act.starts_with("close-tab:") {
+                    return None;
+                }
+                if let Some(idx_str) = act.strip_prefix("tab:") {
+                    let idx = idx_str.parse::<usize>().ok()?;
+                    let pos = node.absolute_position(0.0, 0.0);
+                    let w = node.final_layout().size.width;
+                    return Some((idx, pos.x, w));
                 }
             }
             node_id = node.parent;
@@ -780,19 +770,20 @@ impl BrowserApp {
         if self.active_tab != cur_idx {
             self.switch_tab(cur_idx);
         }
-        if let Some((over_idx, tab_x, tab_w)) = self.tab_hit_at_x(l.x) {
-            if over_idx != cur_idx && over_idx < self.tabs.len() {
-                let should_swap = if over_idx > cur_idx {
-                    l.x > tab_x + tab_w * 0.35
-                } else {
-                    l.x < tab_x + tab_w * 0.65
-                };
-                if should_swap {
-                    let tab = self.tabs.remove(cur_idx);
-                    self.tabs.insert(over_idx, tab);
-                    self.active_tab = over_idx;
-                    self.rebuild_chrome();
-                }
+        if let Some((over_idx, tab_x, tab_w)) = self.tab_hit_at_x(l.x)
+            && over_idx != cur_idx
+            && over_idx < self.tabs.len()
+        {
+            let should_swap = if over_idx > cur_idx {
+                l.x > tab_x + tab_w * 0.35
+            } else {
+                l.x < tab_x + tab_w * 0.65
+            };
+            if should_swap {
+                let tab = self.tabs.remove(cur_idx);
+                self.tabs.insert(over_idx, tab);
+                self.active_tab = over_idx;
+                self.rebuild_chrome();
             }
         }
         true
@@ -813,10 +804,7 @@ impl BrowserApp {
                         return None;
                     }
                     if let Some(src) = el.attr(LocalName::from("data-bm-src")) {
-                        let title = el
-                            .attr(LocalName::from("data-bm-title"))
-                            .unwrap_or(src)
-                            .to_string();
+                        let title = el.attr(LocalName::from("data-bm-title")).unwrap_or(src).to_string();
                         return Some((src.to_string(), title));
                     }
                 }
@@ -832,14 +820,11 @@ impl BrowserApp {
             let mut node_id = doc.element_from_point(c.client_x, c.client_y);
             while let Some(id) = node_id {
                 let node = doc.get_node(id)?;
-                if let Some(el) = node.element_data() {
-                    if let Some(src) = el.attr(LocalName::from("data-bm-src")) {
-                        let title = el
-                            .attr(LocalName::from("data-bm-title"))
-                            .unwrap_or(src)
-                            .to_string();
-                        return Some((src.to_string(), title));
-                    }
+                if let Some(el) = node.element_data()
+                    && let Some(src) = el.attr(LocalName::from("data-bm-src"))
+                {
+                    let title = el.attr(LocalName::from("data-bm-title")).unwrap_or(src).to_string();
+                    return Some((src.to_string(), title));
                 }
                 node_id = node.parent;
             }
@@ -854,10 +839,10 @@ impl BrowserApp {
             let mut node_id = self.chrome_doc.element_from_point(l.x, l.y);
             while let Some(id) = node_id {
                 let node = self.chrome_doc.get_node(id)?;
-                if let Some(el) = node.element_data() {
-                    if let Some(folder) = el.attr(LocalName::from("data-bm-folder")) {
-                        return Some(folder.to_string());
-                    }
+                if let Some(el) = node.element_data()
+                    && let Some(folder) = el.attr(LocalName::from("data-bm-folder"))
+                {
+                    return Some(folder.to_string());
                 }
                 node_id = node.parent;
             }
@@ -871,10 +856,10 @@ impl BrowserApp {
             let mut node_id = doc.element_from_point(c.client_x, c.client_y);
             while let Some(id) = node_id {
                 let node = doc.get_node(id)?;
-                if let Some(el) = node.element_data() {
-                    if let Some(folder) = el.attr(LocalName::from("data-bm-folder")) {
-                        return Some(folder.to_string());
-                    }
+                if let Some(el) = node.element_data()
+                    && let Some(folder) = el.attr(LocalName::from("data-bm-folder"))
+                {
+                    return Some(folder.to_string());
                 }
                 node_id = node.parent;
             }

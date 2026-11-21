@@ -5,8 +5,18 @@
 use crate::cleaner::extract_title;
 
 const MONTHS: [&str; 12] = [
-    "January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
-    "November", "December",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 ];
 
 #[derive(Default)]
@@ -22,8 +32,17 @@ struct Info {
 
 /// Build the citation text for `style` (`ieee` | `apa` | `slide` | `mla`).
 pub fn citation(style: &str, title: &str, url: &str, html: Option<&str>) -> Option<String> {
-    let mut info = Info { title: title.trim().to_string(), url: url.to_string(), accessed: today(), ..Default::default() };
-    let host = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?.split(['/', '?', '#']).next()?;
+    let mut info = Info {
+        title: title.trim().to_string(),
+        url: url.to_string(),
+        accessed: today(),
+        ..Default::default()
+    };
+    let host = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?
+        .split(['/', '?', '#'])
+        .next()?;
     info.site = host.strip_prefix("www.").unwrap_or(host).to_string();
     if let Some(html) = html {
         if info.title.is_empty() {
@@ -31,8 +50,17 @@ pub fn citation(style: &str, title: &str, url: &str, html: Option<&str>) -> Opti
         }
         info.site = meta(html, &["og:site_name", "application-name"]).unwrap_or(info.site);
         info.author = meta(html, &["author", "article:author", "og:article:author"]).filter(|a| !a.starts_with("http"));
-        info.published = meta(html, &["article:published_time", "og:article:published_time", "date", "pubdate", "dc.date"])
-            .and_then(|d| parse_date(&d));
+        info.published = meta(
+            html,
+            &[
+                "article:published_time",
+                "og:article:published_time",
+                "date",
+                "pubdate",
+                "dc.date",
+            ],
+        )
+        .and_then(|d| parse_date(&d));
     }
     if info.title.is_empty() {
         info.title = info.site.clone();
@@ -53,7 +81,10 @@ impl Info {
         let (ay, am, ad) = self.accessed;
         format!(
             "{a}\"{}\", {}{y}. [Online]. Available: {} (accessed {} {ad}, {ay}).",
-            self.title, self.site, self.url, &MONTHS[am as usize - 1][..3],
+            self.title,
+            self.site,
+            self.url,
+            &MONTHS[am as usize - 1][..3],
         )
     }
 
@@ -63,7 +94,11 @@ impl Info {
             (m, 0) => format!("{y}, {}", MONTHS[m as usize - 1]),
             (m, d) => format!("{y}, {} {d}", MONTHS[m as usize - 1]),
         });
-        let site = if self.author.as_deref() == Some(&self.site) { String::new() } else { format!(" {}.", self.site) };
+        let site = if self.author.as_deref() == Some(&self.site) {
+            String::new()
+        } else {
+            format!(" {}.", self.site)
+        };
         match &self.author {
             Some(a) => format!("{a}. ({date}). {}.{site} {}", self.title, self.url),
             None => format!("{}. ({date}).{site} {}", self.title, self.url),
@@ -72,19 +107,32 @@ impl Info {
 
     fn slide(&self) -> String {
         let (y, m, d) = self.accessed;
-        let who = self.author.as_ref().map_or(self.site.clone(), |a| format!("{a}, {}", self.site));
+        let who = self
+            .author
+            .as_ref()
+            .map_or(self.site.clone(), |a| format!("{a}, {}", self.site));
         format!("출처: {who}, \"{}\", {} ({y}.{m:02}.{d:02} 접속)", self.title, self.url)
     }
 
     fn mla(&self) -> String {
         let a = self.author.as_ref().map_or(String::new(), |a| format!("{a}. "));
         let p = self.published.map_or(String::new(), |(y, m, d)| {
-            let mon = if m > 0 { format!("{} ", &MONTHS[m as usize - 1][..3]) } else { String::new() };
+            let mon = if m > 0 {
+                format!("{} ", &MONTHS[m as usize - 1][..3])
+            } else {
+                String::new()
+            };
             let day = if d > 0 { format!("{d} ") } else { String::new() };
             format!(", {day}{mon}{y}")
         });
         let (y, m, d) = self.accessed;
-        format!("{a}\"{}.\" {}{p}, {}. Accessed {d} {} {y}.", self.title, self.site, self.url, &MONTHS[m as usize - 1][..3])
+        format!(
+            "{a}\"{}.\" {}{p}, {}. Accessed {d} {} {y}.",
+            self.title,
+            self.site,
+            self.url,
+            &MONTHS[m as usize - 1][..3]
+        )
     }
 }
 
@@ -100,17 +148,26 @@ fn meta(html: &str, keys: &[&str]) -> Option<String> {
         .collect();
     keys.iter().find_map(|key| {
         tags.iter().find_map(|(lo, orig)| {
-            let id = attr(lo, lo, "name").or_else(|| attr(lo, lo, "property")).or_else(|| attr(lo, lo, "itemprop"))?;
-            (id == *key).then(|| attr(lo, orig, "content"))?.map(|v| unescape(v.trim())).filter(|v| !v.is_empty())
+            let id = attr(lo, lo, "name")
+                .or_else(|| attr(lo, lo, "property"))
+                .or_else(|| attr(lo, lo, "itemprop"))?;
+            (id == *key)
+                .then(|| attr(lo, orig, "content"))?
+                .map(|v| unescape(v.trim()))
+                .filter(|v| !v.is_empty())
         })
     })
 }
 
 /// Value of ` key=…` in a tag; `lo` is the lowercased tag (for matching), `src` supplies the value.
 fn attr(lo: &str, src: &str, key: &str) -> Option<String> {
-    let at = lo.match_indices(key).find(|(i, _)| {
-        lo.as_bytes()[i.saturating_sub(1)].is_ascii_whitespace() && lo[i + key.len()..].trim_start().starts_with('=')
-    })?.0;
+    let at = lo
+        .match_indices(key)
+        .find(|(i, _)| {
+            lo.as_bytes()[i.saturating_sub(1)].is_ascii_whitespace()
+                && lo[i + key.len()..].trim_start().starts_with('=')
+        })?
+        .0;
     let rest = src[at + key.len()..].trim_start().strip_prefix('=')?.trim_start();
     Some(match rest.chars().next()? {
         q @ ('"' | '\'') => rest[1..].split(q).next()?.to_string(),
@@ -119,15 +176,30 @@ fn attr(lo: &str, src: &str, key: &str) -> Option<String> {
 }
 
 fn unescape(s: &str) -> String {
-    s.replace("&quot;", "\"").replace("&#39;", "'").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    s.replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
 }
 
 /// `2024-03-05…` / `2024-03` / `2024` → (y, m, d) with 0 for unknown parts.
 fn parse_date(s: &str) -> Option<(i32, u32, u32)> {
     let mut p = s.trim().split(|c: char| !c.is_ascii_digit());
     let y: i32 = p.next()?.parse().ok().filter(|y| (1000..3000).contains(y))?;
-    let m = p.next().and_then(|m| m.parse().ok()).filter(|m| (1..=12).contains(m)).unwrap_or(0);
-    let d = if m > 0 { p.next().and_then(|d| d.parse().ok()).filter(|d| (1..=31).contains(d)).unwrap_or(0) } else { 0 };
+    let m = p
+        .next()
+        .and_then(|m| m.parse().ok())
+        .filter(|m| (1..=12).contains(m))
+        .unwrap_or(0);
+    let d = if m > 0 {
+        p.next()
+            .and_then(|d| d.parse().ok())
+            .filter(|d| (1..=31).contains(d))
+            .unwrap_or(0)
+    } else {
+        0
+    };
     Some((y, m, d))
 }
 
@@ -153,14 +225,20 @@ fn today() -> (i32, u32, u32) {
 // ponytail: UTC on other platforms (the browser ships for Windows/macOS only).
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn today() -> (i32, u32, u32) {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
     let z = (secs / 86400) as i64 + 719_468; // Hinnant's civil-from-days
     let (era, doe) = (z.div_euclid(146_097), z.rem_euclid(146_097));
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    ((yoe + era * 400) as i32 + (m <= 2) as i32, m, (doy - (153 * mp + 2) / 5 + 1) as u32)
+    (
+        (yoe + era * 400) as i32 + (m <= 2) as i32,
+        m,
+        (doy - (153 * mp + 2) / 5 + 1) as u32,
+    )
 }
 
 #[cfg(test)]
@@ -175,7 +253,9 @@ mod tests {
     #[test]
     fn formats_with_metadata() {
         let c = |s| citation(s, "My Title", "https://www.example.com/a?b=1", Some(HTML)).unwrap();
-        assert!(c("apa").starts_with("Jane Doe. (2024, March 5). My Title. Example & Co. https://www.example.com/a?b=1"));
+        assert!(
+            c("apa").starts_with("Jane Doe. (2024, March 5). My Title. Example & Co. https://www.example.com/a?b=1")
+        );
         assert!(c("ieee").starts_with("Jane Doe, \"My Title\", Example & Co, 2024. [Online]. Available: https://"));
         assert!(c("mla").starts_with("Jane Doe. \"My Title.\" Example & Co, 5 Mar 2024, https://"));
         assert!(c("slide").starts_with("출처: Jane Doe, Example & Co, \"My Title\", https://"));

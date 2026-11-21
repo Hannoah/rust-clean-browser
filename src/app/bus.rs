@@ -55,10 +55,8 @@ impl NavigationProvider for BrowserNavProvider {
 pub(super) fn enable_window_ime(window: &dyn Window) {
     use winit::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
     let caps = ImeCapabilities::new().with_cursor_area();
-    let data = ImeRequestData::default().with_cursor_area(
-        LogicalPosition::new(0.0, 0.0).into(),
-        LogicalSize::new(1.0, 1.0).into(),
-    );
+    let data = ImeRequestData::default()
+        .with_cursor_area(LogicalPosition::new(0.0, 0.0).into(), LogicalSize::new(1.0, 1.0).into());
     if let Some(req) = ImeEnableRequest::new(caps, data) {
         let _ = window.request_ime_update(ImeRequest::Enable(req));
     }
@@ -77,7 +75,8 @@ impl ShellProvider for BrowserShellProvider {
         // Blitz reports `None` both for `cursor: none` and for "no element under the pointer"
         // (e.g. the empty area below a short page). Hiding the cursor made it vanish near the
         // bottom of the window, so `None` shows the default arrow instead.
-        self.window.set_cursor(Cursor::Icon(icon.unwrap_or(CursorIcon::Default)));
+        self.window
+            .set_cursor(Cursor::Icon(icon.unwrap_or(CursorIcon::Default)));
     }
 
     fn set_window_title(&self, _title: String) {}
@@ -94,12 +93,12 @@ impl ShellProvider for BrowserShellProvider {
     fn set_ime_cursor_area(&self, x: f32, y: f32, width: f32, height: f32) {
         use winit::window::{ImeRequest, ImeRequestData};
         enable_window_ime(&*self.window);
-        let _ = self.window.request_ime_update(ImeRequest::Update(
-            ImeRequestData::default().with_cursor_area(
+        let _ = self
+            .window
+            .request_ime_update(ImeRequest::Update(ImeRequestData::default().with_cursor_area(
                 LogicalPosition::new(x, y).into(),
                 LogicalSize::new(width.max(1.0), height.max(1.0)).into(),
-            ),
-        ));
+            )));
     }
 
     fn get_clipboard_text(&self) -> Result<String, ClipboardError> {
@@ -185,9 +184,7 @@ impl EventHandler for PopupEventHandler {
         event_state: &mut EventState,
     ) {
         let new_tab = match &event.data {
-            DomEventData::Click(click) if click.button == MouseEventButton::Main => {
-                click.mods.contains(ACTION_MOD)
-            }
+            DomEventData::Click(click) if click.button == MouseEventButton::Main => click.mods.contains(ACTION_MOD),
             DomEventData::PointerUp(ptr) if ptr.button == MouseEventButton::Auxiliary => true,
             _ => return,
         };

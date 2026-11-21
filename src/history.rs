@@ -68,9 +68,11 @@ fn match_score(q: &str, url: &str, title: &str) -> Option<i64> {
     let t = title.to_lowercase();
     if b.starts_with(q) {
         Some(1000)
-    } else if b.contains(&format!(".{q}")) || b.contains(&format!("/{q}")) {
-        Some(400)
-    } else if t.starts_with(q) || t.contains(&format!(" {q}")) {
+    } else if b.contains(&format!(".{q}"))
+        || b.contains(&format!("/{q}"))
+        || t.starts_with(q)
+        || t.contains(&format!(" {q}"))
+    {
         Some(400)
     } else if t.contains(q) {
         Some(250)
@@ -88,7 +90,11 @@ impl History {
             .and_then(|p| std::fs::read_to_string(p).ok())
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
-        Self { visits, path, unsaved: 0 }
+        Self {
+            visits,
+            path,
+            unsaved: 0,
+        }
     }
 
     /// Counts a visit to an http(s) page (fragment ignored).
@@ -127,11 +133,12 @@ impl History {
     /// Updates the title of an already recorded page (JS pages set it after load).
     pub fn set_title(&mut self, url: &str, title: &str) {
         let url = url.split('#').next().unwrap_or(url);
-        if let Some(v) = self.visits.iter_mut().find(|v| v.url == url) {
-            if v.title != title && !title.trim().is_empty() {
-                v.title = title.to_string();
-                self.unsaved += 1;
-            }
+        if let Some(v) = self.visits.iter_mut().find(|v| v.url == url)
+            && v.title != title
+            && !title.trim().is_empty()
+        {
+            v.title = title.to_string();
+            self.unsaved += 1;
         }
     }
 
@@ -178,7 +185,14 @@ impl History {
                 _ => 0,
             };
             let score = base + i64::from(v.count.min(50)) * 20 + recency;
-            scored.push((score, Suggestion { url: v.url.clone(), title: v.title.clone(), kind: SuggestKind::History }));
+            scored.push((
+                score,
+                Suggestion {
+                    url: v.url.clone(),
+                    title: v.title.clone(),
+                    kind: SuggestKind::History,
+                },
+            ));
         }
         for b in bookmarks.search(&q) {
             let Some(base) = match_score(&q, &b.url, &b.title) else {
@@ -193,7 +207,14 @@ impl History {
                         sug.title = b.title.clone();
                     }
                 }
-                None => scored.push((score, Suggestion { url: b.url, title: b.title, kind: SuggestKind::Bookmark })),
+                None => scored.push((
+                    score,
+                    Suggestion {
+                        url: b.url,
+                        title: b.title,
+                        kind: SuggestKind::Bookmark,
+                    },
+                )),
             }
         }
         scored.sort_by_key(|(s, _)| std::cmp::Reverse(*s));
@@ -265,16 +286,30 @@ mod tests {
         assert_eq!(h.visits.len(), 3, "fragment dropped, rust:// ignored");
 
         let bm = BookmarkStore {
-            custom: vec![BookmarkItem { title: "GitLab".into(), url: "https://gitlab.com/".into() }],
+            custom: vec![BookmarkItem {
+                title: "GitLab".into(),
+                url: "https://gitlab.com/".into(),
+            }],
             ..Default::default()
         };
         let s = h.suggest(&bm, "git", 5);
         let urls: Vec<&str> = s.iter().map(|x| x.url.as_str()).collect();
         // URL-prefix matches beat a frequently visited title match; a visited page edges out
         // a never-visited bookmark.
-        assert_eq!(urls[..3], ["https://github.com/sassoftware", "https://gitlab.com/", "https://www.google.com/search?q=git"]);
+        assert_eq!(
+            urls[..3],
+            [
+                "https://github.com/sassoftware",
+                "https://gitlab.com/",
+                "https://www.google.com/search?q=git"
+            ]
+        );
         assert_eq!(s[1].kind, SuggestKind::Bookmark);
-        assert!(h.suggest(&bm, "hacker", 5)[0].url.starts_with("https://news.ycombinator.com/item"));
+        assert!(
+            h.suggest(&bm, "hacker", 5)[0]
+                .url
+                .starts_with("https://news.ycombinator.com/item")
+        );
         assert!(h.suggest(&bm, "  ", 5).is_empty());
 
         assert!(inline_match("git", "https://www.github.com/x"));

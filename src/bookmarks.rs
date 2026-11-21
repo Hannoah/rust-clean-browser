@@ -145,11 +145,7 @@ impl BookmarkStore {
     }
 
     /// Borrows the folder contents instead of cloning the whole bookmark tree.
-    pub fn resolve_folder(
-        &self,
-        kind: BookmarkRootKind,
-        path: &[usize],
-    ) -> Option<(String, Cow<'_, [BookmarkNode]>)> {
+    pub fn resolve_folder(&self, kind: BookmarkRootKind, path: &[usize]) -> Option<(String, Cow<'_, [BookmarkNode]>)> {
         let (root_title, mut cur): (&str, Cow<'_, [BookmarkNode]>) = match kind {
             BookmarkRootKind::Bar => ("북마크바", Cow::Borrowed(&self.bar[..])),
             BookmarkRootKind::Other => ("기타 북마크", Cow::Borrowed(&self.other[..])),
@@ -296,7 +292,13 @@ impl BookmarkStore {
             self.insert_into_folder(dst_kind, &dst_path, item.clone())?;
             if let Err(e) = self.remove_item(src_kind, src_parent, src_idx) {
                 // Roll back the insert so a failed move can't duplicate the item.
-                let _ = self.remove_item(dst_kind, &dst_path, self.resolve_folder(dst_kind, &dst_path).map(|(_, n)| n.len().saturating_sub(1)).unwrap_or(0));
+                let _ = self.remove_item(
+                    dst_kind,
+                    &dst_path,
+                    self.resolve_folder(dst_kind, &dst_path)
+                        .map(|(_, n)| n.len().saturating_sub(1))
+                        .unwrap_or(0),
+                );
                 let _ = item;
                 return Err(e);
             }
@@ -417,7 +419,7 @@ fn remove_node_at(root: &mut Vec<BookmarkNode>, parent: &[usize], idx: usize) ->
     }
     match list.remove(idx) {
         BookmarkNode::Url(item) => Ok(item),
-         other => {
+        other => {
             list.insert(idx, other);
             Err("폴더는 이동할 수 없습니다.".to_string())
         }
@@ -448,7 +450,10 @@ fn merge_extra_urls(old_nodes: &[BookmarkNode], new_nodes: &mut Vec<BookmarkNode
     for old in old_nodes {
         match old {
             BookmarkNode::Url(item) => {
-                if !new_nodes.iter().any(|n| matches!(n, BookmarkNode::Url(u) if u.url == item.url)) {
+                if !new_nodes
+                    .iter()
+                    .any(|n| matches!(n, BookmarkNode::Url(u) if u.url == item.url))
+                {
                     new_nodes.push(BookmarkNode::Url(item.clone()));
                 }
             }
@@ -559,17 +564,17 @@ fn convert_chrome_children(nodes: &[ChromeNode]) -> Vec<BookmarkNode> {
     for node in nodes {
         match node.node_type.as_str() {
             "url" => {
-                if let Some(url) = &node.url {
-                    if !url.is_empty() {
-                        out.push(BookmarkNode::Url(BookmarkItem {
-                            title: if node.name.trim().is_empty() {
-                                url.clone()
-                            } else {
-                                node.name.clone()
-                            },
-                            url: url.clone(),
-                        }));
-                    }
+                if let Some(url) = &node.url
+                    && !url.is_empty()
+                {
+                    out.push(BookmarkNode::Url(BookmarkItem {
+                        title: if node.name.trim().is_empty() {
+                            url.clone()
+                        } else {
+                            node.name.clone()
+                        },
+                        url: url.clone(),
+                    }));
                 }
             }
             "folder" => {
@@ -673,9 +678,7 @@ mod tests {
             title: "Astryx".into(),
             url: "https://github.com/meta/astryx".into(),
         });
-        let (bm_t, folder_t) = store
-            .move_to_folder_in_memory("custom-0", "Astryx", "bar-1")
-            .unwrap();
+        let (bm_t, folder_t) = store.move_to_folder_in_memory("custom-0", "Astryx", "bar-1").unwrap();
         assert_eq!(bm_t, "Astryx");
         assert_eq!(folder_t, "Docs");
         assert!(store.custom.is_empty());
@@ -683,9 +686,7 @@ mod tests {
         assert_eq!(docs_nodes.len(), 2);
 
         // Moving a top-level bar item ("bar-0") into its sibling folder ("bar-1") handles index shift.
-        let (bm_t2, folder_t2) = store
-            .move_to_folder_in_memory("bar-0", "Rust", "bar-1")
-            .unwrap();
+        let (bm_t2, folder_t2) = store.move_to_folder_in_memory("bar-0", "Rust", "bar-1").unwrap();
         assert_eq!(bm_t2, "Rust");
         assert_eq!(folder_t2, "Docs");
         let (_, docs_nodes2) = store.resolve_folder(BookmarkRootKind::Bar, &[0]).unwrap();

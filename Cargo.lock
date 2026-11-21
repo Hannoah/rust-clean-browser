@@ -3129,6 +3129,7 @@ dependencies = [
  "dpi",
  "embed-resource",
  "encoding_rs",
+ "getrandom 0.4.3",
  "http",
  "image",
  "keyboard-types",

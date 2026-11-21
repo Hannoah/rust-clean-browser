@@ -25,7 +25,11 @@ impl BrowserApp {
             self.set_status_note("원문으로 복원됨");
             return self.rebuild_chrome();
         }
-        let Some(raw) = tab.raw_html.clone().filter(|_| !tab.js_mode && !tab.url.starts_with("rust://")) else {
+        let Some(raw) = tab
+            .raw_html
+            .clone()
+            .filter(|_| !tab.js_mode && !tab.url.starts_with("rust://"))
+        else {
             self.set_status_note("번역은 Clean 모드의 웹 페이지에서만 가능 (JS 모드 제외)");
             return self.rebuild_chrome();
         };
@@ -35,7 +39,11 @@ impl BrowserApp {
             return self.rebuild_chrome();
         }
         let tl = crate::translate::target_lang(&segs);
-        self.set_status_note(if tl == "en" { "영어로 번역 중…" } else { "한국어로 번역 중…" });
+        self.set_status_note(if tl == "en" {
+            "영어로 번역 중…"
+        } else {
+            "한국어로 번역 중…"
+        });
         self.rebuild_chrome();
         let bus = self.bus.clone();
         let texts = segs.iter().map(|s| s.text.clone()).collect();
@@ -43,7 +51,12 @@ impl BrowserApp {
             let result = crate::translate::translate(texts, tl)
                 .await
                 .map(|tr| Arc::<str>::from(crate::translate::apply(&raw, &segs, &tr)));
-            bus.send(AppEvent::Translated { tab_id, source: raw, tl, result });
+            bus.send(AppEvent::Translated {
+                tab_id,
+                source: raw,
+                tl,
+                result,
+            });
         });
     }
 
@@ -87,7 +100,13 @@ impl BrowserApp {
             }
         } else if let Some(rest) = action.strip_prefix("bm-popup:overflow:") {
             if let Ok(offset) = rest.parse() {
-                self.queue_popup(action, BookmarkRootKind::Bar, Vec::new(), offset, "북마크 더보기".into());
+                self.queue_popup(
+                    action,
+                    BookmarkRootKind::Bar,
+                    Vec::new(),
+                    offset,
+                    "북마크 더보기".into(),
+                );
             }
         } else {
             match action {
@@ -102,7 +121,11 @@ impl BrowserApp {
                     self.ensure_active_valid();
                     let tab = &self.tabs[self.active_tab];
                     let added = self.bookmarks.toggle_custom(&tab.title, &tab.url);
-                    self.set_status_note(if added { "북마크 추가됨" } else { "북마크 해제됨" });
+                    self.set_status_note(if added {
+                        "북마크 추가됨"
+                    } else {
+                        "북마크 해제됨"
+                    });
                     self.rebuild_chrome();
                 }
                 "translate" => self.toggle_translate(),
@@ -112,7 +135,11 @@ impl BrowserApp {
                 "toggle-filter" => {
                     self.net_provider.toggle_filter();
                     let on = self.net_provider.is_filter_enabled();
-                    self.set_status_note(if on { "트래커 차단 켜짐" } else { "트래커 차단 꺼짐" });
+                    self.set_status_note(if on {
+                        "트래커 차단 켜짐"
+                    } else {
+                        "트래커 차단 꺼짐"
+                    });
                     self.rebuild_chrome();
                 }
                 "toggle-https-only" => {
@@ -204,21 +231,21 @@ impl BrowserApp {
                 }
                 AppEvent::RedrawDoc { doc_id } => {
                     self.ensure_active_valid();
-                    if let Some(doc) = &mut self.tabs[self.active_tab].doc {
-                        if doc.id() == doc_id {
-                            doc.poll(None);
-                            self.request_redraw();
-                        }
+                    if let Some(doc) = &mut self.tabs[self.active_tab].doc
+                        && doc.id() == doc_id
+                    {
+                        doc.poll(None);
+                        self.request_redraw();
                     }
                     if self.chrome_doc.id() == doc_id {
                         self.chrome_doc.poll(None);
                         self.request_redraw();
                     }
-                    if let Some(popup) = &mut self.popup {
-                        if popup.doc.id() == doc_id {
-                            popup.doc.poll(None);
-                            popup.window.request_redraw();
-                        }
+                    if let Some(popup) = &mut self.popup
+                        && popup.doc.id() == doc_id
+                    {
+                        popup.doc.poll(None);
+                        popup.window.request_redraw();
                     }
                 }
                 AppEvent::PageLoaded {
@@ -348,9 +375,7 @@ impl BrowserApp {
                                 && (crate::chrome_ui::parse_query_param(url_str, "del").is_some()
                                     || crate::chrome_ui::parse_query_param(url_str, "clear").as_deref() == Some("1")));
                         // Ctrl+click opens a sleeping background tab (zero DOM memory until visited).
-                        if request.is_none()
-                            && !is_builtin_action
-                            && primary_modifier(self.keyboard_modifiers.state())
+                        if request.is_none() && !is_builtin_action && primary_modifier(self.keyboard_modifiers.state())
                         {
                             self.open_background_tab(url_str);
                         } else {
@@ -358,10 +383,21 @@ impl BrowserApp {
                         }
                     }
                 }
-                AppEvent::Translated { tab_id, source, tl, result } => {
-                    let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) else { continue };
+                AppEvent::Translated {
+                    tab_id,
+                    source,
+                    tl,
+                    result,
+                } => {
+                    let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) else {
+                        continue;
+                    };
                     // Ignore if the tab navigated away (or unloaded) while translating.
-                    if !self.tabs[idx].raw_html.as_ref().is_some_and(|r| Arc::ptr_eq(r, &source)) {
+                    if !self.tabs[idx]
+                        .raw_html
+                        .as_ref()
+                        .is_some_and(|r| Arc::ptr_eq(r, &source))
+                    {
                         continue;
                     }
                     match result {
@@ -385,26 +421,27 @@ impl BrowserApp {
                     }
                 }
                 AppEvent::WebViewTitleChanged { tab_id, title } => {
-                    if let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) {
-                        if !title.trim().is_empty() && self.tabs[idx].title != title {
-                            self.history.set_title(&self.tabs[idx].url, &title);
-                            self.tabs[idx].title = title;
-                            if idx == self.active_tab {
-                                self.query_webview_icons();
-                            }
-                            self.rebuild_chrome();
+                    if let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id)
+                        && !title.trim().is_empty()
+                        && self.tabs[idx].title != title
+                    {
+                        self.history.set_title(&self.tabs[idx].url, &title);
+                        self.tabs[idx].title = title;
+                        if idx == self.active_tab {
+                            self.query_webview_icons();
                         }
+                        self.rebuild_chrome();
                     }
                 }
-                AppEvent::WebViewPageLoad {
-                    tab_id,
-                    url,
-                    finished,
-                } => {
+                AppEvent::WebViewPageLoad { tab_id, url, finished } => {
                     if let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) {
                         self.tabs[idx].is_loading = !finished;
                         // The annotator's own viewer URL must not replace the PDF's real URL.
-                        if !url.is_empty() && url != "about:blank" && self.tabs[idx].url != url && !self.tabs[idx].editing_pdf() {
+                        if !url.is_empty()
+                            && url != "about:blank"
+                            && self.tabs[idx].url != url
+                            && !self.tabs[idx].editing_pdf()
+                        {
                             self.tabs[idx].url = url;
                             if !finished {
                                 self.tabs[idx].title = crate::tabs::short_title_for_url(&self.tabs[idx].url);
@@ -423,7 +460,10 @@ impl BrowserApp {
                 AppEvent::OpenInNewTab(url) if url == "about:blank" => {}
                 AppEvent::OpenInNewTab(url) => self.open_new_tab_inheriting_js(&url),
                 AppEvent::DownloadDone { path, success } => {
-                    let name = path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
+                    let name = path
+                        .as_ref()
+                        .and_then(|p| p.file_name())
+                        .map(|n| n.to_string_lossy().into_owned());
                     let msg = match (success, name) {
                         (true, Some(n)) => format!("다운로드 폴더에 저장됨: {n}"),
                         (true, None) => "저장 완료".to_string(),

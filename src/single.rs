@@ -7,17 +7,16 @@
 //! keeps web pages and other local users from driving the browser through that port.
 
 use crate::bookmarks::app_data_dir;
-use std::collections::hash_map::RandomState;
-use std::hash::{BuildHasher, Hasher};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// 128 random bits as hex. `RandomState` is seeded from the OS RNG: unpredictable without a dependency.
+/// 128 random bits as hex, straight from the OS CSPRNG.
 pub fn random_token() -> String {
-    let rand = || RandomState::new().build_hasher().finish();
-    format!("{:016x}{:016x}", rand(), rand())
+    let mut b = [0u8; 16];
+    getrandom::fill(&mut b).expect("OS RNG unavailable");
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 fn info_path() -> Option<PathBuf> {
@@ -33,11 +32,15 @@ fn try_forward(arg: &str) -> Option<()> {
     let info = std::fs::read_to_string(info_path()?).ok()?;
     let (port, token) = info.trim().split_once(' ')?;
     // This process's working directory differs from the running one: send absolute paths.
-    let arg = std::path::absolute(arg).ok().filter(|p| p.is_file()).map_or(arg.to_string(), |p| p.display().to_string());
+    let arg = std::path::absolute(arg)
+        .ok()
+        .filter(|p| p.is_file())
+        .map_or(arg.to_string(), |p| p.display().to_string());
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port.parse().ok()?));
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_millis(500)).ok()?;
     s.set_read_timeout(Some(Duration::from_secs(3))).ok()?;
-    s.write_all(format!("{token}\n{}\n", arg.replace(['\r', '\n'], "")).as_bytes()).ok()?;
+    s.write_all(format!("{token}\n{}\n", arg.replace(['\r', '\n'], "")).as_bytes())
+        .ok()?;
     let mut ack = [0u8; 2];
     s.read_exact(&mut ack).ok()?;
     (&ack == b"ok").then_some(())
@@ -46,7 +49,9 @@ fn try_forward(arg: &str) -> Option<()> {
 /// Start accepting forwarded URLs; `on_url` runs on the listener thread.
 pub fn listen(on_url: impl Fn(String) + Send + 'static) {
     let Some(path) = info_path() else { return };
-    let Ok(listener) = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)) else { return };
+    let Ok(listener) = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)) else {
+        return;
+    };
     let Ok(addr) = listener.local_addr() else { return };
     let token = random_token();
     if let Some(dir) = path.parent() {
@@ -89,7 +94,10 @@ mod tests {
         }
         listen(move |u| tx.send(u).unwrap());
         assert!(forward("https://example.com/a"));
-        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), "https://example.com/a");
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "https://example.com/a"
+        );
 
         let info = std::fs::read_to_string(info_path().unwrap()).unwrap();
         let (p, _) = info.split_once(' ').unwrap();

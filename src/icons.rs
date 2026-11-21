@@ -50,9 +50,7 @@ impl Icon {
         match self {
             Icon::ArrowLeft => r#"<path d="M10.5 3.5L5.5 8l5 4.5"/>"#,
             Icon::ArrowRight => r#"<path d="M5.5 3.5L10.5 8l-5 4.5"/>"#,
-            Icon::Reload => {
-                r#"<path d="M13 8a5 5 0 1 1-1.35-3.42"/><path d="M13 2.5v2.75h-2.75"/>"#
-            }
+            Icon::Reload => r#"<path d="M13 8a5 5 0 1 1-1.35-3.42"/><path d="M13 2.5v2.75h-2.75"/>"#,
             Icon::Stop => r#"<path d="M4 4l8 8M12 4l-8 8"/>"#,
             Icon::Home => {
                 r#"<path d="M2.5 7.2L8 2.5l5.5 4.7V13a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1V7.2z"/><path d="M6.2 14V9.5h3.6V14"/>"#
@@ -92,9 +90,7 @@ impl Icon {
             Icon::ShieldOff => {
                 r#"<path d="M8 2.2l4.8 1.9v3.6c0 1.4-.4 2.7-1.1 3.7M3.2 5.2v2.5c0 3.1 2 5.4 4.8 6.3 1-.3 1.8-.8 2.5-1.5M2.5 2.5l11 11"/>"#
             }
-            Icon::Bookmark => {
-                r#"<path d="M4 2.8a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v10.8l-4-2.5-4 2.5V2.8z"/>"#
-            }
+            Icon::Bookmark => r#"<path d="M4 2.8a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v10.8l-4-2.5-4 2.5V2.8z"/>"#,
             Icon::Folder => {
                 r#"<path d="M2.2 4.2a1 1 0 0 1 1-1h3.3l1.3 1.5h5a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H3.2a1 1 0 0 1-1-1V4.2z"/>"#
             }
@@ -124,9 +120,7 @@ impl Icon {
                 r#"<path d="M9.5 2.5h4v4M13.5 2.5L7.5 8.5M12 8.8v3.7a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3.7"/>"#
             }
             Icon::Check => r#"<path d="M3.5 8.2l3 3 6-6.2"/>"#,
-            Icon::PanelTop => {
-                r#"<rect x="2.2" y="2.8" width="11.6" height="10.4" rx="1.4"/><path d="M2.2 6.2h11.6"/>"#
-            }
+            Icon::PanelTop => r#"<rect x="2.2" y="2.8" width="11.6" height="10.4" rx="1.4"/><path d="M2.2 6.2h11.6"/>"#,
         }
     }
 }
