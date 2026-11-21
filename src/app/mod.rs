@@ -185,6 +185,8 @@ pub struct BrowserApp {
     pointer_in_chrome: Option<bool>,
     buttons: MouseEventButtons,
     keyboard_modifiers: Modifiers,
+    /// Fractional zoom from Ctrl+wheel not yet applied (set_zoom snaps to 0.1).
+    zoom_wheel_acc: f32,
     chrome_focused: bool,
     start_instant: Instant,
     status_note: Option<String>,
@@ -285,6 +287,7 @@ impl BrowserApp {
             pointer_in_chrome: None,
             buttons: MouseEventButtons::None,
             keyboard_modifiers: Modifiers::default(),
+            zoom_wheel_acc: 0.0,
             chrome_focused: false,
             start_instant: Instant::now(),
             status_note: None,

@@ -14,7 +14,8 @@ use crate::events::{
 use anyrender::WindowRenderer;
 use blitz_dom::{Document, LocalName};
 use blitz_traits::events::{
-    BlitzPointerId, BlitzWheelEvent, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent,
+    BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton, MouseEventButtons, PointerCoords,
+    PointerDetails, UiEvent,
 };
 use std::time::Instant;
 use winit::cursor::{Cursor, CursorIcon};
@@ -311,6 +312,19 @@ impl BrowserApp {
                 self.request_redraw();
             }
             WindowEvent::MouseWheel { delta, .. } if !self.is_in_chrome(self.pointer_pos) => {
+                // Ctrl/Cmd + wheel zooms the page (like every browser) instead of scrolling it.
+                if primary_modifier(self.keyboard_modifiers.state()) {
+                    let notches = match wheel_delta(delta) {
+                        BlitzWheelDelta::Lines(_, y) => y as f32,
+                        BlitzWheelDelta::Pixels(_, y) => y as f32 / 120.0, // ~one notch; smooth wheels/pinch accumulate
+                    };
+                    self.zoom_wheel_acc += notches * 0.1;
+                    if self.zoom_wheel_acc.abs() >= 0.1 {
+                        self.set_zoom(self.tabs[self.active_tab].zoom + self.zoom_wheel_acc);
+                        self.zoom_wheel_acc = 0.0;
+                    }
+                    return;
+                }
                 let ev = UiEvent::Wheel(BlitzWheelEvent {
                     delta: wheel_delta(delta),
                     coords: self.content_coords(self.pointer_pos),
