@@ -5,6 +5,6 @@ Unmodified copies of upstream crates except for the small patches listed below
 
 | Crate | Version | License | Patch |
 | --- | --- | --- | --- |
-| [wry](https://github.com/tauri-apps/wry) | 0.57.2 | Apache-2.0 OR MIT | WebView2: `AllowSingleSignOnUsingOSPrimaryAccount` (Entra ID SSO / Conditional Access) and password autosave enabled |
+| [wry](https://github.com/tauri-apps/wry) | 0.57.2 | Apache-2.0 OR MIT | WebView2: `AllowSingleSignOnUsingOSPrimaryAccount` (Entra ID SSO / Conditional Access) and password autosave enabled, IPC messages from `file://` pages no longer dropped (`http::Uri` rejects the empty authority) |
 | [pdf.js](https://github.com/mozilla/pdf.js) (`pdfjs/`) | 6.5.438 | Apache-2.0 | Not a crate: pruned `pdfjs-dist` viewer (no source maps/sandbox/standard fonts; only `en-US`/`ko` locales) embedded by `build.rs` and served at `http://rcbpdf.localhost/` for the PDF annotation mode |
 | [blitz-net](https://github.com/DioxusLabs/blitz) | 0.3.0-beta.4 | MIT OR Apache-2.0 | `Provider::with_cookie_provider` (persistent login cookies), HTTP connect/request timeouts, and wake-after-delivery ordering |

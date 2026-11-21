@@ -459,6 +459,12 @@ impl BrowserApp {
                 // A denied `about:blank` popup has nothing to show; never open it as a blank tab.
                 AppEvent::OpenInNewTab(url) if url == "about:blank" => {}
                 AppEvent::OpenInNewTab(url) => self.open_new_tab_inheriting_js(&url),
+                AppEvent::ZoomBy(notches) => self.zoom_by_notches(notches),
+                AppEvent::ZoomWheelPx(dy) => {
+                    let zoom = self.tabs[self.active_tab].zoom;
+                    self.zoom_by_notches(-dy * zoom / 100.0);
+                }
+                AppEvent::ZoomReset => self.set_zoom(1.0),
                 AppEvent::DownloadDone { path, success } => {
                     let name = path
                         .as_ref()

@@ -103,6 +103,11 @@ pub enum AppEvent {
         finished: bool,
     },
     OpenInNewTab(String),
+    /// Ctrl+wheel / zoom key inside a JS-mode page (WebView2 zoom hotkeys are off so the tab zoom stays authoritative).
+    ZoomBy(f32),
+    /// Raw `deltaY` of a Ctrl+wheel in a page (CSS px: Chromium divides it by the current zoom, 100 per notch at 100%).
+    ZoomWheelPx(f32),
+    ZoomReset,
     /// A WebView download was denied for lack of a consent UI.
     DownloadBlocked(String),
     /// An allowed (PDF) download finished.

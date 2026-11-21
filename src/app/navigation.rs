@@ -19,6 +19,27 @@ use wry::{NewWindowResponse, PageLoadEvent, Rect as WryRect, WebContext, WebView
 /// Maximum number of background JS-mode WebViews kept alive (hidden + suspended) in LRU order.
 const MAX_PARKED_WEBVIEWS: usize = 5;
 
+/// Ctrl/Cmd + wheel (also trackpad pinch) and Ctrl +/-/0 inside a JS-mode page. WebView2's own zoom hotkeys
+/// are off, so these are forwarded to the app, which owns the per-tab zoom (address-bar label, restore on tab
+/// switch). The PDF annotator (pdf.js) has its own zoom and is left alone.
+const ZOOM_SCRIPT: &str = r#"(function () {
+  if (location.hostname === 'rcbpdf.localhost') return;
+  // `window.ipc` is installed by wry after the page's init scripts ran, so look it up per message.
+  var post = function (m) { try { window.ipc.postMessage(m); } catch (e) {} };
+  addEventListener('wheel', function (e) {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    post('zoomwheel:' + (e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY));
+  }, { passive: false, capture: true });
+  addEventListener('keydown', function (e) {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    var k = e.key === '=' || e.key === '+' ? 'in' : e.key === '-' || e.key === '_' ? 'out' : e.key === '0' ? 'reset' : '';
+    if (!k) return;
+    e.preventDefault();
+    post('zoomkey:' + k);
+  }, true);
+})();"#;
+
 impl BrowserApp {
     pub(super) fn webview_bounds(&self) -> WryRect {
         let scale = self.hidpi_scale as f64;
@@ -139,6 +160,7 @@ impl BrowserApp {
         let bus_new = self.bus.clone();
         let bus_dl = self.bus.clone();
         let bus_done = self.bus.clone();
+        let bus_zoom = self.bus.clone();
 
         let builder = if let Some(ctx) = self.web_context.as_mut() {
             WebViewBuilder::new_with_web_context(ctx)
@@ -160,6 +182,24 @@ impl BrowserApp {
         let built = builder
             .with_url(&load)
             .with_initialization_script(crate::pdfjs::INIT_SCRIPT)
+            .with_initialization_script(ZOOM_SCRIPT)
+            .with_ipc_handler(move |req| {
+                // Only the zoom messages of ZOOM_SCRIPT are understood; anything else a page posts is ignored.
+                let ev = match req.body().split_once(':') {
+                    Some(("zoomwheel", dy)) => dy
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|d| d.is_finite())
+                        .map(|d| AppEvent::ZoomWheelPx(d.clamp(-400.0, 400.0))),
+                    Some(("zoomkey", "in")) => Some(AppEvent::ZoomBy(1.0)),
+                    Some(("zoomkey", "out")) => Some(AppEvent::ZoomBy(-1.0)),
+                    Some(("zoomkey", "reset")) => Some(AppEvent::ZoomReset),
+                    _ => None,
+                };
+                if let Some(ev) = ev {
+                    bus_zoom.send(ev);
+                }
+            })
             .with_asynchronous_custom_protocol("rcbpdf".into(), {
                 let (sources, jar, rt) = (
                     Arc::clone(&self.pdf_sources),
@@ -858,6 +898,15 @@ impl BrowserApp {
             self.apply_html_to_tab(idx, url, raw, Some(scroll));
         } else {
             self.rebuild_chrome();
+        }
+    }
+
+    /// Zoom by wheel notches (+ = in). Smooth wheels / pinch send fractions: accumulate to a full 10% step.
+    pub(super) fn zoom_by_notches(&mut self, notches: f32) {
+        self.zoom_wheel_acc += notches * 0.1;
+        if self.zoom_wheel_acc.abs() >= 0.1 {
+            self.set_zoom(self.tabs[self.active_tab].zoom + self.zoom_wheel_acc);
+            self.zoom_wheel_acc = 0.0;
         }
     }
 
