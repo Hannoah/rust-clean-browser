@@ -8,8 +8,8 @@ use super::find::FindMatch;
 use super::helpers::{mouse_button, plain_coords, pointer_event, popup_window_style, primary_modifier, wheel_delta};
 use crate::bookmarks::{BookmarkNode, BookmarkRootKind};
 use crate::chrome_ui::{
-    POPUP_WIDTH, PaletteEntry, estimate_popup_height, render_bookmark_popup_html,
-    render_suggest_popup_html, suggest_popup_height,
+    POPUP_WIDTH, PaletteEntry, estimate_popup_height, render_bookmark_popup_html, render_suggest_popup_html,
+    suggest_popup_height,
 };
 use crate::events::{winit_ime_to_blitz, winit_key_event_to_blitz};
 use crate::history::Suggestion;
@@ -18,9 +18,7 @@ use anyrender_vello_cpu::VelloCpuWindowRenderer;
 use blitz_dom::{Document, EventDriver};
 use blitz_html::HtmlDocument;
 use blitz_paint::paint_scene;
-use blitz_traits::events::{
-    BlitzWheelEvent, MouseEventButtons, PointerCoords, PointerDetails, UiEvent,
-};
+use blitz_traits::events::{BlitzWheelEvent, MouseEventButtons, PointerCoords, PointerDetails, UiEvent};
 use blitz_traits::shell::{ShellProvider, Viewport};
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -111,10 +109,8 @@ impl BrowserApp {
             self.recently_closed_popup = Some((popup.key.clone(), Instant::now()));
             popup.renderer.suspend();
             drop(popup);
-            if had_focus {
-                if let Some(win) = &self.window {
-                    super::helpers::focus_main_window(&**win, false);
-                }
+            if had_focus && let Some(win) = &self.window {
+                super::helpers::focus_main_window(&**win, false);
             }
         }
     }
@@ -136,7 +132,11 @@ impl BrowserApp {
             };
             Some((root_title.to_string(), sliced, false, index_offset))
         } else {
-            let title = if path.is_empty() { root_title.to_string() } else { folder_title };
+            let title = if path.is_empty() {
+                root_title.to_string()
+            } else {
+                folder_title
+            };
             Some((title, nodes, !at_base, 0))
         }
     }
@@ -152,7 +152,14 @@ impl BrowserApp {
     /// HTML and logical height for a popup's current content.
     fn popup_content(&self, kind: &PopupKind) -> Option<(String, u32)> {
         match kind {
-            PopupKind::Bookmarks { root, path, base_depth, root_title, index_offset, selected } => {
+            PopupKind::Bookmarks {
+                root,
+                path,
+                base_depth,
+                root_title,
+                index_offset,
+                selected,
+            } => {
                 let (title, nodes, can_go_back, eff_offset) =
                     self.build_popup_view_data(*root, path, *base_depth, *index_offset, root_title)?;
                 Some((
@@ -167,9 +174,11 @@ impl BrowserApp {
             PopupKind::CommandPalette { query, items, selected } => {
                 Some(self.render_palette_initial(query, items, *selected))
             }
-            PopupKind::FindBar { query, matches, current } => {
-                Some(self.find_bar_popup_html(query, matches, *current))
-            }
+            PopupKind::FindBar {
+                query,
+                matches,
+                current,
+            } => Some(self.find_bar_popup_html(query, matches, *current)),
         }
     }
 
@@ -287,8 +296,7 @@ impl BrowserApp {
         }
 
         let base_depth = path.len();
-        let Some((_, nodes, _, _)) =
-            self.build_popup_view_data(root, &path, base_depth, index_offset, &root_title)
+        let Some((_, nodes, _, _)) = self.build_popup_view_data(root, &path, base_depth, index_offset, &root_title)
         else {
             return;
         };
@@ -318,7 +326,15 @@ impl BrowserApp {
             index_offset,
             selected: None,
         };
-        self.show_popup(event_loop, key, kind, x, self.chrome_height() as f64 - 1.0, POPUP_WIDTH, true);
+        self.show_popup(
+            event_loop,
+            key,
+            kind,
+            x,
+            self.chrome_height() as f64 - 1.0,
+            POPUP_WIDTH,
+            true,
+        );
     }
 
     /// Re-renders the open popup after its content changed (resizing it to fit).
@@ -348,12 +364,7 @@ impl BrowserApp {
         popup.window.request_redraw();
     }
 
-    pub(super) fn handle_popup_action(
-        &mut self,
-        action: &str,
-        new_tab: bool,
-        event_loop: &dyn ActiveEventLoop,
-    ) {
+    pub(super) fn handle_popup_action(&mut self, action: &str, new_tab: bool, event_loop: &dyn ActiveEventLoop) {
         if let Some(rest) = action.strip_prefix("palette-exec:") {
             if let Ok(idx) = rest.parse::<usize>() {
                 self.execute_palette_index(idx, event_loop);
@@ -378,9 +389,12 @@ impl BrowserApp {
 
         if action == "popup-back" {
             let changed = match self.popup.as_mut().map(|p| &mut p.kind) {
-                Some(PopupKind::Bookmarks { path, base_depth, selected, .. })
-                    if path.len() > *base_depth =>
-                {
+                Some(PopupKind::Bookmarks {
+                    path,
+                    base_depth,
+                    selected,
+                    ..
+                }) if path.len() > *base_depth => {
                     path.pop();
                     *selected = None;
                     true
@@ -403,9 +417,7 @@ impl BrowserApp {
                 if !valid {
                     return;
                 }
-                if let Some(PopupKind::Bookmarks { path, selected, .. }) =
-                    self.popup.as_mut().map(|p| &mut p.kind)
-                {
+                if let Some(PopupKind::Bookmarks { path, selected, .. }) = self.popup.as_mut().map(|p| &mut p.kind) {
                     path.push(idx);
                     *selected = None;
                 }
@@ -430,9 +442,7 @@ impl BrowserApp {
         let Some(popup) = &mut self.popup else {
             return;
         };
-        let handler = PopupEventHandler {
-            bus: self.bus.clone(),
-        };
+        let handler = PopupEventHandler { bus: self.bus.clone() };
         EventDriver::new(&mut popup.doc, handler).handle_ui_event(event);
     }
 
@@ -483,9 +493,7 @@ impl BrowserApp {
                 true
             }
             KeyCode::Backspace if can_go_back => {
-                if let Some(PopupKind::Bookmarks { path, selected, .. }) =
-                    self.popup.as_mut().map(|p| &mut p.kind)
-                {
+                if let Some(PopupKind::Bookmarks { path, selected, .. }) = self.popup.as_mut().map(|p| &mut p.kind) {
                     path.pop();
                     *selected = None;
                 }
@@ -494,9 +502,7 @@ impl BrowserApp {
             }
             KeyCode::ArrowDown if len > 0 => {
                 let next = cur_sel.map_or(0, |i| (i + 1) % len);
-                if let Some(PopupKind::Bookmarks { selected, .. }) =
-                    self.popup.as_mut().map(|p| &mut p.kind)
-                {
+                if let Some(PopupKind::Bookmarks { selected, .. }) = self.popup.as_mut().map(|p| &mut p.kind) {
                     *selected = Some(next);
                 }
                 self.refresh_popup();
@@ -504,9 +510,7 @@ impl BrowserApp {
             }
             KeyCode::ArrowUp if len > 0 => {
                 let next = cur_sel.map_or(len - 1, |i| (i + len - 1) % len);
-                if let Some(PopupKind::Bookmarks { selected, .. }) =
-                    self.popup.as_mut().map(|p| &mut p.kind)
-                {
+                if let Some(PopupKind::Bookmarks { selected, .. }) = self.popup.as_mut().map(|p| &mut p.kind) {
                     *selected = Some(next);
                 }
                 self.refresh_popup();
@@ -566,7 +570,9 @@ impl BrowserApp {
                     popup.win_size = size;
                     let w = size.width.max(1);
                     let h = size.height.max(1);
-                    popup.doc.set_viewport(Viewport::new(w, h, popup.hidpi_scale, self.color_scheme));
+                    popup
+                        .doc
+                        .set_viewport(Viewport::new(w, h, popup.hidpi_scale, self.color_scheme));
                     if popup.renderer.is_active() {
                         popup.renderer.set_size(w, h);
                     }
@@ -583,31 +589,34 @@ impl BrowserApp {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state.is_pressed() {
-                    if let PhysicalKey::Code(code) = event.physical_key {
-                        let ctrl = primary_modifier(self.keyboard_modifiers.state());
-                        if ctrl && code == KeyCode::KeyK && matches!(self.popup.as_ref().map(|p| &p.kind), Some(PopupKind::CommandPalette { .. })) {
-                            self.close_popup();
-                            return;
-                        }
-                        if ctrl && code == KeyCode::KeyF && self.has_find_bar() {
-                            if let Some(p) = &mut self.popup {
-                                if let Some(id) = p.doc.get_element_by_id("find-input") {
-                                    p.doc.set_focus_to(id);
-                                }
-                            }
-                            return;
-                        }
-                        if self.palette_key(code, event_loop)
-                            || self.find_key(code)
-                            || self.bookmark_popup_key(code)
+                if event.state.is_pressed()
+                    && let PhysicalKey::Code(code) = event.physical_key
+                {
+                    let ctrl = primary_modifier(self.keyboard_modifiers.state());
+                    if ctrl
+                        && code == KeyCode::KeyK
+                        && matches!(
+                            self.popup.as_ref().map(|p| &p.kind),
+                            Some(PopupKind::CommandPalette { .. })
+                        )
+                    {
+                        self.close_popup();
+                        return;
+                    }
+                    if ctrl && code == KeyCode::KeyF && self.has_find_bar() {
+                        if let Some(p) = &mut self.popup
+                            && let Some(id) = p.doc.get_element_by_id("find-input")
                         {
-                            return;
+                            p.doc.set_focus_to(id);
                         }
-                        if code == KeyCode::Escape {
-                            self.close_popup();
-                            return;
-                        }
+                        return;
+                    }
+                    if self.palette_key(code, event_loop) || self.find_key(code) || self.bookmark_popup_key(code) {
+                        return;
+                    }
+                    if code == KeyCode::Escape {
+                        self.close_popup();
+                        return;
                     }
                 }
                 let is_text_popup = matches!(

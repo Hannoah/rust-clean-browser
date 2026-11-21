@@ -19,22 +19,18 @@ mod popup;
 mod suggest;
 
 use crate::bookmarks::{BookmarkNode, BookmarkRootKind, BookmarkStore};
-use crate::chrome_ui::{
-    ChromeRenderState, chrome_height, render_chrome_html, render_link_preview_html,
-};
+use crate::chrome_ui::{ChromeRenderState, chrome_height, render_chrome_html, render_link_preview_html};
 use crate::cleaner::{build_reader_html_with_options, extract_title};
+use crate::events::{theme_to_color_scheme, winit_modifiers_to_kbt_modifiers};
 use crate::favicon;
 use crate::history::History;
-use crate::events::{theme_to_color_scheme, winit_modifiers_to_kbt_modifiers};
 use crate::memory::working_set_mb;
 use crate::net::{CleanNetProvider, PersistentCookieJar};
 use crate::page_cache::DiskPageCache;
 use crate::prefs::{ThemePreference, UiPrefs};
 use crate::tabs::{HtmlCache, Tab, short_title_for_url};
 use bus::{AppBus, BrowserNavProvider, BrowserShellProvider, ChromeEventHandler};
-use helpers::{
-    ACTION_MOD, app_icon, arg_to_url, main_window_style, synthetic_key, wait_for_images,
-};
+use helpers::{ACTION_MOD, app_icon, arg_to_url, main_window_style, synthetic_key, wait_for_images};
 
 use anyrender::{PaintScene, WindowRenderer};
 use anyrender_vello_cpu::VelloCpuWindowRenderer;
@@ -110,7 +106,10 @@ pub enum AppEvent {
     /// A WebView download was denied for lack of a consent UI.
     DownloadBlocked(String),
     /// An allowed (PDF) download finished.
-    DownloadDone { path: Option<std::path::PathBuf>, success: bool },
+    DownloadDone {
+        path: Option<std::path::PathBuf>,
+        success: bool,
+    },
     /// A queued favicon fetch finished.
     Favicon(favicon::Next),
     /// `<link>`s of the page shown in the JS-mode WebView.
@@ -354,12 +353,12 @@ impl BrowserApp {
         if tab.url.starts_with("rust://") {
             let scroll = self.current_scroll_y();
             self.load_active_tab(false, Some(scroll));
-        } else if tab.reader_mode {
-            if let Some(raw) = tab.shown_html() {
-                let url = tab.url.clone();
-                let scroll = self.current_scroll_y();
-                self.apply_html_to_tab(self.active_tab, url, raw, Some(scroll));
-            }
+        } else if tab.reader_mode
+            && let Some(raw) = tab.shown_html()
+        {
+            let url = tab.url.clone();
+            let scroll = self.current_scroll_y();
+            self.apply_html_to_tab(self.active_tab, url, raw, Some(scroll));
         }
         self.sync_viewports();
         self.rebuild_chrome();
@@ -412,12 +411,20 @@ impl BrowserApp {
 
     fn content_phys_size(&self) -> (u32, u32) {
         let ch = self.chrome_phys_height();
-        (self.win_size.width.max(1), self.win_size.height.saturating_sub(ch).max(1))
+        (
+            self.win_size.width.max(1),
+            self.win_size.height.saturating_sub(ch).max(1),
+        )
     }
 
     fn chrome_viewport(&self) -> Viewport {
         let ch = self.chrome_phys_height();
-        Viewport::new(self.win_size.width.max(1), ch.max(1), self.hidpi_scale, self.color_scheme)
+        Viewport::new(
+            self.win_size.width.max(1),
+            ch.max(1),
+            self.hidpi_scale,
+            self.color_scheme,
+        )
     }
 
     fn content_viewport(&self, zoom: f32) -> Viewport {
@@ -514,13 +521,23 @@ impl BrowserApp {
                     },
                 );
             }
-            favicon::Job::Icon { key, url, fallback, guess } => {
+            favicon::Job::Icon {
+                key,
+                url,
+                fallback,
+                guess,
+            } => {
                 let (key2, fallback2) = (key.clone(), fallback.clone());
                 self.net_provider.fetch_document(
                     Request::get(url),
                     signal,
                     move |_, bytes| {
-                        bus_ok.send(AppEvent::Favicon(favicon::icon_fetched(key, fallback, guess, Some(&bytes))));
+                        bus_ok.send(AppEvent::Favicon(favicon::icon_fetched(
+                            key,
+                            fallback,
+                            guess,
+                            Some(&bytes),
+                        )));
                     },
                     move |_| {
                         bus_fail.send(AppEvent::Favicon(favicon::icon_fetched(key2, fallback2, guess, None)));
@@ -581,7 +598,11 @@ impl BrowserApp {
         }
         // Keep whatever the user is typing (and focus / caret) when background events rebuild chrome.
         let typing = self.url_bar_focused().then(|| self.read_url_bar_text()).flatten();
-        let saved_sel_range = if typing.is_some() { self.read_url_bar_selection() } else { None };
+        let saved_sel_range = if typing.is_some() {
+            self.read_url_bar_selection()
+        } else {
+            None
+        };
         let drop_target = self.bm_drag.as_ref().and_then(|d| d.hover_folder.as_deref());
         let active = &self.tabs[self.active_tab];
         let (wv_back, wv_fwd) = self.active_webview.as_ref().map_or((false, false), |wv| {
@@ -611,7 +632,10 @@ impl BrowserApp {
             return;
         }
 
-        let mut doc = HtmlDocument::from_html(&html, self.doc_config(self.chrome_viewport(), self.shell_provider.clone()));
+        let mut doc = HtmlDocument::from_html(
+            &html,
+            self.doc_config(self.chrome_viewport(), self.shell_provider.clone()),
+        );
         wait_for_images(&mut doc);
         doc.resolve(self.anim_time());
         self.chrome_doc = doc;
@@ -635,7 +659,13 @@ impl BrowserApp {
         }
     }
 
-    fn build_content_doc(&self, html: &str, base_url: &str, abort_ctrl: Option<&AbortController>, zoom: f32) -> HtmlDocument {
+    fn build_content_doc(
+        &self,
+        html: &str,
+        base_url: &str,
+        abort_ctrl: Option<&AbortController>,
+        zoom: f32,
+    ) -> HtmlDocument {
         let mut cfg = self.doc_config(self.content_viewport(zoom), self.shell_provider.clone());
         cfg.base_url = Some(base_url.to_string());
         cfg.navigation_provider = Some(self.nav_provider.clone());
@@ -653,7 +683,13 @@ impl BrowserApp {
         }
     }
 
-    fn apply_html_to_tab(&mut self, tab_idx: usize, final_url: String, clean_html: Arc<str>, restore_scroll_y: Option<f64>) {
+    fn apply_html_to_tab(
+        &mut self,
+        tab_idx: usize,
+        final_url: String,
+        clean_html: Arc<str>,
+        restore_scroll_y: Option<f64>,
+    ) {
         let title = extract_title(&clean_html).unwrap_or_else(|| short_title_for_url(&final_url));
         let zoom = self.tabs[tab_idx].zoom;
         // Drop the previous DOM before building the next one so peak memory holds one page.
@@ -845,9 +881,7 @@ impl BrowserApp {
     }
 
     fn dispatch_chrome_ui(&mut self, event: UiEvent) {
-        let handler = ChromeEventHandler {
-            bus: self.bus.clone(),
-        };
+        let handler = ChromeEventHandler { bus: self.bus.clone() };
         EventDriver::new(&mut self.chrome_doc, handler).handle_ui_event(event);
     }
 
@@ -894,18 +928,26 @@ impl BrowserApp {
         };
 
         self.renderer.render(|scene| {
-            if let Some((content_doc, content_scale)) = content {
-                if content_h_phys > 0 {
-                    let clip = Rect::new(0.0, chrome_h_phys as f64, win_w as f64, win_h as f64);
-                    scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &clip);
-                    paint_scene(scene, content_doc, content_scale, win_w, content_h_phys, 0, chrome_h_phys);
-                    scene.pop_layer();
-                }
+            if let Some((content_doc, content_scale)) = content
+                && content_h_phys > 0
+            {
+                let clip = Rect::new(0.0, chrome_h_phys as f64, win_w as f64, win_h as f64);
+                scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &clip);
+                paint_scene(
+                    scene,
+                    content_doc,
+                    content_scale,
+                    win_w,
+                    content_h_phys,
+                    0,
+                    chrome_h_phys,
+                );
+                scene.pop_layer();
             }
-            if let Some((pdoc, pw, ph, px, py)) = preview {
-                if content_h_phys > ph {
-                    paint_scene(scene, pdoc, scale, pw, ph, px, py);
-                }
+            if let Some((pdoc, pw, ph, px, py)) = preview
+                && content_h_phys > ph
+            {
+                paint_scene(scene, pdoc, scale, pw, ph, px, py);
             }
             paint_scene(scene, chrome_inner, scale, win_w, chrome_h_phys, 0, 0);
         });
@@ -996,12 +1038,12 @@ impl ApplicationHandler for BrowserApp {
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         let now = Instant::now();
-        if let Some(until) = self.status_note_until {
-            if now >= until {
-                self.status_note = None;
-                self.status_note_until = None;
-                self.rebuild_chrome();
-            }
+        if let Some(until) = self.status_note_until
+            && now >= until
+        {
+            self.status_note = None;
+            self.status_note_until = None;
+            self.rebuild_chrome();
         }
         let next_wakeup = match (self.next_anim_frame, self.status_note_until) {
             (Some(a), Some(b)) => Some(a.min(b)),

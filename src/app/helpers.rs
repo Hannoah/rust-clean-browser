@@ -2,8 +2,8 @@
 
 use blitz_html::HtmlDocument;
 use blitz_traits::events::{
-    BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, KeyState, MouseEventButton,
-    MouseEventButtons, PointerCoords, PointerDetails,
+    BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, KeyState, MouseEventButton, MouseEventButtons,
+    PointerCoords, PointerDetails,
 };
 use keyboard_types::{Code, Key, Location, Modifiers as KbtModifiers};
 use std::time::Instant;
@@ -48,14 +48,14 @@ pub(super) fn focus_main_window(win: &dyn winit::window::Window, activate: bool)
             fn SetFocus(hwnd: isize) -> isize;
             fn GetForegroundWindow() -> isize;
         }
-        if let Ok(handle) = win.window_handle() {
-            if let RawWindowHandle::Win32(h) = handle.as_raw() {
-                let hwnd = h.hwnd.get();
-                // Never steal focus from another app when we weren't asked to activate.
-                unsafe {
-                    if activate || GetForegroundWindow() == hwnd {
-                        SetFocus(hwnd);
-                    }
+        if let Ok(handle) = win.window_handle()
+            && let RawWindowHandle::Win32(h) = handle.as_raw()
+        {
+            let hwnd = h.hwnd.get();
+            // Never steal focus from another app when we weren't asked to activate.
+            unsafe {
+                if activate || GetForegroundWindow() == hwnd {
+                    SetFocus(hwnd);
                 }
             }
         }
@@ -96,6 +96,10 @@ pub(super) fn wait_for_images(doc: &mut HtmlDocument) {
         }
         if Instant::now() >= deadline {
             if let Ok(mut guard) = broken.lock() {
+                // Bounded: forgetting old entries only costs one more 25 ms wait per icon.
+                if guard.len() > 1024 {
+                    guard.clear();
+                }
                 for src in pending_srcs {
                     if !src.is_empty() {
                         guard.insert(src);
@@ -126,12 +130,12 @@ pub(super) fn client_origin_on_screen(win: &dyn winit::window::Window) -> winit:
         unsafe extern "system" {
             fn ClientToScreen(hwnd: isize, point: *mut Point) -> i32;
         }
-        if let Ok(handle) = win.window_handle() {
-            if let RawWindowHandle::Win32(h) = handle.as_raw() {
-                let mut p = Point { x: 0, y: 0 };
-                if unsafe { ClientToScreen(h.hwnd.get(), &mut p) } != 0 {
-                    return winit::dpi::PhysicalPosition::new(p.x, p.y);
-                }
+        if let Ok(handle) = win.window_handle()
+            && let RawWindowHandle::Win32(h) = handle.as_raw()
+        {
+            let mut p = Point { x: 0, y: 0 };
+            if unsafe { ClientToScreen(h.hwnd.get(), &mut p) } != 0 {
+                return winit::dpi::PhysicalPosition::new(p.x, p.y);
             }
         }
     }
@@ -445,10 +449,15 @@ mod tests {
 
     #[test]
     fn pdf_urls_use_js_engine_and_popups_are_detected() {
-        assert!(requires_js_engine("https://example.com/files/Report.PDF?download=1#page=3"));
+        assert!(requires_js_engine(
+            "https://example.com/files/Report.PDF?download=1#page=3"
+        ));
         assert!(requires_js_engine("file:///C:/docs/a.pdf"));
         assert!(!requires_js_engine("https://example.com/pdf-guide.html"));
-        assert!(wants_native_popup("https://accounts.google.com/o/oauth2/auth?x=1", false));
+        assert!(wants_native_popup(
+            "https://accounts.google.com/o/oauth2/auth?x=1",
+            false
+        ));
         assert!(wants_native_popup("about:blank", false));
         assert!(wants_native_popup("https://site.example/x", true));
         assert!(!wants_native_popup("https://site.example/x", false));
@@ -473,7 +482,10 @@ mod tests {
         assert_eq!(normalize_url_input("rust://bookmarks"), "rust://bookmarks");
         assert_eq!(normalize_url_input("example.com"), "https://example.com");
         assert_eq!(normalize_url_input("https://rust-lang.org"), "https://rust-lang.org");
-        assert_eq!(normalize_url_input("HTTPS://Example.COM/Path"), "https://Example.COM/Path");
+        assert_eq!(
+            normalize_url_input("HTTPS://Example.COM/Path"),
+            "https://Example.COM/Path"
+        );
         assert_eq!(normalize_url_input("localhost:3000"), "http://localhost:3000");
         assert_eq!(normalize_url_input("127.0.0.1:8080/api"), "http://127.0.0.1:8080/api");
         assert_eq!(

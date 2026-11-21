@@ -39,11 +39,18 @@ pub enum Job {
     /// Fetch the page and read its declared icon (see `discover`).
     Page { key: String, url: Url },
     /// Fetch an icon. `fallback` is tried if it fails; `guess` jobs mark the key as icon-less on failure.
-    Icon { key: String, url: Url, fallback: Option<Url>, guess: bool },
+    Icon {
+        key: String,
+        url: Url,
+        fallback: Option<Url>,
+        guess: bool,
+    },
 }
 
 /// What to do after a fetch: done (`changed`: the cached icon changed), or run another job.
 #[derive(Debug)]
+// ponytail: one short-lived value per fetch; Box<Job> is not worth the churn.
+#[allow(clippy::large_enum_variant)]
 pub enum Next {
     Done { changed: bool },
     Then(Job),
@@ -70,7 +77,13 @@ fn state() -> &'static Mutex<State> {
         let dir = base.map(|d| d.join("favicons2"));
         let mut ready = HashMap::new();
         let mut failed = HashSet::new();
-        for entry in dir.as_ref().and_then(|d| std::fs::read_dir(d).ok()).into_iter().flatten().flatten() {
+        for entry in dir
+            .as_ref()
+            .and_then(|d| std::fs::read_dir(d).ok())
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
@@ -111,7 +124,10 @@ fn cache_key(page: &Url) -> Option<String> {
     }
     let host = page.host_str()?.to_ascii_lowercase();
     let host = host.strip_prefix("www.").unwrap_or(&host);
-    if !host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-') {
+    if !host
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+    {
         return None;
     }
     let multi = MULTI_APP_HOSTS
@@ -163,13 +179,23 @@ pub fn begin_fetch_known(page_url: &str, links: &[Link]) -> Option<Job> {
             }
             st.attempted.insert(key.clone());
             let fallback = (!have_icon && icon != ico).then_some(ico);
-            Some(Job::Icon { key, url: icon, fallback, guess: !have_icon })
+            Some(Job::Icon {
+                key,
+                url: icon,
+                fallback,
+                guess: !have_icon,
+            })
         }
         None => {
             if have_icon || st.failed.contains(&key) || !st.attempted.insert(key.clone()) {
                 return None;
             }
-            Some(Job::Icon { key, url: ico, fallback: None, guess: true })
+            Some(Job::Icon {
+                key,
+                url: ico,
+                fallback: None,
+                guess: true,
+            })
         }
     }
 }
@@ -189,9 +215,19 @@ pub fn page_fetched(key: String, requested: &Url, final_url: &str, bytes: Option
     match declared {
         Some(url) => {
             let fallback = (url != ico).then_some(ico);
-            Job::Icon { key, url, fallback, guess: true }
+            Job::Icon {
+                key,
+                url,
+                fallback,
+                guess: true,
+            }
         }
-        None => Job::Icon { key, url: ico, fallback: None, guess: true },
+        None => Job::Icon {
+            key,
+            url: ico,
+            fallback: None,
+            guess: true,
+        },
     }
 }
 
@@ -201,7 +237,12 @@ pub fn icon_fetched(key: String, fallback: Option<Url>, guess: bool, bytes: Opti
         return Next::Done { changed };
     }
     match fallback {
-        Some(url) => Next::Then(Job::Icon { key, url, fallback: None, guess }),
+        Some(url) => Next::Then(Job::Icon {
+            key,
+            url,
+            fallback: None,
+            guess,
+        }),
         None => {
             if guess {
                 mark_failed(&key);
@@ -412,11 +453,26 @@ mod tests {
 
     #[test]
     fn cache_keys_per_service() {
-        assert_eq!(cache_key(&url("https://WWW.Example.com/a?b")).as_deref(), Some("example.com"));
-        assert_eq!(cache_key(&url("https://x.atlassian.net/wiki/spaces/A")).as_deref(), Some("x.atlassian.net~wiki"));
-        assert_eq!(cache_key(&url("https://x.atlassian.net/jira/")).as_deref(), Some("x.atlassian.net~jira"));
-        assert_eq!(cache_key(&url("https://docs.google.com/spreadsheets/d/1")).as_deref(), Some("docs.google.com~spreadsheets"));
-        assert_eq!(cache_key(&url("https://github.com/sassoftware")).as_deref(), Some("github.com"));
+        assert_eq!(
+            cache_key(&url("https://WWW.Example.com/a?b")).as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            cache_key(&url("https://x.atlassian.net/wiki/spaces/A")).as_deref(),
+            Some("x.atlassian.net~wiki")
+        );
+        assert_eq!(
+            cache_key(&url("https://x.atlassian.net/jira/")).as_deref(),
+            Some("x.atlassian.net~jira")
+        );
+        assert_eq!(
+            cache_key(&url("https://docs.google.com/spreadsheets/d/1")).as_deref(),
+            Some("docs.google.com~spreadsheets")
+        );
+        assert_eq!(
+            cache_key(&url("https://github.com/sassoftware")).as_deref(),
+            Some("github.com")
+        );
         assert_eq!(cache_key(&url("rust://home")), None);
         assert_eq!(cache_key(&url("file:///C:/x.html")), None);
     }
@@ -429,23 +485,36 @@ mod tests {
         let links = links_in_html(html);
         assert_eq!(links.len(), 5);
         let page = url("https://a.test/dir/page");
-        assert_eq!(pick_icon(&links, &page).unwrap().as_str(), "https://a.test/fav32.png?v=1&x=2");
+        assert_eq!(
+            pick_icon(&links, &page).unwrap().as_str(),
+            "https://a.test/fav32.png?v=1&x=2"
+        );
         // rel=icon wins over apple-touch-icon; SVG is accepted.
         let svg = links_in_html(r#"<link rel="apple-touch-icon" href="t.png"><link rel="icon" href="logo.svg">"#);
         assert_eq!(pick_icon(&svg, &page).unwrap().as_str(), "https://a.test/dir/logo.svg");
-        assert!(pick_icon(&links_in_html(r#"<link rel="icon" href="data:image/png;base64,AA">"#), &page).is_none());
+        assert!(
+            pick_icon(
+                &links_in_html(r#"<link rel="icon" href="data:image/png;base64,AA">"#),
+                &page
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn page_discovery_ignores_sign_in_redirects() {
         let html = br#"<link rel="icon" href="https://cdn.test/app.png">"#;
         let req = url("https://app.example.com/home");
-        let Job::Icon { url: icon, fallback, .. } = page_fetched("k".into(), &req, "https://www.example.com/x", Some(html)) else {
+        let Job::Icon {
+            url: icon, fallback, ..
+        } = page_fetched("k".into(), &req, "https://www.example.com/x", Some(html))
+        else {
             panic!()
         };
         assert_eq!(icon.as_str(), "https://cdn.test/app.png");
         assert_eq!(fallback.unwrap().as_str(), "https://app.example.com/favicon.ico");
-        let Job::Icon { url: icon, .. } = page_fetched("k".into(), &req, "https://login.other.test/", Some(html)) else {
+        let Job::Icon { url: icon, .. } = page_fetched("k".into(), &req, "https://login.other.test/", Some(html))
+        else {
             panic!()
         };
         assert_eq!(icon.as_str(), "https://app.example.com/favicon.ico");
@@ -459,8 +528,15 @@ mod tests {
             .unwrap();
         let key = format!("store-test-{}.test", std::process::id());
         assert_eq!(store(&key, png.get_ref()), Some(true));
-        assert_eq!(store(&key, png.get_ref()), Some(false), "identical icon is not a change");
-        let path = Url::parse(&cached_icon_url(&format!("https://{key}/")).unwrap()).unwrap().to_file_path().unwrap();
+        assert_eq!(
+            store(&key, png.get_ref()),
+            Some(false),
+            "identical icon is not a change"
+        );
+        let path = Url::parse(&cached_icon_url(&format!("https://{key}/")).unwrap())
+            .unwrap()
+            .to_file_path()
+            .unwrap();
         let saved = image::open(&path).unwrap();
         assert_eq!((saved.width(), saved.height()), (64, 64));
 
@@ -470,7 +546,9 @@ mod tests {
         assert!(svg_url.ends_with(".svg") && !path.exists(), "svg replaces png");
         let _ = std::fs::remove_file(Url::parse(&svg_url).unwrap().to_file_path().unwrap());
         assert_eq!(store("bad.test", b"not an image"), None);
-        assert!(looks_like_svg(br#"<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" ""><svg/>"#));
+        assert!(looks_like_svg(
+            br#"<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" ""><svg/>"#
+        ));
     }
 
     #[test]
@@ -480,7 +558,10 @@ mod tests {
         let job = begin_fetch(&page).unwrap();
         assert!(matches!(job, Job::Page { .. }));
         assert!(begin_fetch(&page).is_none(), "deduplicated per key");
-        assert!(matches!(icon_fetched(key.clone(), None, true, None), Next::Done { changed: false }));
+        assert!(matches!(
+            icon_fetched(key.clone(), None, true, None),
+            Next::Done { changed: false }
+        ));
         assert!(state().lock().unwrap().failed.contains(&key));
         if let Some(dir) = state().lock().unwrap().dir.clone() {
             let _ = std::fs::remove_file(dir.join(format!("{key}.none")));

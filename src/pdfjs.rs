@@ -9,7 +9,6 @@
 
 use crate::net::PersistentCookieJar;
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use wry::RequestAsyncResponder;
 use wry::http::{Request, Response};
@@ -28,25 +27,45 @@ pub fn is_pdf_url(url: &str) -> bool {
 
 /// Maps random tokens to the PDF source URLs the app chose to open in the annotator.
 #[derive(Default)]
-pub struct PdfSources(Mutex<HashMap<String, String>>);
+pub struct PdfSources(Mutex<Vec<(String, String)>>);
+
+/// Newest tokens kept; older PDF tabs lose their annotator link (reloading the PDF re-issues one).
+const MAX_SOURCES: usize = 64;
 
 impl PdfSources {
     /// Viewer URL that shows `src` (a `file://` or `http(s)://` PDF URL).
     pub fn editor_url(&self, src: &str) -> String {
         let token = crate::single::random_token();
-        // ponytail: one short string per toggle kept for the session; prune if it ever matters.
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).insert(token.clone(), src.to_string());
+        let mut map = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let token = match map.iter().find(|(_, s)| s == src) {
+            Some((t, _)) => t.clone(),
+            None => {
+                if map.len() >= MAX_SOURCES {
+                    map.remove(0);
+                }
+                map.push((token, src.to_string()));
+                map[map.len() - 1].0.clone()
+            }
+        };
+        drop(map);
         let path = format!("/pdf/{token}/{}", enc(&file_name(src)));
         format!("{ORIGIN}/web/viewer.html?file={}", enc(&path))
     }
 
     fn get(&self, token: &str) -> Option<String> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).get(token).cloned()
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|(t, _)| t == token)
+            .map(|(_, s)| s.clone())
     }
 }
 
 fn enc(s: &str) -> String {
-    url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>().replace('+', "%20")
+    url::form_urlencoded::byte_serialize(s.as_bytes())
+        .collect::<String>()
+        .replace('+', "%20")
 }
 
 fn pct_decode(s: &str) -> String {
@@ -54,7 +73,10 @@ fn pct_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        let hex = b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok());
+        let hex = b
+            .get(i + 1..i + 3)
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
         match (b[i], hex) {
             (b'%', Some(v)) => {
                 out.push(v);
@@ -77,8 +99,15 @@ fn file_name(src: &str) -> String {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "document".to_string());
     // Windows forbids these in file names.
-    let seg: String = seg.chars().map(|c| if r#"<>:"/\|?*"#.contains(c) { '_' } else { c }).collect();
-    if seg.to_ascii_lowercase().ends_with(".pdf") { seg } else { format!("{seg}.pdf") }
+    let seg: String = seg
+        .chars()
+        .map(|c| if r#"<>:"/\|?*"#.contains(c) { '_' } else { c })
+        .collect();
+    if seg.to_ascii_lowercase().ends_with(".pdf") {
+        seg
+    } else {
+        format!("{seg}.pdf")
+    }
 }
 
 fn mime(path: &str) -> &'static str {
@@ -127,7 +156,12 @@ async fn load(src: &str, cookies: Arc<PersistentCookieJar>) -> Result<Vec<u8>, S
                 .user_agent("Mozilla/5.0")
                 .build()
                 .map_err(|e| e.to_string())?;
-            let resp = client.get(url).send().await.and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
+            let resp = client
+                .get(url)
+                .send()
+                .await
+                .and_then(|r| r.error_for_status())
+                .map_err(|e| e.to_string())?;
             if resp.content_length().is_some_and(|n| n > MAX_PDF_BYTES) {
                 return Err("PDF가 너무 큼 (256MB 초과)".to_string());
             }
@@ -158,7 +192,10 @@ pub fn handle(
                 Ok(bytes) => Response::builder()
                     .status(200)
                     .header("Content-Type", "application/pdf")
-                    .header("Content-Disposition", format!("inline; filename*=UTF-8''{}", enc(&name)))
+                    .header(
+                        "Content-Disposition",
+                        format!("inline; filename*=UTF-8''{}", enc(&name)),
+                    )
                     .header("Accept-Ranges", "none")
                     .header("Cache-Control", "no-store")
                     .body(Cow::Owned(bytes))
@@ -169,7 +206,10 @@ pub fn handle(
         return;
     }
     let key = path.trim_start_matches('/');
-    let found = FILES.iter().find(|(n, _)| *n == key).and_then(|(_, z)| miniz_oxide::inflate::decompress_to_vec(z).ok());
+    let found = FILES
+        .iter()
+        .find(|(n, _)| *n == key)
+        .and_then(|(_, z)| miniz_oxide::inflate::decompress_to_vec(z).ok());
     responder.respond(match found {
         Some(body) => reply(200, mime(key), body),
         None => reply(404, "text/plain", b"not found".to_vec()),
@@ -205,11 +245,20 @@ mod tests {
         let token = u.split("%2Fpdf%2F").nth(1).and_then(|t| t.split("%2F").next()).unwrap();
         assert_eq!(s.get(token).as_deref(), Some("file:///C:/a%20b.pdf"));
         assert_eq!(s.get("nope"), None);
+        // Same source reuses its token; the table stays bounded.
+        assert_eq!(s.editor_url("file:///C:/a%20b.pdf"), u);
+        for i in 0..MAX_SOURCES + 5 {
+            s.editor_url(&format!("file:///C:/{i}.pdf"));
+        }
+        assert!(s.0.lock().unwrap().len() <= MAX_SOURCES && s.get(token).is_none());
     }
 
     #[test]
     fn assets_are_embedded_and_inflate() {
-        let (_, z) = FILES.iter().find(|(n, _)| *n == "web/viewer.html").expect("viewer.html embedded");
+        let (_, z) = FILES
+            .iter()
+            .find(|(n, _)| *n == "web/viewer.html")
+            .expect("viewer.html embedded");
         let html = miniz_oxide::inflate::decompress_to_vec(z).unwrap();
         assert!(String::from_utf8_lossy(&html).contains("viewer.mjs"));
         assert!(FILES.iter().any(|(n, _)| *n == "build/pdf.worker.mjs"));

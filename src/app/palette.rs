@@ -5,8 +5,8 @@ use super::BrowserApp;
 use super::helpers::normalize_url_input;
 use super::popup::PopupKind;
 use crate::chrome_ui::{
-    PALETTE_WIDTH, PaletteEntry, PaletteIcon, TITLEBAR_HEIGHT, palette_popup_height,
-    render_command_palette_list_html, render_command_palette_shell_html,
+    PALETTE_WIDTH, PaletteEntry, PaletteIcon, TITLEBAR_HEIGHT, palette_popup_height, render_command_palette_list_html,
+    render_command_palette_shell_html,
 };
 use blitz_dom::ScrollBehavior;
 use std::collections::HashSet;
@@ -106,23 +106,23 @@ impl BrowserApp {
         match code {
             KeyCode::Escape => {
                 self.close_popup();
-                return true;
+                true
             }
             KeyCode::ArrowDown => {
                 if len > 0 {
                     self.set_palette_selected((cur + 1) % len);
                 }
-                return true;
+                true
             }
             KeyCode::ArrowUp => {
                 if len > 0 {
                     self.set_palette_selected((cur + len - 1) % len);
                 }
-                return true;
+                true
             }
             KeyCode::Enter | KeyCode::NumpadEnter => {
                 self.execute_palette_index(cur, event_loop);
-                return true;
+                true
             }
             _ => false,
         }
@@ -133,12 +133,7 @@ impl BrowserApp {
         let Some(popup) = &mut self.popup else {
             return;
         };
-        let list_html = if let PopupKind::CommandPalette {
-            query,
-            items,
-            selected,
-        } = &mut popup.kind
-        {
+        let list_html = if let PopupKind::CommandPalette { query, items, selected } = &mut popup.kind {
             *selected = next_sel.min(items.len().saturating_sub(1));
             render_command_palette_list_html(items, *selected, query)
         } else {
@@ -147,10 +142,9 @@ impl BrowserApp {
         if let Some(list_id) = popup.doc.get_element_by_id("palette-list") {
             popup.doc.mutate().set_inner_html(list_id, &list_html);
             popup.doc.resolve(anim_time);
-            if let (Some(list_node), Some(sel_id)) = (
-                popup.doc.get_node(list_id),
-                popup.doc.get_element_by_id("palette-sel"),
-            ) {
+            if let (Some(list_node), Some(sel_id)) =
+                (popup.doc.get_node(list_id), popup.doc.get_element_by_id("palette-sel"))
+            {
                 let list_top = list_node.absolute_position(0.0, 0.0).y as f64;
                 let list_h = list_node.final_layout().size.height as f64;
                 let cur_scroll = list_node.scroll_offset().y;
@@ -158,7 +152,9 @@ impl BrowserApp {
                     let sel_top = sel_node.absolute_position(0.0, 0.0).y as f64 - list_top + cur_scroll;
                     let sel_h = sel_node.final_layout().size.height as f64;
                     if sel_top < cur_scroll {
-                        popup.doc.scroll_to(list_id, 0.0, (sel_top - 6.0).max(0.0), ScrollBehavior::Instant);
+                        popup
+                            .doc
+                            .scroll_to(list_id, 0.0, (sel_top - 6.0).max(0.0), ScrollBehavior::Instant);
                     } else if sel_top + sel_h > cur_scroll + list_h {
                         popup.doc.scroll_to(
                             list_id,
@@ -199,10 +195,7 @@ impl BrowserApp {
 
         // 1. Open tabs
         for (idx, tab) in self.tabs.iter().enumerate() {
-            if !q.is_empty()
-                && !tab.title.to_lowercase().contains(&q)
-                && !tab.url.to_lowercase().contains(&q)
-            {
+            if !q.is_empty() && !tab.title.to_lowercase().contains(&q) && !tab.url.to_lowercase().contains(&q) {
                 continue;
             }
             let status = if idx == self.active_tab {
@@ -225,28 +218,210 @@ impl BrowserApp {
         }
 
         // 2. Commands
-        let mut commands: Vec<(String, &'static str, &'static str, &'static str, PaletteIcon, &'static str)> = vec![
-            ("new-tab".into(), "새 탭 열기", "빈 대시보드 및 주소창 포커스", if is_mac { "⌘T" } else { "Ctrl+T" }, PaletteIcon::Command, "new tab"),
-            ("open-find".into(), "페이지 내 찾기", "현재 페이지에서 텍스트 검색", if is_mac { "⌘F" } else { "Ctrl+F" }, PaletteIcon::Search, "find search"),
-            ("toggle-reader".into(), if active.reader_mode { "리더 모드 끄기" } else { "리더 모드 켜기" }, "방해 요소 없는 읽기 화면으로 전환", "Alt+R", PaletteIcon::Book, "reader article"),
-            ("translate".into(), if active.translated.is_some() { "원문 보기 (번역 끄기)" } else { "한영 번역 (자동 방향 감지)" }, "한글 페이지는 영어로, 그 외는 한국어로 · 본문이 Google로 전송됨", "Alt+T", PaletteIcon::Book, "translate 번역 영어 한국어 korean english"),
-            ("toggle-js".into(), if active.js_mode { "순수 Rust Clean 모드로 전환" } else { "JS 호환 모드 (WebView2)로 전환" }, "현재 탭의 렌더링 엔진 전환", "", PaletteIcon::Zap, "js webview blitz clean"),
-            ("toggle-filter".into(), if self.net_provider.is_filter_enabled() { "트래커 차단 끄기" } else { "트래커 차단 켜기" }, "광고·추적 스크립트 및 iframe 차단 전환", "", PaletteIcon::Shield, "adblock tracker shield"),
-            ("toggle-https-only".into(), if self.prefs.https_only { "HTTPS-Only 끄기" } else { "HTTPS-Only 켜기" }, "http 주소를 https로 자동 업그레이드", "", PaletteIcon::Shield, "https tls secure upgrade"),
-            ("toggle-bookmark".into(), if self.bookmarks.contains_url(&active.url) { "현재 페이지 북마크 해제" } else { "현재 페이지 북마크 추가" }, "개인 북마크에 저장/삭제", if is_mac { "⌘D" } else { "Ctrl+D" }, PaletteIcon::Bookmark, "bookmark star"),
-            ("toggle-bm-bar".into(), if self.prefs.show_bookmarks_bar { "북마크 바 숨기기" } else { "북마크 바 표시하기" }, "상단 북마크 툴바 공간 전환", if is_mac { "⌘⇧B" } else { "Ctrl+Shift+B" }, PaletteIcon::Command, "bookmark bar toggle"),
-            ("cite:ieee".into(), "출처 복사 · IEEE", "현재 페이지 인용문을 클립보드로 복사", "", PaletteIcon::Book, "cite citation 출처 인용 reference ieee"),
-            ("cite:apa".into(), "출처 복사 · APA 7", "저자. (연도, 월 일). 제목. 사이트. URL", "", PaletteIcon::Book, "cite citation 출처 인용 reference apa"),
-            ("cite:slide".into(), "출처 복사 · 발표자료", "출처: 사이트, \"제목\", URL (접속일)", "", PaletteIcon::Book, "cite citation 출처 인용 reference slide ppt 발표"),
-            ("cite:mla".into(), "출처 복사 · MLA 9", "저자. \"제목.\" 사이트, 날짜, URL.", "", PaletteIcon::Book, "cite citation 출처 인용 reference mla"),
-            ("cycle-theme".into(), "테마 모드 전환", "시스템 / 라이트 / 다크 순환", "", PaletteIcon::Theme, "theme dark light mode"),
-            ("nav:rust://history".into(), "방문 기록 보기", "최근 방문한 웹 페이지 타임라인", if is_mac { "⌘H" } else { "Ctrl+H" }, PaletteIcon::History, "history timeline"),
-            ("nav:rust://bookmarks".into(), "북마크 관리자 열기", "폴더별 북마크 탐색 및 검색", if is_mac { "⌘⇧O" } else { "Ctrl+Shift+O" }, PaletteIcon::Bookmark, "bookmarks manager"),
-            ("sync-chrome".into(), "Chrome 북마크 다시 동기화", "로컬 Chrome 프로필 북마크 가져오기", "", PaletteIcon::Command, "chrome sync import"),
-            ("trim-memory".into(), "메모리 즉시 회수 (Trim Working Set)", "OS에 유휴 힙 메모리 반환", "", PaletteIcon::Memory, "memory ram trim gc"),
-            ("reopen-tab".into(), "닫은 탭 다시 열기", "방금 닫은 페이지 복원", if is_mac { "⌘⇧T" } else { "Ctrl+Shift+T" }, PaletteIcon::Tab, "reopen undo close"),
-            ("close-current-tab".into(), "현재 탭 닫기", "현재 보고 있는 탭 닫기", if is_mac { "⌘W" } else { "Ctrl+W" }, PaletteIcon::Tab, "close tab"),
-            ("zoom-reset".into(), "화면 배율 100% 초기화", "확대/축소 기본값으로 되돌리기", if is_mac { "⌘0" } else { "Ctrl+0" }, PaletteIcon::Command, "zoom reset"),
+        let mut commands: Vec<(
+            String,
+            &'static str,
+            &'static str,
+            &'static str,
+            PaletteIcon,
+            &'static str,
+        )> = vec![
+            (
+                "new-tab".into(),
+                "새 탭 열기",
+                "빈 대시보드 및 주소창 포커스",
+                if is_mac { "⌘T" } else { "Ctrl+T" },
+                PaletteIcon::Command,
+                "new tab",
+            ),
+            (
+                "open-find".into(),
+                "페이지 내 찾기",
+                "현재 페이지에서 텍스트 검색",
+                if is_mac { "⌘F" } else { "Ctrl+F" },
+                PaletteIcon::Search,
+                "find search",
+            ),
+            (
+                "toggle-reader".into(),
+                if active.reader_mode {
+                    "리더 모드 끄기"
+                } else {
+                    "리더 모드 켜기"
+                },
+                "방해 요소 없는 읽기 화면으로 전환",
+                "Alt+R",
+                PaletteIcon::Book,
+                "reader article",
+            ),
+            (
+                "translate".into(),
+                if active.translated.is_some() {
+                    "원문 보기 (번역 끄기)"
+                } else {
+                    "한영 번역 (자동 방향 감지)"
+                },
+                "한글 페이지는 영어로, 그 외는 한국어로 · 본문이 Google로 전송됨",
+                "Alt+T",
+                PaletteIcon::Book,
+                "translate 번역 영어 한국어 korean english",
+            ),
+            (
+                "toggle-js".into(),
+                if active.js_mode {
+                    "순수 Rust Clean 모드로 전환"
+                } else {
+                    "JS 호환 모드 (WebView2)로 전환"
+                },
+                "현재 탭의 렌더링 엔진 전환",
+                "",
+                PaletteIcon::Zap,
+                "js webview blitz clean",
+            ),
+            (
+                "toggle-filter".into(),
+                if self.net_provider.is_filter_enabled() {
+                    "트래커 차단 끄기"
+                } else {
+                    "트래커 차단 켜기"
+                },
+                "광고·추적 스크립트 및 iframe 차단 전환",
+                "",
+                PaletteIcon::Shield,
+                "adblock tracker shield",
+            ),
+            (
+                "toggle-https-only".into(),
+                if self.prefs.https_only {
+                    "HTTPS-Only 끄기"
+                } else {
+                    "HTTPS-Only 켜기"
+                },
+                "http 주소를 https로 자동 업그레이드",
+                "",
+                PaletteIcon::Shield,
+                "https tls secure upgrade",
+            ),
+            (
+                "toggle-bookmark".into(),
+                if self.bookmarks.contains_url(&active.url) {
+                    "현재 페이지 북마크 해제"
+                } else {
+                    "현재 페이지 북마크 추가"
+                },
+                "개인 북마크에 저장/삭제",
+                if is_mac { "⌘D" } else { "Ctrl+D" },
+                PaletteIcon::Bookmark,
+                "bookmark star",
+            ),
+            (
+                "toggle-bm-bar".into(),
+                if self.prefs.show_bookmarks_bar {
+                    "북마크 바 숨기기"
+                } else {
+                    "북마크 바 표시하기"
+                },
+                "상단 북마크 툴바 공간 전환",
+                if is_mac { "⌘⇧B" } else { "Ctrl+Shift+B" },
+                PaletteIcon::Command,
+                "bookmark bar toggle",
+            ),
+            (
+                "cite:ieee".into(),
+                "출처 복사 · IEEE",
+                "현재 페이지 인용문을 클립보드로 복사",
+                "",
+                PaletteIcon::Book,
+                "cite citation 출처 인용 reference ieee",
+            ),
+            (
+                "cite:apa".into(),
+                "출처 복사 · APA 7",
+                "저자. (연도, 월 일). 제목. 사이트. URL",
+                "",
+                PaletteIcon::Book,
+                "cite citation 출처 인용 reference apa",
+            ),
+            (
+                "cite:slide".into(),
+                "출처 복사 · 발표자료",
+                "출처: 사이트, \"제목\", URL (접속일)",
+                "",
+                PaletteIcon::Book,
+                "cite citation 출처 인용 reference slide ppt 발표",
+            ),
+            (
+                "cite:mla".into(),
+                "출처 복사 · MLA 9",
+                "저자. \"제목.\" 사이트, 날짜, URL.",
+                "",
+                PaletteIcon::Book,
+                "cite citation 출처 인용 reference mla",
+            ),
+            (
+                "cycle-theme".into(),
+                "테마 모드 전환",
+                "시스템 / 라이트 / 다크 순환",
+                "",
+                PaletteIcon::Theme,
+                "theme dark light mode",
+            ),
+            (
+                "nav:rust://history".into(),
+                "방문 기록 보기",
+                "최근 방문한 웹 페이지 타임라인",
+                if is_mac { "⌘H" } else { "Ctrl+H" },
+                PaletteIcon::History,
+                "history timeline",
+            ),
+            (
+                "nav:rust://bookmarks".into(),
+                "북마크 관리자 열기",
+                "폴더별 북마크 탐색 및 검색",
+                if is_mac { "⌘⇧O" } else { "Ctrl+Shift+O" },
+                PaletteIcon::Bookmark,
+                "bookmarks manager",
+            ),
+            (
+                "sync-chrome".into(),
+                "Chrome 북마크 다시 동기화",
+                "로컬 Chrome 프로필 북마크 가져오기",
+                "",
+                PaletteIcon::Command,
+                "chrome sync import",
+            ),
+            (
+                "trim-memory".into(),
+                "메모리 즉시 회수 (Trim Working Set)",
+                "OS에 유휴 힙 메모리 반환",
+                "",
+                PaletteIcon::Memory,
+                "memory ram trim gc",
+            ),
+            (
+                "reopen-tab".into(),
+                "닫은 탭 다시 열기",
+                "방금 닫은 페이지 복원",
+                if is_mac { "⌘⇧T" } else { "Ctrl+Shift+T" },
+                PaletteIcon::Tab,
+                "reopen undo close",
+            ),
+            (
+                "close-current-tab".into(),
+                "현재 탭 닫기",
+                "현재 보고 있는 탭 닫기",
+                if is_mac { "⌘W" } else { "Ctrl+W" },
+                PaletteIcon::Tab,
+                "close tab",
+            ),
+            (
+                "zoom-reset".into(),
+                "화면 배율 100% 초기화",
+                "확대/축소 기본값으로 되돌리기",
+                if is_mac { "⌘0" } else { "Ctrl+0" },
+                PaletteIcon::Command,
+                "zoom reset",
+            ),
         ];
 
         if active.is_pdf() {
@@ -254,7 +429,11 @@ impl BrowserApp {
                 0,
                 (
                     "pdf-editor".into(),
-                    if active.editing_pdf() { "PDF 필기 모드 끄기 (기본 뷰어)" } else { "PDF 필기 모드 (형광펜·그리기·메모)" },
+                    if active.editing_pdf() {
+                        "PDF 필기 모드 끄기 (기본 뷰어)"
+                    } else {
+                        "PDF 필기 모드 (형광펜·그리기·메모)"
+                    },
                     "형광펜, 손글씨, 텍스트 메모, 이미지 삽입 후 주석 포함 저장",
                     "Alt+E",
                     PaletteIcon::Book,

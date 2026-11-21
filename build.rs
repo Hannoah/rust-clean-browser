@@ -20,7 +20,9 @@ fn collect(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
 /// Embeds the pdf.js annotator (`vendor/pdfjs`), deflate-compressed, as `FILES` for `src/pdfjs.rs`.
 fn embed_pdfjs(out_path: &Path) {
     println!("cargo:rerun-if-changed=vendor/pdfjs");
-    let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap_or_default()).join("vendor").join("pdfjs");
+    let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap_or_default())
+        .join("vendor")
+        .join("pdfjs");
     let mut files = Vec::new();
     collect(&root, &root, &mut files);
     // LICENSE ships with the source tree, not in the served app.
@@ -30,7 +32,10 @@ fn embed_pdfjs(out_path: &Path) {
         let Ok(data) = fs::read(path) else { continue };
         let z = out_path.join(format!("pdfjs_{i}.z"));
         if fs::write(&z, miniz_oxide::deflate::compress_to_vec(&data, 9)).is_ok() {
-            code.push_str(&format!("    ({rel:?}, include_bytes!({:?})),\n", z.display().to_string()));
+            code.push_str(&format!(
+                "    ({rel:?}, include_bytes!({:?})),\n",
+                z.display().to_string()
+            ));
         }
     }
     code.push_str("];\n");
@@ -81,23 +86,24 @@ fn main() {
         let ico = manifest_dir.join("assets").join("icon.ico");
         let rc = out_path.join("app.rc");
         let rc_src = format!("1 ICON \"{}\"\n", ico.display().to_string().replace('\\', "/"));
-        if ico.is_file() && fs::write(&rc, rc_src).is_ok() {
-            if let Err(e) = embed_resource::compile(&rc, embed_resource::NONE).manifest_optional() {
-                println!("cargo:warning=exe icon not embedded: {e}");
-            }
+        if ico.is_file()
+            && fs::write(&rc, rc_src).is_ok()
+            && let Err(e) = embed_resource::compile(&rc, embed_resource::NONE).manifest_optional()
+        {
+            println!("cargo:warning=exe icon not embedded: {e}");
         }
     }
 
     // 3) On windows-gnullvm, copy libunwind.dll from PATH next to the binary so
     // launching from Windows Explorer works without llvm-mingw on global PATH.
-    if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu") {
-        if let Some(path_var) = env::var_os("PATH") {
-            for dir in env::split_paths(&path_var) {
-                let candidate = dir.join("libunwind.dll");
-                if candidate.is_file() {
-                    let _ = fs::copy(&candidate, profile_dir.join("libunwind.dll"));
-                    break;
-                }
+    if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu")
+        && let Some(path_var) = env::var_os("PATH")
+    {
+        for dir in env::split_paths(&path_var) {
+            let candidate = dir.join("libunwind.dll");
+            if candidate.is_file() {
+                let _ = fs::copy(&candidate, profile_dir.join("libunwind.dll"));
+                break;
             }
         }
     }

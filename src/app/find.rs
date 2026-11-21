@@ -19,14 +19,14 @@ pub(super) struct FindMatch {
 
 impl BrowserApp {
     pub(super) fn open_find_bar(&mut self, event_loop: &dyn ActiveEventLoop) {
-        if let Some(popup) = &mut self.popup {
-            if matches!(popup.kind, PopupKind::FindBar { .. }) {
-                if let Some(id) = popup.doc.get_element_by_id("find-input") {
-                    popup.doc.set_focus_to(id);
-                }
-                popup.window.focus_window();
-                return;
+        if let Some(popup) = &mut self.popup
+            && matches!(popup.kind, PopupKind::FindBar { .. })
+        {
+            if let Some(id) = popup.doc.get_element_by_id("find-input") {
+                popup.doc.set_focus_to(id);
             }
+            popup.window.focus_window();
+            return;
         }
         let scale = self.hidpi_scale.max(1.0) as f64;
         let win_w = (self.win_size.width as f64 / scale).max(FIND_BAR_WIDTH as f64 + 16.0);
@@ -89,7 +89,12 @@ impl BrowserApp {
                 let _ = wv.evaluate_script(&format!("window.find({js_q}, false, false, true);"));
             }
             if let Some(popup) = &mut self.popup {
-                if let PopupKind::FindBar { query, matches, current } = &mut popup.kind {
+                if let PopupKind::FindBar {
+                    query,
+                    matches,
+                    current,
+                } = &mut popup.kind
+                {
                     *query = text.clone();
                     matches.clear();
                     *current = 0;
@@ -103,8 +108,7 @@ impl BrowserApp {
             return;
         }
         let t = self.anim_time();
-        let found = self
-            .tabs[self.active_tab]
+        let found = self.tabs[self.active_tab]
             .doc
             .as_mut()
             .map(|doc| {
@@ -114,12 +118,16 @@ impl BrowserApp {
             .unwrap_or_default();
 
         let count = found.len();
-        if let Some(popup) = &mut self.popup {
-            if let PopupKind::FindBar { query, matches, current } = &mut popup.kind {
-                *query = text.clone();
-                *matches = found;
-                *current = 0;
-            }
+        if let Some(popup) = &mut self.popup
+            && let PopupKind::FindBar {
+                query,
+                matches,
+                current,
+            } = &mut popup.kind
+        {
+            *query = text.clone();
+            *matches = found;
+            *current = 0;
         }
         self.apply_active_find_match();
         self.refresh_find_counter(&text, count, 0, false);
@@ -127,15 +135,19 @@ impl BrowserApp {
 
     pub(super) fn step_find_match(&mut self, forward: bool) {
         let (query, len, next_idx) = match self.popup.as_mut().map(|p| &mut p.kind) {
-            Some(PopupKind::FindBar { query, matches, current }) => {
+            Some(PopupKind::FindBar {
+                query,
+                matches,
+                current,
+            }) => {
                 if self.active_webview.is_some() {
                     let trimmed = query.trim();
-                    if !trimmed.is_empty() {
-                        if let Some(wv) = &self.active_webview {
-                            let js_q = serde_json::to_string(trimmed).unwrap_or_else(|_| "\"\"".to_string());
-                            let back = if forward { "false" } else { "true" };
-                            let _ = wv.evaluate_script(&format!("window.find({js_q}, false, {back}, true);"));
-                        }
+                    if !trimmed.is_empty()
+                        && let Some(wv) = &self.active_webview
+                    {
+                        let js_q = serde_json::to_string(trimmed).unwrap_or_else(|_| "\"\"".to_string());
+                        let back = if forward { "false" } else { "true" };
+                        let _ = wv.evaluate_script(&format!("window.find({js_q}, false, {back}, true);"));
                     }
                     return;
                 }
@@ -182,10 +194,10 @@ impl BrowserApp {
         if let Some(wv) = &self.active_webview {
             let _ = wv.evaluate_script("window.getSelection()?.removeAllRanges();");
         }
-        if self.active_tab < self.tabs.len() {
-            if let Some(doc) = &mut self.tabs[self.active_tab].doc {
-                doc.clear_text_selection();
-            }
+        if self.active_tab < self.tabs.len()
+            && let Some(doc) = &mut self.tabs[self.active_tab].doc
+        {
+            doc.clear_text_selection();
         }
         self.close_popup();
         self.request_redraw();
@@ -194,7 +206,11 @@ impl BrowserApp {
     /// Drops stale `NodeId` matches before the active tab's document is unloaded or replaced.
     pub(super) fn clear_find_matches(&mut self) {
         let query = match self.popup.as_mut().map(|p| &mut p.kind) {
-            Some(PopupKind::FindBar { query, matches, current }) => {
+            Some(PopupKind::FindBar {
+                query,
+                matches,
+                current,
+            }) => {
                 matches.clear();
                 *current = 0;
                 query.clone()
@@ -228,11 +244,11 @@ impl BrowserApp {
             Vec::new()
         };
         let count = found.len();
-        if let Some(popup) = &mut self.popup {
-            if let PopupKind::FindBar { matches, current, .. } = &mut popup.kind {
-                *matches = found;
-                *current = 0;
-            }
+        if let Some(popup) = &mut self.popup
+            && let PopupKind::FindBar { matches, current, .. } = &mut popup.kind
+        {
+            *matches = found;
+            *current = 0;
         }
         self.apply_active_find_match();
         self.refresh_find_counter(&query, count, 0, false);
@@ -269,11 +285,10 @@ impl BrowserApp {
         };
         if let Some(cnt_id) = popup.doc.get_element_by_id("find-count") {
             let class_val = if no_match { "num none" } else { "num" };
-            popup.doc.mutate().set_attribute(
-                cnt_id,
-                blitz_dom::qual_name!("class"),
-                class_val,
-            );
+            popup
+                .doc
+                .mutate()
+                .set_attribute(cnt_id, blitz_dom::qual_name!("class"), class_val);
             popup
                 .doc
                 .mutate()

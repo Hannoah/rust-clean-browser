@@ -16,7 +16,11 @@ pub fn html_escape(input: &str) -> String {
 /// Strip `<script>` blocks (and optionally ad/embed `<iframe>`s) plus large HTML comments so
 /// bloated inline JS bundles never enter the DOM or allocate parser nodes.
 pub fn strip_scripts_and_bloat(html: &str, strip_iframes: bool) -> String {
-    let tags: &[&str] = if strip_iframes { &["script", "iframe"] } else { &["script"] };
+    let tags: &[&str] = if strip_iframes {
+        &["script", "iframe"]
+    } else {
+        &["script"]
+    };
     sanitize_dangerous_attrs(&strip_large_comments(&strip_tag_blocks(html, tags), 256))
 }
 
@@ -28,37 +32,100 @@ pub fn sanitize_dangerous_attrs(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'<' {
-            if let Some(rel) = bytes[i..].iter().position(|&b| b == b'>') {
-                if let Some(tag) = html.get(i..i + rel + 1) {
-                    out.push_str(&sanitize_tag(tag));
-                    i += rel + 1;
-                    continue;
-                }
-            }
-            // Unterminated `<`: copy the rest verbatim (safe direction).
-            out.push_str(&html[i..]);
-            break;
+        // Copy text (and comments, which can't execute) up to the next tag-looking `<`.
+        if bytes[i] != b'<' {
+            let next = bytes[i..]
+                .iter()
+                .position(|&b| b == b'<')
+                .map_or(bytes.len(), |r| i + r);
+            out.push_str(&html[i..next]);
+            i = next;
+            continue;
         }
-        // Copy text up to the next `<` to preserve multi-byte UTF-8.
-        let next = bytes[i..].iter().position(|&b| b == b'<').map_or(bytes.len(), |r| i + r);
-        out.push_str(&html[i..next]);
-        i = next;
+        if html[i..].starts_with("<!--") {
+            let end = html[i + 4..].find("-->").map_or(html.len(), |p| i + 4 + p + 3);
+            out.push_str(&html[i..end]);
+            i = end;
+        } else if bytes
+            .get(i + 1)
+            .is_some_and(|b| b.is_ascii_alphabetic() || matches!(b, b'/' | b'!' | b'?'))
+        {
+            // Quote-aware: a `>` inside `title="a>b"` must not end the tag early and hide a later `onclick`.
+            let Some(end) = tag_end(bytes, i + 1) else {
+                // EOF inside a tag: HTML parsers drop it, so drop the rest instead of passing it unsanitized.
+                break;
+            };
+            out.push_str(&sanitize_tag(&html[i..=end]));
+            i = end + 1;
+        } else {
+            // `a < b`: a lone `<` is text, not a tag.
+            out.push('<');
+            i += 1;
+        }
     }
     out
+}
+
+/// Index of the `>` closing the tag whose body starts at `from`, honouring quoted attribute values.
+pub(crate) fn tag_end(b: &[u8], from: usize) -> Option<usize> {
+    let mut quote = 0u8;
+    for (i, &c) in b.iter().enumerate().skip(from) {
+        match (quote, c) {
+            (0, b'"' | b'\'') => quote = c,
+            (0, b'>') => return Some(i),
+            (q, c) if q == c => quote = 0,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// `javascript:` / `data:text/html` URL, tolerating the tricks browsers accept: leading or embedded
+/// tab/newline/control chars (`java<TAB>script:`) and numeric / `&Tab;` / `&colon;` entities.
+fn is_script_url(v: &str) -> bool {
+    let mut s = String::with_capacity(v.len());
+    let mut rest = v;
+    while let Some(p) = rest.find('&') {
+        s.push_str(&rest[..p]);
+        rest = &rest[p..];
+        let Some(semi) = rest.find(';').filter(|&e| e <= 10) else {
+            s.push('&');
+            rest = &rest[1..];
+            continue;
+        };
+        let name = rest[1..semi].to_ascii_lowercase();
+        match name.as_str() {
+            "colon" => s.push(':'),
+            "tab" | "newline" => {}
+            n => match n.strip_prefix('#').and_then(|d| match d.strip_prefix('x') {
+                Some(h) => u32::from_str_radix(h, 16).ok(),
+                None => d.parse().ok(),
+            }) {
+                Some(c) => s.extend(char::from_u32(c)),
+                None => s.push_str(&rest[..=semi]),
+            },
+        }
+        rest = &rest[semi + 1..];
+    }
+    s.push_str(rest);
+    let s: String = s
+        .chars()
+        .filter(|c| !c.is_ascii_control() && !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    s.starts_with("javascript:") || s.starts_with("data:text/html")
 }
 
 fn sanitize_tag(tag: &str) -> String {
     let bytes = tag.as_bytes();
     let mut out = String::with_capacity(tag.len());
     let mut i = 0;
-    // Copy `<tagname` verbatim.
-    out.push('<');
+    // Copy `<tagname` verbatim (by slice: pushing bytes as chars would mangle multi-byte names).
     i += 1;
     while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>' && bytes[i] != b'/' {
-        out.push(bytes[i] as char);
         i += 1;
     }
+    out.push_str(&tag[..i]);
     loop {
         // Copy whitespace.
         let ws_start = i;
@@ -72,7 +139,12 @@ fn sanitize_tag(tag: &str) -> String {
         }
         // Parse attribute name.
         let name_start = i;
-        while i < bytes.len() && bytes[i] != b'=' && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>' && bytes[i] != b'/' {
+        while i < bytes.len()
+            && bytes[i] != b'='
+            && !bytes[i].is_ascii_whitespace()
+            && bytes[i] != b'>'
+            && bytes[i] != b'/'
+        {
             i += 1;
         }
         let name = tag[name_start..i].to_ascii_lowercase();
@@ -86,7 +158,7 @@ fn sanitize_tag(tag: &str) -> String {
             raw_attr.push('=');
             i += 1;
             while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-                raw_attr.push(tag.as_bytes()[i] as char);
+                raw_attr.push(bytes[i] as char);
                 i += 1;
             }
             if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
@@ -117,13 +189,11 @@ fn sanitize_tag(tag: &str) -> String {
             continue;
         }
         // Neutralize javascript:/data:-text/html URLs.
-        if matches!(name.as_str(), "href" | "src" | "action" | "xlink:href" | "formaction") {
-            if let Some(v) = &value {
-                let t = v.trim_start().to_ascii_lowercase();
-                if t.starts_with("javascript:") || t.starts_with("data:text/html") {
-                    continue;
-                }
-            }
+        if matches!(name.as_str(), "href" | "src" | "action" | "xlink:href" | "formaction")
+            && let Some(v) = &value
+            && is_script_url(v)
+        {
+            continue;
         }
         out.push_str(&raw_attr);
     }
@@ -146,37 +216,33 @@ pub fn upgrade_mixed_content(html: &str, page_is_https: bool) -> String {
         let abs = pos + rel;
         let mut replaced = false;
         // Must sit inside a tag: no `>` between the last `<` and here.
-        if let Some(tag_start) = html[..abs].rfind('<') {
-            if !html[tag_start..abs].contains('>') {
-                // Expect: attr-name WS* `=` WS* quote directly before `http://`.
-                let mut q = abs;
-                // step back over the quote
-                if q > 0 && (bytes[q - 1] == b'"' || bytes[q - 1] == b'\'') {
+        if let Some(tag_start) = html[..abs].rfind('<')
+            && !html[tag_start..abs].contains('>')
+        {
+            // Expect: attr-name WS* `=` WS* quote directly before `http://`.
+            let mut q = abs;
+            // step back over the quote
+            if q > 0 && (bytes[q - 1] == b'"' || bytes[q - 1] == b'\'') {
+                q -= 1;
+                while q > tag_start && bytes[q - 1].is_ascii_whitespace() {
+                    q -= 1;
+                }
+                if q > tag_start && bytes[q - 1] == b'=' {
                     q -= 1;
                     while q > tag_start && bytes[q - 1].is_ascii_whitespace() {
                         q -= 1;
                     }
-                    if q > tag_start && bytes[q - 1] == b'=' {
+                    let name_end = q;
+                    while q > tag_start && !bytes[q - 1].is_ascii_whitespace() && bytes[q - 1] != b'<' {
                         q -= 1;
-                        while q > tag_start && bytes[q - 1].is_ascii_whitespace() {
-                            q -= 1;
-                        }
-                        let name_end = q;
-                        while q > tag_start
-                            && !bytes[q - 1].is_ascii_whitespace()
-                            && bytes[q - 1] != b'<'
-                        {
-                            q -= 1;
-                        }
-                        let name = html[q..name_end].to_ascii_lowercase();
-                        let is_link_href =
-                            name == "href" && html[tag_start..abs].to_ascii_lowercase().starts_with("<link");
-                        if ATTRS.contains(&name.as_str()) || is_link_href {
-                            out.push_str(&html[pos..abs]);
-                            out.push_str("https://");
-                            pos = abs + "http://".len();
-                            replaced = true;
-                        }
+                    }
+                    let name = html[q..name_end].to_ascii_lowercase();
+                    let is_link_href = name == "href" && html[tag_start..abs].to_ascii_lowercase().starts_with("<link");
+                    if ATTRS.contains(&name.as_str()) || is_link_href {
+                        out.push_str(&html[pos..abs]);
+                        out.push_str("https://");
+                        pos = abs + "http://".len();
+                        replaced = true;
                     }
                 }
             }
@@ -196,10 +262,10 @@ pub fn decode_html_bytes(bytes: &[u8]) -> String {
     if let Some((enc, bom_len)) = encoding_rs::Encoding::for_bom(bytes) {
         return enc.decode_without_bom_handling(&bytes[bom_len..]).0.into_owned();
     }
-    if let Some(enc) = sniff_meta_charset(&bytes[..bytes.len().min(2048)]) {
-        if enc != encoding_rs::UTF_8 {
-            return enc.decode_without_bom_handling(bytes).0.into_owned();
-        }
+    if let Some(enc) = sniff_meta_charset(&bytes[..bytes.len().min(2048)])
+        && enc != encoding_rs::UTF_8
+    {
+        return enc.decode_without_bom_handling(bytes).0.into_owned();
     }
     match std::str::from_utf8(bytes) {
         Ok(s) => s.to_owned(),
@@ -220,7 +286,10 @@ fn sniff_meta_charset(head: &[u8]) -> Option<&'static encoding_rs::Encoding> {
     while let Some(rel) = find_bytes(&lower[pos..], b"<meta") {
         let after_name = pos + rel + 5;
         pos = after_name;
-        if !lower.get(after_name).is_some_and(|b| b.is_ascii_whitespace() || *b == b'/') {
+        if !lower
+            .get(after_name)
+            .is_some_and(|b| b.is_ascii_whitespace() || *b == b'/')
+        {
             continue;
         }
         let tag_end = find_bytes(&lower[after_name..], b">").map_or(lower.len(), |r| after_name + r);
@@ -229,8 +298,7 @@ fn sniff_meta_charset(head: &[u8]) -> Option<&'static encoding_rs::Encoding> {
         let mut from = 0;
         while let Some(crel) = find_bytes(&tag[from..], b"charset") {
             let cpos = from + crel;
-            let prev_ok = cpos == 0
-                || matches!(tag[cpos - 1], b' ' | b'\t' | b'\r' | b'\n' | b';' | b'"' | b'\'');
+            let prev_ok = cpos == 0 || matches!(tag[cpos - 1], b' ' | b'\t' | b'\r' | b'\n' | b';' | b'"' | b'\'');
             let mut i = cpos + 7;
             from = i;
             if !prev_ok {
@@ -250,10 +318,10 @@ fn sniff_meta_charset(head: &[u8]) -> Option<&'static encoding_rs::Encoding> {
             while i < tag.len() && (tag[i].is_ascii_alphanumeric() || matches!(tag[i], b'-' | b'_')) {
                 i += 1;
             }
-            if i > start {
-                if let Some(enc) = encoding_rs::Encoding::for_label(&tag[start..i]) {
-                    return Some(enc);
-                }
+            if i > start
+                && let Some(enc) = encoding_rs::Encoding::for_label(&tag[start..i])
+            {
+                return Some(enc);
             }
         }
     }
@@ -398,10 +466,7 @@ fn find_matching_close_tag(lower: &str, lb: &[u8], tag: &str, from: usize) -> us
             scan = gt;
             continue;
         }
-        if !raw_text
-            && lower[pos..].starts_with(&open_pat)
-            && is_tag_boundary(lb.get(pos + open_pat.len()))
-        {
+        if !raw_text && lower[pos..].starts_with(&open_pat) && is_tag_boundary(lb.get(pos + open_pat.len())) {
             let after_open = pos + open_pat.len();
             if let Some((te, self_close)) = find_open_tag_end(lb, after_open) {
                 if !self_close {
@@ -607,22 +672,18 @@ impl Default for ReaderOptions {
     }
 }
 
-pub fn build_reader_html_with_options(
-    raw_html: &str,
-    url: &str,
-    opts: ReaderOptions,
-    os_dark: bool,
-) -> String {
+pub fn build_reader_html_with_options(raw_html: &str, url: &str, opts: ReaderOptions, os_dark: bool) -> String {
     let title = extract_title(raw_html).unwrap_or_else(|| url.to_string());
     let cleaned = strip_tag_blocks(
         raw_html,
-        &["script", "style", "noscript", "nav", "aside", "footer", "header", "iframe"],
+        &[
+            "script", "style", "noscript", "nav", "aside", "footer", "header", "iframe",
+        ],
     );
 
     // Extract the primary content container before stripping `<form>` so outer wrapper forms
     // (e.g. ASP.NET WebForms) do not wipe out `<article>`/`<main>`.
-    let body_fragment =
-        sanitize_dangerous_attrs(&strip_tag_blocks(extract_primary_fragment(&cleaned), &["form"]));
+    let body_fragment = sanitize_dangerous_attrs(&strip_tag_blocks(extract_primary_fragment(&cleaned), &["form"]));
     let visible_chars = count_visible_text_chars(&body_fragment);
     let minutes = (visible_chars / 750).max(1);
     let host = url
@@ -634,7 +695,13 @@ pub fn build_reader_html_with_options(
         .unwrap_or(url);
 
     let eff_theme = match opts.theme {
-        ReaderTheme::Auto => if os_dark { ReaderTheme::Dark } else { ReaderTheme::Light },
+        ReaderTheme::Auto => {
+            if os_dark {
+                ReaderTheme::Dark
+            } else {
+                ReaderTheme::Light
+            }
+        }
         other => other,
     };
     let (bg, bar_bg, text, muted, link, border, code_bg, active_bg, active_fg) = match eff_theme {
@@ -652,9 +719,7 @@ pub fn build_reader_html_with_options(
         ReaderFont::Sans => {
             r#""Pretendard Variable", "Pretendard", "Segoe UI Variable Text", "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif"#
         }
-        ReaderFont::Serif => {
-            r#""Noto Serif KR", "Batang", "Georgia", "Charter", "AppleMyungjo", serif"#
-        }
+        ReaderFont::Serif => r#""Noto Serif KR", "Batang", "Georgia", "Charter", "AppleMyungjo", serif"#,
     };
     let max_ch = match opts.width {
         ReaderWidth::Narrow => 56,
@@ -871,7 +936,8 @@ mod tests {
 
     #[test]
     fn decodes_declared_and_undeclared_euc_kr() {
-        let (bytes, _, _) = encoding_rs::EUC_KR.encode("<html><head><meta charset=\"euc-kr\"></head><body>한글</body></html>");
+        let (bytes, _, _) =
+            encoding_rs::EUC_KR.encode("<html><head><meta charset=\"euc-kr\"></head><body>한글</body></html>");
         assert!(decode_html_bytes(&bytes).contains("한글"));
         let (bare, _, _) = encoding_rs::EUC_KR.encode("<p>안녕하세요</p>");
         assert!(decode_html_bytes(&bare).contains("안녕하세요"));
@@ -890,6 +956,33 @@ mod tests {
         let kr_out = sanitize_dangerous_attrs(kr);
         assert!(kr_out.contains("안녕하세요"));
         assert!(!kr_out.contains("onerror"));
+    }
+
+    #[test]
+    fn sanitizer_handles_quoted_gt_obfuscated_urls_and_lone_lt() {
+        // `>` inside a quoted attribute must not end the tag before the handler is seen.
+        let out = sanitize_dangerous_attrs(r#"<a title="x>y" onclick="evil()" href="/ok">t</a>"#);
+        assert!(!out.contains("onclick") && out.contains(r#"title="x>y""#) && out.contains(r#"href="/ok""#));
+        // Whitespace / entity tricks in the scheme.
+        for bad in [
+            "java	script:alert(1)",
+            "&#106;avascript:alert(1)",
+            "javascript&colon;alert(1)",
+            " 
+ JaVaScRiPt:x",
+            "&#x6A;avascript:x",
+        ] {
+            let out = sanitize_dangerous_attrs(&format!(r#"<a href="{bad}">x</a>"#));
+            assert!(!out.contains("href"), "{bad} -> {out}");
+        }
+        assert!(sanitize_dangerous_attrs(r#"<a href="https://a.test/?q=a&amp;b=1">x</a>"#).contains("href"));
+        // A lone `<` is text and must not swallow (or skip sanitizing) what follows.
+        let out = sanitize_dangerous_attrs(r#"1 < 2 "q" <img src=x onerror=alert(1)>"#);
+        assert!(out.starts_with(r#"1 < 2 "q" "#) && !out.contains("onerror"));
+        // Unterminated tag is dropped; comments pass through untouched; multi-byte tag names survive.
+        assert_eq!(sanitize_dangerous_attrs(r#"<p>a</p><img onerror="x"#), "<p>a</p>");
+        assert!(sanitize_dangerous_attrs("<!-- it's > a \"comment\" --><p>b</p>").ends_with("--><p>b</p>"));
+        assert!(sanitize_dangerous_attrs("<a가 onclick=x>t</a가>").contains("<a가 >t"));
     }
 
     #[test]
@@ -954,17 +1047,26 @@ mod tests {
         assert!(!is_local_script_app("https://e.test/", app));
         let data_only = r#"<html><body><p>hi</p><script type="application/json">{}</script></body></html>"#;
         assert!(!is_local_script_app("file:///C:/a.html", data_only));
-        assert!(!is_local_script_app("file:///C:/a.html", "<html><body>static</body></html>"));
+        assert!(!is_local_script_app(
+            "file:///C:/a.html",
+            "<html><body>static</body></html>"
+        ));
     }
 
     #[test]
     fn ignores_charset_outside_meta_and_handles_short_and_nested_html() {
         let utf8_with_script_charset = r#"<!doctype html><html><head><script src="legacy.js" charset="euc-kr"></script></head><body><h1>한글 정상 출력</h1></body></html>"#;
-        assert_eq!(decode_html_bytes(utf8_with_script_charset.as_bytes()), utf8_with_script_charset);
+        assert_eq!(
+            decode_html_bytes(utf8_with_script_charset.as_bytes()),
+            utf8_with_script_charset
+        );
 
         let short_prefixed = "  note <!DOCTYPE html><html><body><p>Hi</p></body></html>";
         let (cleaned, _) = process_fetched_document(short_prefixed.as_bytes(), "https://a.test", true).unwrap();
-        assert!(!cleaned.contains("<pre>"), "short HTML with prefix must not become <pre>: {cleaned}");
+        assert!(
+            !cleaned.contains("<pre>"),
+            "short HTML with prefix must not become <pre>: {cleaned}"
+        );
 
         let boundary_prefixed = format!(
             "{}<!DOCTYPE html><html><body><p>OK {}</p></body></html>",
@@ -974,7 +1076,8 @@ mod tests {
         let (cleaned2, _) = process_fetched_document(boundary_prefixed.as_bytes(), "https://a.test", true).unwrap();
         assert!(!cleaned2.contains("<pre>"));
 
-        let tricky_script = r#"<p>a</p><script data-url=https://a.test/>const x="</scripts>";secret();</script><p>b</p>"#;
+        let tricky_script =
+            r#"<p>a</p><script data-url=https://a.test/>const x="</scripts>";secret();</script><p>b</p>"#;
         assert_eq!(strip_scripts_and_bloat(tricky_script, true), "<p>a</p><p>b</p>");
 
         let nested_and_wrapped = r#"<html><head><script>var t="<title>Fake</title>";</script><title>Real</title></head><body><header><header>inner</header>outer</header><form id="aspnetForm"><article-card>skip</article-card><main><p>Main body</p><form><input/></form></main></form></body></html>"#;

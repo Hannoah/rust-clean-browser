@@ -15,19 +15,15 @@ const BLOCKED_TRACKER_DOMAINS: &[&str] = &[
     "googletagservices.com",
     "googleadservices.com",
     "adservice.google.com",
-    "pagead2.googlesyndication.com",
-    "connect.facebook.net",
     "facebook.net",
     "pixel.facebook.com",
     "analytics.twitter.com",
     "ads-twitter.com",
     "analytics.tiktok.com",
     "hotjar.com",
-    "static.hotjar.com",
     "mixpanel.com",
     "segment.io",
     "cdn.segment.com",
-    "api.segment.io",
     "sentry.io",
     "browser.sentry-cdn.com",
     "newrelic.com",
@@ -79,6 +75,122 @@ pub fn is_blocked_url(url: &Url) -> bool {
     })
 }
 
+/// At-rest protection for `cookies.json`: session cookies are login tokens, so on Windows the file is
+/// wrapped with DPAPI (bound to the user account, like Chrome's cookie store). Other platforms use 0600.
+// ponytail: macOS Keychain not wired; the 0600 file is the ceiling there.
+mod seal {
+    const MAGIC: &[u8] = b"RCBDPAPI1
+";
+
+    /// Plain JSON (legacy files, non-Windows) passes through; sealed files are unwrapped.
+    pub fn open(bytes: Vec<u8>) -> Option<Vec<u8>> {
+        match bytes.strip_prefix(MAGIC) {
+            Some(blob) => os::unprotect(blob),
+            None => Some(bytes),
+        }
+    }
+
+    pub fn seal(json: Vec<u8>) -> Vec<u8> {
+        match os::protect(&json) {
+            Some(blob) => [MAGIC, &blob].concat(),
+            None => json,
+        }
+    }
+
+    #[cfg(windows)]
+    mod os {
+        use std::ffi::c_void;
+
+        #[repr(C)]
+        struct Blob {
+            len: u32,
+            data: *mut u8,
+        }
+
+        #[link(name = "crypt32")]
+        unsafe extern "system" {
+            fn CryptProtectData(
+                i: *const Blob,
+                d: *const u16,
+                e: *const Blob,
+                r: *mut c_void,
+                p: *mut c_void,
+                f: u32,
+                o: *mut Blob,
+            ) -> i32;
+            fn CryptUnprotectData(
+                i: *const Blob,
+                d: *mut *mut u16,
+                e: *const Blob,
+                r: *mut c_void,
+                p: *mut c_void,
+                f: u32,
+                o: *mut Blob,
+            ) -> i32;
+        }
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn LocalFree(h: *mut c_void) -> *mut c_void;
+        }
+
+        const UI_FORBIDDEN: u32 = 0x1;
+
+        fn run(input: &[u8], f: impl FnOnce(*const Blob, *mut Blob) -> i32) -> Option<Vec<u8>> {
+            let inb = Blob {
+                len: u32::try_from(input.len()).ok()?,
+                data: input.as_ptr().cast_mut(),
+            };
+            let mut out = Blob {
+                len: 0,
+                data: std::ptr::null_mut(),
+            };
+            if f(&inb, &mut out) == 0 || out.data.is_null() {
+                return None;
+            }
+            // SAFETY: on success the API returns `len` bytes at `data`, allocated with LocalAlloc.
+            let v = unsafe { std::slice::from_raw_parts(out.data, out.len as usize) }.to_vec();
+            unsafe { LocalFree(out.data.cast()) };
+            Some(v)
+        }
+
+        pub fn protect(b: &[u8]) -> Option<Vec<u8>> {
+            let n = std::ptr::null_mut();
+            // SAFETY: pointers are valid for the call; optional params are null.
+            run(b, |i, o| unsafe {
+                CryptProtectData(i, std::ptr::null(), std::ptr::null(), n, n, UI_FORBIDDEN, o)
+            })
+        }
+
+        pub fn unprotect(b: &[u8]) -> Option<Vec<u8>> {
+            let n = std::ptr::null_mut();
+            // SAFETY: as above.
+            run(b, |i, o| unsafe {
+                CryptUnprotectData(i, std::ptr::null_mut(), std::ptr::null(), n, n, UI_FORBIDDEN, o)
+            })
+        }
+    }
+
+    #[cfg(not(windows))]
+    mod os {
+        pub fn protect(_: &[u8]) -> Option<Vec<u8>> {
+            None
+        }
+        pub fn unprotect(_: &[u8]) -> Option<Vec<u8>> {
+            None
+        }
+    }
+}
+
+/// Writes `buf` to `path`, owner-only (0600) on Unix.
+fn write_private(path: &std::path::Path, buf: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    opts.open(path)?.write_all(buf)
+}
+
 /// Cookie jar persisted to disk so logins survive restarts (session cookies included,
 /// like a browser's "continue where you left off"). Stored as JSON in the app data dir.
 pub struct PersistentCookieJar {
@@ -91,8 +203,9 @@ impl PersistentCookieJar {
     pub fn load(path: Option<PathBuf>) -> Self {
         let store = path
             .as_ref()
-            .and_then(|p| std::fs::File::open(p).ok())
-            .and_then(|f| cookie_store::serde::json::load(std::io::BufReader::new(f)).ok())
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(seal::open)
+            .and_then(|json| cookie_store::serde::json::load(json.as_slice()).ok())
             .unwrap_or_default();
         Self {
             store: Mutex::new(store),
@@ -121,7 +234,7 @@ impl PersistentCookieJar {
             let _ = std::fs::create_dir_all(dir);
         }
         let tmp = path.with_extension("tmp");
-        if std::fs::write(&tmp, &buf).is_err() {
+        if write_private(&tmp, &seal::seal(buf)).is_err() {
             return;
         }
         if std::fs::rename(&tmp, path).is_ok() {
@@ -300,10 +413,10 @@ impl NetHandler for CallbackHandler {
 
 impl Drop for CallbackHandler {
     fn drop(&mut self) {
-        if let Some(fail_cb) = self.on_fail.take() {
-            if !self.signal.aborted() {
-                fail_cb("네트워크 연결 실패, HTTP 오류 또는 타임아웃입니다.".to_string());
-            }
+        if let Some(fail_cb) = self.on_fail.take()
+            && !self.signal.aborted()
+        {
+            fail_cb("네트워크 연결 실패, HTTP 오류 또는 타임아웃입니다.".to_string());
         }
     }
 }
@@ -327,7 +440,16 @@ mod tests {
         let header = reloaded.cookies(&url).expect("cookies restored");
         let header = header.to_str().unwrap();
         assert!(header.contains("user=abc") && header.contains("pref=dark"), "{header}");
-        assert!(reloaded.cookies(&Url::parse("https://other.example.org/").unwrap()).is_none());
+        assert!(
+            reloaded
+                .cookies(&Url::parse("https://other.example.org/").unwrap())
+                .is_none()
+        );
+        // Login tokens are not readable on disk on Windows (DPAPI); a legacy plaintext file still loads.
+        let on_disk = std::fs::read(&path).unwrap();
+        assert_eq!(cfg!(windows), !String::from_utf8_lossy(&on_disk).contains("user=abc"));
+        std::fs::write(&path, seal::open(on_disk).unwrap()).unwrap();
+        assert!(PersistentCookieJar::load(Some(path.clone())).cookies(&url).is_some());
         // Empty Set-Cookie iteration must not mark the jar dirty.
         let jar2 = PersistentCookieJar::load(Some(path.clone()));
         jar2.set_cookies(&mut std::iter::empty(), &url);

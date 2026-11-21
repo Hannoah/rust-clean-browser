@@ -17,20 +17,6 @@ pub struct Seg {
     pub text: String,
 }
 
-/// Index of the `>` closing the tag that starts at `from`, honouring quoted attribute values.
-fn tag_end(b: &[u8], from: usize) -> Option<usize> {
-    let mut quote = 0u8;
-    for (i, &c) in b.iter().enumerate().skip(from) {
-        match (quote, c) {
-            (0, b'"' | b'\'') => quote = c,
-            (0, b'>') => return Some(i),
-            (q, c) if q == c => quote = 0,
-            _ => {}
-        }
-    }
-    None
-}
-
 /// Translatable text runs (trimmed byte range in `html` + whitespace-collapsed, entity-decoded text).
 pub fn segments(html: &str) -> Vec<Seg> {
     let lower = html.to_ascii_lowercase();
@@ -41,8 +27,14 @@ pub fn segments(html: &str) -> Vec<Seg> {
         let t = raw.trim();
         if t.chars().any(char::is_alphabetic) {
             let start = a + raw.len() - raw.trim_start().len();
-            let text = crate::cleaner::decode_basic_entities(t).split_whitespace().collect::<Vec<_>>().join(" ");
-            out.push(Seg { range: start..start + t.len(), text });
+            let text = crate::cleaner::decode_basic_entities(t)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            out.push(Seg {
+                range: start..start + t.len(),
+                text,
+            });
         }
     };
     let mut i = 0;
@@ -56,9 +48,14 @@ pub fn segments(html: &str) -> Vec<Seg> {
             i = lower[lt + 4..].find("-->").map_or(html.len(), |p| lt + 4 + p + 3);
             continue;
         }
-        let Some(gt) = tag_end(b, lt + 1) else { break };
+        let Some(gt) = crate::cleaner::tag_end(b, lt + 1) else {
+            break;
+        };
         i = gt + 1;
-        let name: String = lower[lt + 1..gt].chars().take_while(char::is_ascii_alphanumeric).collect();
+        let name: String = lower[lt + 1..gt]
+            .chars()
+            .take_while(char::is_ascii_alphanumeric)
+            .collect();
         if SKIP.contains(&name.as_str()) && !lower[lt..gt].ends_with('/') {
             i = lower[i..].find(&format!("</{name}")).map_or(html.len(), |p| i + p);
         }
@@ -115,7 +112,11 @@ fn parse_chunk(v: &Value, expected: usize) -> Result<Vec<String>, String> {
         .flatten()
         .map(|e| e.get(0).and_then(Value::as_str).unwrap_or_default().trim().to_string())
         .collect();
-    if out.len() == expected { Ok(out) } else { Err(format!("응답 항목 수 불일치 ({}/{expected})", out.len())) }
+    if out.len() == expected {
+        Ok(out)
+    } else {
+        Err(format!("응답 항목 수 불일치 ({}/{expected})", out.len()))
+    }
 }
 
 async fn post(client: reqwest::Client, texts: Vec<String>, tl: &str) -> Result<Vec<String>, String> {
@@ -138,7 +139,8 @@ async fn post(client: reqwest::Client, texts: Vec<String>, tl: &str) -> Result<V
         .map_err(|e| e.to_string())?;
     let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
     // An HTML "Sorry..." page instead of JSON means Google rate-limited / blocked this client.
-    let json = serde_json::from_slice(&bytes).map_err(|_| "번역 서버가 요청을 거부함(차단 또는 요청 제한)".to_string())?;
+    let json =
+        serde_json::from_slice(&bytes).map_err(|_| "번역 서버가 요청을 거부함(차단 또는 요청 제한)".to_string())?;
     parse_chunk(&json, texts.len())
 }
 
@@ -170,7 +172,11 @@ pub async fn translate(texts: Vec<String>, tl: &'static str) -> Result<Vec<Strin
             Err(e) => last_err = e.to_string(),
         }
     }
-    if ok == 0 { Err(format!("번역 실패: {last_err}")) } else { Ok(out) }
+    if ok == 0 {
+        Err(format!("번역 실패: {last_err}"))
+    } else {
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -204,8 +210,14 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn live_translate() {
-        let out = translate(vec!["Hello world".into(), "Good morning, everyone.".into()], "ko").await.unwrap();
-        assert!(out.iter().all(|t| t.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c))), "{out:?}");
+        let out = translate(vec!["Hello world".into(), "Good morning, everyone.".into()], "ko")
+            .await
+            .unwrap();
+        assert!(
+            out.iter()
+                .all(|t| t.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c))),
+            "{out:?}"
+        );
         let back = translate(vec!["안녕하세요 세상".into()], "en").await.unwrap();
         assert!(back[0].to_lowercase().contains("hello"), "{back:?}");
     }
