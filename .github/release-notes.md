@@ -1,7 +1,11 @@
 초경량 순수 Rust 웹 브라우저 — 적은 메모리, 빠른 로딩, Chrome 북마크 연동.
 *Ultra-lightweight pure-Rust web browser — low memory, instant page loads, Chrome bookmark import.*
 
-## 이번 버전 (v0.4.6)
+## 이번 버전 (v0.4.7)
+
+- **Ctrl+스크롤 확대/축소**: 마우스 휠(트랙패드 핀치 포함)로 페이지를 10%씩 확대·축소 (Clean 모드, macOS는 Cmd+스크롤)
+
+### v0.4.6
 
 - **로그인 쿠키 암호화 저장**: Windows에서 `cookies.json`을 DPAPI로 사용자 계정에 묶어 암호화(그 외 플랫폼은 파일 권한 0600). 기존 평문 파일은 그대로 읽히고 다음 저장 때 암호화됩니다 (이전 버전으로 되돌리면 암호화된 쿠키를 읽지 못해 다시 로그인해야 함)
 - **HTML 살균 강화**: 따옴표 안의 `>`로 `onclick` 등이 걸러지지 않던 문제, 공백/엔티티로 위장한 `javascript:` URL, 닫히지 않은 태그가 살균 없이 통과하던 문제 수정
