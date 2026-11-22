@@ -1,7 +1,12 @@
 초경량 순수 Rust 웹 브라우저 — 적은 메모리, 빠른 로딩, Chrome 북마크 연동.
 *Ultra-lightweight pure-Rust web browser — low memory, instant page loads, Chrome bookmark import.*
 
-## 이번 버전 (v0.4.7)
+## 이번 버전 (v0.4.8)
+
+- **JS 모드(WebView2)에서 확대/축소 수정**: Ctrl+스크롤·핀치·`Ctrl++`/`Ctrl+-`/`Ctrl+0`이 JS 모드 페이지에서 전혀 동작하지 않던 문제 수정 (WebView2 기본 줌이 꺼져 있었음). 이제 탭별 줌 배율이 주소창 표시·탭 전환과 동기화됨. 로컬 `.html` 페이지에서도 동작
+- 내부: `file://` 페이지의 WebView→앱 IPC 메시지가 버려지던 wry 문제 패치
+
+### v0.4.7
 
 - **Ctrl+스크롤 확대/축소**: 마우스 휠(트랙패드 핀치 포함)로 페이지를 10%씩 확대·축소 (Clean 모드, macOS는 Cmd+스크롤)
 

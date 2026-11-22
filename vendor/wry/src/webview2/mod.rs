@@ -996,7 +996,10 @@ impl InnerWebView {
           #[cfg(feature = "tracing")]
           let _span = tracing::info_span!(parent: None, "wry::ipc::handle").entered();
 
-          match Request::builder().uri(url).body(js) {
+          // rust-browser patch: `http::Uri` rejects `file:///...` (empty authority), which silently dropped every IPC
+          // message from local .html pages; fall back to a valid placeholder origin.
+          let uri = url.parse::<http::Uri>().map_or_else(|_| "file://localhost/".to_string(), |_| url);
+          match Request::builder().uri(uri).body(js) {
             Ok(request) => ipc_handler(request),
             Err(_error) => {
               #[cfg(feature = "tracing")]

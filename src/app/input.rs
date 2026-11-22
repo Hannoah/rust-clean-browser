@@ -318,11 +318,7 @@ impl BrowserApp {
                         BlitzWheelDelta::Lines(_, y) => y as f32,
                         BlitzWheelDelta::Pixels(_, y) => y as f32 / 120.0, // ~one notch; smooth wheels/pinch accumulate
                     };
-                    self.zoom_wheel_acc += notches * 0.1;
-                    if self.zoom_wheel_acc.abs() >= 0.1 {
-                        self.set_zoom(self.tabs[self.active_tab].zoom + self.zoom_wheel_acc);
-                        self.zoom_wheel_acc = 0.0;
-                    }
+                    self.zoom_by_notches(notches);
                     return;
                 }
                 let ev = UiEvent::Wheel(BlitzWheelEvent {
