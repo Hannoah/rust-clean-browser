@@ -18,13 +18,14 @@ mod single;
 mod tabs;
 mod translate;
 
-use app::BrowserApp;
+use app::{BrowserApp, LaunchOptions};
 use winit::event_loop::{ControlFlow, EventLoop};
 
 fn main() {
-    // A file/URL launched while the browser is already running opens as a tab there.
-    let initial_url = std::env::args().nth(1);
-    if initial_url.as_deref().is_some_and(single::forward) {
+    let launch = LaunchOptions::from_args(std::env::args().skip(1));
+    // A file/URL launched while the browser is already running opens as a tab there,
+    // unless `--new-window` was requested (e.g. detaching a tab into its own window).
+    if !launch.new_window && launch.initial_url.as_deref().is_some_and(single::forward) {
         return;
     }
     // Parse Chrome's bookmark file while the runtime and window system initialise.
@@ -43,6 +44,6 @@ fn main() {
     event_loop.set_control_flow(ControlFlow::Wait);
 
     let proxy = event_loop.create_proxy();
-    let app = BrowserApp::new(proxy, initial_url, bookmarks);
+    let app = BrowserApp::new(proxy, launch, bookmarks);
     event_loop.run_app(app).expect("event loop error");
 }

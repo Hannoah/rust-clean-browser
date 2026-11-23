@@ -25,11 +25,11 @@ fn info_path() -> Option<PathBuf> {
 
 /// Hand `arg` (path or URL) to a running instance. `true` = it opened a tab; caller should exit.
 pub fn forward(arg: &str) -> bool {
-    try_forward(arg).is_some()
+    info_path().and_then(|p| try_forward_at(&p, arg)).is_some()
 }
 
-fn try_forward(arg: &str) -> Option<()> {
-    let info = std::fs::read_to_string(info_path()?).ok()?;
+fn try_forward_at(path: &std::path::Path, arg: &str) -> Option<()> {
+    let info = std::fs::read_to_string(path).ok()?;
     let (port, token) = info.trim().split_once(' ')?;
     // This process's working directory differs from the running one: send absolute paths.
     let arg = std::path::absolute(arg)
@@ -49,6 +49,10 @@ fn try_forward(arg: &str) -> Option<()> {
 /// Start accepting forwarded URLs; `on_url` runs on the listener thread.
 pub fn listen(on_url: impl Fn(String) + Send + 'static) {
     let Some(path) = info_path() else { return };
+    listen_at(&path, on_url);
+}
+
+fn listen_at(path: &std::path::Path, on_url: impl Fn(String) + Send + 'static) {
     let Ok(listener) = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)) else {
         return;
     };
@@ -57,7 +61,10 @@ pub fn listen(on_url: impl Fn(String) + Send + 'static) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    if std::fs::write(&path, format!("{} {token}", addr.port())).is_err() {
+    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+    let payload = format!("{} {token}", addr.port());
+    if crate::net::write_private(&tmp, payload.as_bytes()).is_err() || std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
         return;
     }
     std::thread::spawn(move || {
@@ -81,25 +88,16 @@ mod tests {
     #[test]
     fn rejects_wrong_token_and_delivers_right_one() {
         let (tx, rx) = std::sync::mpsc::channel();
-        let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let port = l.local_addr().unwrap().port();
-        drop(l);
-        // Exercise the wire protocol through the real listener via a temp data dir.
-        // SAFETY: test-only env mutation, no other test reads LOCALAPPDATA/HOME concurrently.
-        let dir = std::env::temp_dir().join(format!("rcb-single-{port}"));
-        unsafe {
-            std::env::set_var("LOCALAPPDATA", &dir);
-            std::env::set_var("HOME", &dir);
-            std::env::set_var("XDG_DATA_HOME", &dir);
-        }
-        listen(move |u| tx.send(u).unwrap());
-        assert!(forward("https://example.com/a"));
+        let dir = std::env::temp_dir().join(format!("rcb-single-{}-{}", std::process::id(), random_token()));
+        let path = dir.join("instance");
+        listen_at(&path, move |u| tx.send(u).unwrap());
+        assert!(try_forward_at(&path, "https://example.com/a").is_some());
         assert_eq!(
             rx.recv_timeout(Duration::from_secs(2)).unwrap(),
             "https://example.com/a"
         );
 
-        let info = std::fs::read_to_string(info_path().unwrap()).unwrap();
+        let info = std::fs::read_to_string(&path).unwrap();
         let (p, _) = info.split_once(' ').unwrap();
         let mut bad = TcpStream::connect(("127.0.0.1", p.parse::<u16>().unwrap())).unwrap();
         bad.write_all(b"wrong\nhttps://evil.test\n").unwrap();

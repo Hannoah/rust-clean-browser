@@ -144,10 +144,118 @@ pub(super) struct BookmarkDrag {
     pub hover_folder: Option<String>,
 }
 
+/// CLI launch options (supports normal launch, file/URL open, and tab-detach `--new-window`).
+#[derive(Debug, Default, PartialEq)]
+pub struct LaunchOptions {
+    pub initial_url: Option<String>,
+    pub new_window: bool,
+    pub js_mode: bool,
+    pub reader_mode: bool,
+    pub zoom: Option<f32>,
+    /// Initial window position in physical screen coordinates.
+    pub position: Option<(i32, i32)>,
+    /// Initial window surface size in logical pixels.
+    pub size: Option<(u32, u32)>,
+}
+
+impl LaunchOptions {
+    pub fn from_args(args: impl IntoIterator<Item = String>) -> Self {
+        let mut opts = Self::default();
+        let mut iter = args.into_iter();
+        let mut positional_only = false;
+        while let Some(arg) = iter.next() {
+            if !positional_only {
+                match arg.as_str() {
+                    "--" => {
+                        positional_only = true;
+                        continue;
+                    }
+                    "--new-window" => {
+                        opts.new_window = true;
+                        continue;
+                    }
+                    "--js" => {
+                        opts.js_mode = true;
+                        continue;
+                    }
+                    "--reader" => {
+                        opts.reader_mode = true;
+                        continue;
+                    }
+                    "--zoom" => {
+                        if let Some(val) = iter.next()
+                            && let Ok(z) = val.parse::<f32>()
+                            && z.is_finite()
+                        {
+                            opts.zoom = Some(((z * 10.0).round() / 10.0).clamp(0.3, 3.0));
+                        }
+                        continue;
+                    }
+                    "--pos" => {
+                        if let Some(val) = iter.next()
+                            && let Some((xs, ys)) = val.split_once(',')
+                            && let (Ok(x), Ok(y)) = (xs.parse::<i32>(), ys.parse::<i32>())
+                        {
+                            opts.position = Some((x, y));
+                        }
+                        continue;
+                    }
+                    "--size" => {
+                        if let Some(val) = iter.next()
+                            && let Some((ws, hs)) = val.split_once('x')
+                            && let (Ok(w), Ok(h)) = (ws.parse::<u32>(), hs.parse::<u32>())
+                        {
+                            opts.size = Some((w.clamp(520, 4096), h.clamp(360, 2160)));
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            if opts.initial_url.is_none() {
+                opts.initial_url = Some(arg);
+            }
+        }
+        opts
+    }
+
+    pub(super) fn to_args(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.new_window {
+            out.push("--new-window".to_string());
+        }
+        if self.js_mode {
+            out.push("--js".to_string());
+        }
+        if self.reader_mode {
+            out.push("--reader".to_string());
+        }
+        if let Some(z) = self.zoom {
+            out.push("--zoom".to_string());
+            out.push(format!("{z:.1}"));
+        }
+        if let Some((x, y)) = self.position {
+            out.push("--pos".to_string());
+            out.push(format!("{x},{y}"));
+        }
+        if let Some((w, h)) = self.size {
+            out.push("--size".to_string());
+            out.push(format!("{w}x{h}"));
+        }
+        if let Some(url) = &self.initial_url {
+            out.push("--".to_string());
+            out.push(url.clone());
+        }
+        out
+    }
+}
+
 pub(super) struct TabDrag {
     pub tab_id: u64,
     pub start_pos: PhysicalPosition<f64>,
     pub active: bool,
+    /// True while dragged outside the tab strip (not over a bookmark folder) to open in a new window.
+    pub detaching: bool,
 }
 
 pub(super) struct ClosedTab {
@@ -222,18 +330,25 @@ pub struct BrowserApp {
     pdf_sources: Arc<crate::pdfjs::PdfSources>,
     /// Set when clicking an unfocused `#url-bar`, so a click without drag selects all text.
     url_bar_select_all_on_click: Option<PhysicalPosition<f64>>,
+    /// Requested initial position (physical px) when launched via tab tear-off (`--pos`).
+    initial_position: Option<PhysicalPosition<i32>>,
+    /// Requested initial surface size (logical px) when launched via tab tear-off (`--size`).
+    initial_size: Option<LogicalSize<f64>>,
 }
 
 impl BrowserApp {
     pub fn new(
         winit_proxy: EventLoopProxy,
-        initial_url: Option<String>,
+        launch: LaunchOptions,
         bookmarks: std::thread::JoinHandle<BookmarkStore>,
     ) -> Self {
         let (tx, rx) = channel();
         let bus = AppBus { tx, winit_proxy };
-        let forwarded = bus.clone();
-        crate::single::listen(move |u| forwarded.send(AppEvent::OpenUrl(u)));
+        // Secondary windows launched via `--new-window` keep the primary instance as the single-instance target.
+        if !launch.new_window {
+            let forwarded = bus.clone();
+            crate::single::listen(move |u| forwarded.send(AppEvent::OpenUrl(u)));
+        }
         let shared_font_ctx = FontContext::default();
         let cookie_jar = Arc::new(PersistentCookieJar::load(
             crate::bookmarks::app_data_dir().map(|p| p.join("cookies.json")),
@@ -242,10 +357,19 @@ impl BrowserApp {
         let nav_provider = Arc::new(BrowserNavProvider { bus: bus.clone() });
         let bookmarks = bookmarks.join().unwrap_or_default();
 
-        let start_url = initial_url
+        let start_url = launch
+            .initial_url
             // Local files (e.g. opened via the .html file association) become file:// URLs.
             .map(|u| arg_to_url(&u))
             .unwrap_or_else(|| "rust://home".to_string());
+        let mut first_tab = Tab::new(1, start_url);
+        if !first_tab.url.starts_with("rust://") {
+            first_tab.js_mode = launch.js_mode;
+            first_tab.reader_mode = launch.reader_mode && !launch.js_mode;
+        }
+        if let Some(z) = launch.zoom {
+            first_tab.zoom = ((z * 10.0).round() / 10.0).clamp(0.3, 3.0);
+        }
 
         let chrome_doc = HtmlDocument::from_html(
             "<html></html>",
@@ -272,7 +396,7 @@ impl BrowserApp {
             nav_provider,
             shell_provider: None,
             chrome_doc,
-            tabs: vec![Tab::new(1, start_url)],
+            tabs: vec![first_tab],
             active_tab: 0,
             next_tab_id: 2,
             bookmarks,
@@ -314,6 +438,8 @@ impl BrowserApp {
             bm_drag: None,
             tab_drag: None,
             url_bar_select_all_on_click: None,
+            initial_position: launch.position.map(|(x, y)| PhysicalPosition::new(x, y)),
+            initial_size: launch.size.map(|(w, h)| LogicalSize::new(w as f64, h as f64)),
         };
 
         app.load_active_tab(false, None);
@@ -612,6 +738,16 @@ impl BrowserApp {
             None
         };
         let drop_target = self.bm_drag.as_ref().and_then(|d| d.hover_folder.as_deref());
+        let detaching_tab_id = self
+            .tab_drag
+            .as_ref()
+            .filter(|d| d.active && d.detaching)
+            .map(|d| d.tab_id);
+        let status_note = if detaching_tab_id.is_some() {
+            Some("놓으면 새 창으로 열기")
+        } else {
+            self.status_note.as_deref()
+        };
         let active = &self.tabs[self.active_tab];
         let (wv_back, wv_fwd) = self.active_webview.as_ref().map_or((false, false), |wv| {
             (wv.can_go_back().unwrap_or(false), wv.can_go_forward().unwrap_or(false))
@@ -631,9 +767,10 @@ impl BrowserApp {
             dark_mode: self.color_scheme == ColorScheme::Dark,
             show_bookmarks_bar: self.prefs.show_bookmarks_bar,
             theme_pref: self.prefs.theme,
-            status_note: self.status_note.as_deref(),
+            status_note,
             url_override: typing.as_deref(),
             drop_target_folder: drop_target,
+            detaching_tab_id,
         });
         self.update_window_title();
         if html == self.last_chrome_html {
@@ -717,6 +854,7 @@ impl BrowserApp {
         tab.url = final_url.clone();
         tab.title = title;
         tab.is_loading = false;
+        tab.is_error_page = false;
         tab.abort_controller = Some(abort_ctrl);
         // Showing the translated copy (set by the Translated event): keep the original in `raw_html`.
         let translated = tab.translated.as_ref().is_some_and(|t| Arc::ptr_eq(t, &clean_html));
@@ -973,11 +1111,15 @@ impl ApplicationHandler for BrowserApp {
         #[cfg(debug_assertions)]
         eprintln!("[winit] can_create_surfaces window_is_none={}", self.window.is_none());
         if self.window.is_none() {
-            let attrs = WindowAttributes::default()
+            let init_size = self.initial_size.take().unwrap_or(LogicalSize::new(1280.0, 820.0));
+            let mut attrs = WindowAttributes::default()
                 .with_title("Rust Clean Browser")
                 .with_min_surface_size(LogicalSize::new(520.0, 360.0))
-                .with_surface_size(LogicalSize::new(1280.0, 820.0))
+                .with_surface_size(init_size)
                 .with_window_icon(app_icon());
+            if let Some(pos) = self.initial_position.take() {
+                attrs = attrs.with_position(pos);
+            }
             let win: Arc<dyn Window> = match event_loop.create_window(main_window_style(attrs)) {
                 Ok(w) => Arc::from(w),
                 Err(e) => {
@@ -1074,5 +1216,34 @@ impl ApplicationHandler for BrowserApp {
         } else {
             event_loop.set_control_flow(ControlFlow::Wait);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launch_options_round_trip_cli_args() {
+        let opts = LaunchOptions {
+            initial_url: Some("https://example.com/a?x=1".to_string()),
+            new_window: true,
+            js_mode: true,
+            reader_mode: false,
+            zoom: Some(1.3),
+            position: Some((-200, 140)),
+            size: Some((1100, 760)),
+        };
+        assert_eq!(LaunchOptions::from_args(opts.to_args()), opts);
+
+        // Plain URL / local path stays compatible with single-instance forwarding.
+        let plain = LaunchOptions::from_args(["https://rust-lang.org".to_string()]);
+        assert!(!plain.new_window);
+        assert_eq!(plain.initial_url.as_deref(), Some("https://rust-lang.org"));
+
+        // `--` protects URLs/paths that begin with `-`.
+        let dashed = LaunchOptions::from_args(["--new-window".into(), "--".into(), "-weird.html".into()]);
+        assert!(dashed.new_window);
+        assert_eq!(dashed.initial_url.as_deref(), Some("-weird.html"));
     }
 }

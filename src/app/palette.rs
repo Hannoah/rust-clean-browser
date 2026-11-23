@@ -235,6 +235,14 @@ impl BrowserApp {
                 "new tab",
             ),
             (
+                "new-window".into(),
+                "새 창 열기",
+                "독립된 새 브라우저 창 실행",
+                if is_mac { "⌘N" } else { "Ctrl+N" },
+                PaletteIcon::Command,
+                "new window 새창",
+            ),
+            (
                 "open-find".into(),
                 "페이지 내 찾기",
                 "현재 페이지에서 텍스트 검색",

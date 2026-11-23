@@ -41,6 +41,8 @@ pub struct Tab {
     pub pdf_hint: Option<String>,
     /// URL being shown in the pdf.js annotator; only valid while it equals `url`.
     pub pdf_editor: Option<String>,
+    /// True while `doc` is the built-in `rust://error` page (allows its `rust://open-js` button).
+    pub is_error_page: bool,
 }
 
 impl Tab {
@@ -66,6 +68,7 @@ impl Tab {
             translated: None,
             pdf_hint: None,
             pdf_editor: None,
+            is_error_page: false,
         }
     }
 
@@ -90,6 +93,7 @@ impl Tab {
         self.doc = None;
         self.raw_html = None;
         self.translated = None;
+        self.is_error_page = false;
         had_doc
     }
 

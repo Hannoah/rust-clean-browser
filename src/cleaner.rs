@@ -113,7 +113,7 @@ fn is_script_url(v: &str) -> bool {
         .filter(|c| !c.is_ascii_control() && !c.is_whitespace())
         .collect::<String>()
         .to_ascii_lowercase();
-    s.starts_with("javascript:") || s.starts_with("data:text/html")
+    s.starts_with("javascript:") || s.starts_with("data:text/html") || s.starts_with("rust:")
 }
 
 fn sanitize_tag(tag: &str) -> String {
@@ -205,19 +205,23 @@ fn sanitize_tag(tag: &str) -> String {
 /// so navigation targets never change; only `src`/`srcset`/`poster`/`data`,
 /// form `action`/`formaction`, and `<link href>` (stylesheets/icons) are upgraded.
 pub fn upgrade_mixed_content(html: &str, page_is_https: bool) -> String {
-    if !page_is_https || !html.contains("http://") {
+    if !page_is_https {
+        return html.to_string();
+    }
+    let lower = html.to_ascii_lowercase();
+    if !lower.contains("http://") {
         return html.to_string();
     }
     const ATTRS: &[&str] = &["src", "srcset", "poster", "data", "action", "formaction"];
-    let bytes = html.as_bytes();
+    let bytes = lower.as_bytes();
     let mut out = String::with_capacity(html.len());
     let mut pos = 0;
-    while let Some(rel) = html[pos..].find("http://") {
+    while let Some(rel) = lower[pos..].find("http://") {
         let abs = pos + rel;
         let mut replaced = false;
         // Must sit inside a tag: no `>` between the last `<` and here.
-        if let Some(tag_start) = html[..abs].rfind('<')
-            && !html[tag_start..abs].contains('>')
+        if let Some(tag_start) = lower[..abs].rfind('<')
+            && !lower[tag_start..abs].contains('>')
         {
             // Expect: attr-name WS* `=` WS* quote directly before `http://`.
             let mut q = abs;
@@ -236,9 +240,9 @@ pub fn upgrade_mixed_content(html: &str, page_is_https: bool) -> String {
                     while q > tag_start && !bytes[q - 1].is_ascii_whitespace() && bytes[q - 1] != b'<' {
                         q -= 1;
                     }
-                    let name = html[q..name_end].to_ascii_lowercase();
-                    let is_link_href = name == "href" && html[tag_start..abs].to_ascii_lowercase().starts_with("<link");
-                    if ATTRS.contains(&name.as_str()) || is_link_href {
+                    let name = &lower[q..name_end];
+                    let is_link_href = name == "href" && lower[tag_start..abs].starts_with("<link");
+                    if ATTRS.contains(&name) || is_link_href {
                         out.push_str(&html[pos..abs]);
                         out.push_str("https://");
                         pos = abs + "http://".len();
@@ -332,11 +336,13 @@ fn find_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-/// Error for PDF/image/archive responses; the app hands those to WebView2's built-in viewers.
+/// Error for PDF responses without a `.pdf` extension; the app hands those to WebView2's PDF viewer.
+pub const PDF_RESPONSE_ERR: &str = "PDF 문서입니다.";
+/// Error for image/archive responses; the app hands those to WebView2's built-in viewers.
 pub const NOT_HTML_ERR: &str = "HTML 문서가 아닌 바이너리/이미지/PDF 파일입니다.";
 
-/// Pages embedding a Google/Apple/Kakao/Naver sign-in SDK only work with scripts running
-/// (the widget renders in JS and talks to a popup), so they must open in JS mode.
+/// Pages embedding a social or enterprise SSO sign-in SDK (Google/Apple/Kakao/Naver/Okta/Auth0)
+/// only work with scripts running, so they must open in JS mode.
 pub fn uses_social_login_sdk(raw_html: &str) -> bool {
     const MARKERS: &[&str] = &[
         "accounts.google.com/gsi/client",
@@ -346,6 +352,9 @@ pub fn uses_social_login_sdk(raw_html: &str) -> bool {
         "appleid.cdn-apple.com/appleauth",
         "developers.kakao.com/sdk",
         "static.nid.naver.com/js/naveridlogin",
+        "okta-signin-widget",
+        "id=\"okta-login-container\"",
+        "cdn.auth0.com/js/",
     ];
     let lower = raw_html.to_ascii_lowercase();
     MARKERS.iter().any(|m| lower.contains(m))
@@ -369,9 +378,11 @@ pub fn is_local_script_app(url: &str, raw_html: &str) -> bool {
 /// Decode, classify and clean a fetched document in one go (runs on the network thread).
 /// Returns `(clean_html, is_spa_shell)`.
 pub fn process_fetched_document(bytes: &[u8], url: &str, strip_iframes: bool) -> Result<(String, bool), String> {
+    if bytes.starts_with(b"%PDF-") {
+        return Err(PDF_RESPONSE_ERR.to_string());
+    }
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n")
         || bytes.starts_with(b"\xff\xd8\xff")
-        || bytes.starts_with(b"%PDF-")
         || bytes.starts_with(b"PK\x03\x04")
         || bytes.starts_with(b"GIF8")
     {
@@ -893,6 +904,7 @@ fn extract_primary_fragment(html: &str) -> &str {
     let lower = html.to_ascii_lowercase();
     let lb = lower.as_bytes();
     for tag in ["<article", "<main", "<body"] {
+        let tag_name = &tag[1..];
         let mut scan = 0;
         while let Some(rel) = lower[scan..].find(tag) {
             let start = scan + rel;
@@ -901,23 +913,55 @@ fn extract_primary_fragment(html: &str) -> &str {
                 scan = after;
                 continue;
             }
-            if let Some((gt, _)) = find_open_tag_end(lb, after) {
-                let inner_start = gt + 1;
-                let close_tag = format!("</{}", &tag[1..]);
-                let mut end_search = &lower[inner_start..];
-                while let Some(end_rel) = end_search.rfind(&close_tag) {
-                    let abs_end = inner_start + end_rel;
-                    if is_tag_boundary(lb.get(abs_end + close_tag.len())) {
-                        return &html[inner_start..abs_end];
-                    }
-                    end_search = &end_search[..end_rel];
+            if let Some((gt, self_close)) = find_open_tag_end(lb, after) {
+                if self_close {
+                    scan = gt + 1;
+                    continue;
                 }
-                return &html[inner_start..];
+                let inner_start = gt + 1;
+                let close_start = find_matching_close_tag_start(&lower, lb, tag_name, inner_start);
+                return &html[inner_start..close_start];
             }
             break;
         }
     }
     html
+}
+
+/// Byte index of the `<` in the matching `</tag>` for an opening `<tag>` whose body starts at `from`.
+/// Tracks nested `<tag>` elements instead of grabbing up to the last `</tag>` in the document.
+fn find_matching_close_tag_start(lower: &str, lb: &[u8], tag: &str, from: usize) -> usize {
+    let open_pat = format!("<{tag}");
+    let close_pat = format!("</{tag}");
+    let mut scan = from;
+    let mut depth = 1usize;
+
+    while let Some(rel) = lower[scan..].find('<') {
+        let pos = scan + rel;
+        if lower[pos..].starts_with(&close_pat) && is_tag_boundary(lb.get(pos + close_pat.len())) {
+            depth -= 1;
+            if depth == 0 {
+                return pos;
+            }
+            scan = lower[pos + close_pat.len()..]
+                .find('>')
+                .map_or(lower.len(), |r| pos + close_pat.len() + r + 1);
+            continue;
+        }
+        if lower[pos..].starts_with(&open_pat) && is_tag_boundary(lb.get(pos + open_pat.len())) {
+            let after_open = pos + open_pat.len();
+            if let Some((te, self_close)) = find_open_tag_end(lb, after_open) {
+                if !self_close {
+                    depth += 1;
+                }
+                scan = te + 1;
+                continue;
+            }
+            return lower.len();
+        }
+        scan = pos + 1;
+    }
+    lower.len()
 }
 
 #[cfg(test)]
@@ -971,6 +1015,8 @@ mod tests {
             " 
  JaVaScRiPt:x",
             "&#x6A;avascript:x",
+            "rust://history?clear=1",
+            "rust&colon;//open-js?url=file:///C:/x",
         ] {
             let out = sanitize_dangerous_attrs(&format!(r#"<a href="{bad}">x</a>"#));
             assert!(!out.contains("href"), "{bad} -> {out}");
@@ -995,6 +1041,10 @@ mod tests {
         assert!(out.contains(r#"<a href="http://a.test/page">"#));
         assert!(out.contains("<p>http://a.test/text</p>"));
         assert_eq!(upgrade_mixed_content(raw, false), raw);
+        // Uppercase scheme in subresource attributes is also upgraded.
+        assert!(
+            upgrade_mixed_content(r#"<img src="HTTP://a.test/i.png">"#, true).contains(r#"src="https://a.test/i.png""#)
+        );
     }
 
     #[test]
@@ -1038,6 +1088,9 @@ mod tests {
 
         let article_like = r#"<!doctype html><html><head><script src="a.js"></script></head><body><article><h1>Rust Browser</h1><p>This is a full server-rendered article with plenty of readable content and links.</p></article></body></html>"#;
         assert!(!is_js_spa_shell(article_like));
+
+        let okta_like = r#"<!doctype html><html><head><script src="https://ok6static2.oktacdn.com/assets/js/sdk/okta-signin-widget/7.51.0/js/okta-sign-in.min.js"></script></head><body><div id="okta-login-container"></div><div class="hidden">Cookies are required. Cookies are disabled on your browser. Please enable Cookies and refresh this page to continue signing in.</div></body></html>"#;
+        assert!(uses_social_login_sdk(okta_like));
     }
 
     #[test]
@@ -1086,5 +1139,20 @@ mod tests {
         assert!(!reader.contains("outer") && !reader.contains("inner"));
         assert!(!reader.contains("<form"));
         assert!(reader.contains("Main body"));
+
+        // Sibling/nested `<article>` blocks: only the first article (with its nested child) is kept.
+        let multi = r#"<html><body><article><p>First</p><article><p>Nested</p></article></article><div class="ad">Ad noise</div><article><p>Second</p></article></body></html>"#;
+        let reader_multi = build_reader_html(multi, "https://a.test");
+        assert!(reader_multi.contains("First") && reader_multi.contains("Nested"));
+        assert!(!reader_multi.contains("Ad noise") && !reader_multi.contains("Second"));
+
+        assert_eq!(
+            process_fetched_document(b"%PDF-1.7\n...", "https://a.test/doc", true).unwrap_err(),
+            PDF_RESPONSE_ERR
+        );
+        assert_eq!(
+            process_fetched_document(b"PK\x03\x04...", "https://a.test/archive", true).unwrap_err(),
+            NOT_HTML_ERR
+        );
     }
 }

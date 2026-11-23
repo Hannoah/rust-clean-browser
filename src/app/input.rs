@@ -31,11 +31,19 @@ impl BrowserApp {
             WindowEvent::CloseRequested => self.exit_app(event_loop),
             WindowEvent::Focused(false) => {
                 self.buttons = MouseEventButtons::None;
-                self.tab_drag = None;
+                let mut need_chrome = false;
+                if let Some(tdrag) = self.tab_drag.take()
+                    && (tdrag.active || tdrag.detaching)
+                {
+                    need_chrome = true;
+                }
                 self.url_bar_select_all_on_click = None;
                 if let Some(drag) = self.bm_drag.take()
                     && drag.active
                 {
+                    need_chrome = true;
+                }
+                if need_chrome {
                     if let Some(win) = &self.window {
                         win.set_cursor(Cursor::Icon(CursorIcon::Default));
                     }
@@ -115,25 +123,39 @@ impl BrowserApp {
                 self.pointer_pos = position;
                 if (self.tab_drag.is_some() || self.bm_drag.is_some()) && !is_primary_mouse_button_down() {
                     self.buttons &= !MouseEventButtons::from(MouseEventButton::Main);
-                    self.tab_drag = None;
+                    let mut need_chrome = false;
+                    if let Some(tdrag) = self.tab_drag.take()
+                        && (tdrag.active || tdrag.detaching)
+                    {
+                        need_chrome = true;
+                    }
                     if let Some(drag) = self.bm_drag.take()
                         && drag.active
                     {
+                        need_chrome = true;
+                    }
+                    if need_chrome {
                         if let Some(win) = &self.window {
                             win.set_cursor(Cursor::Icon(CursorIcon::Default));
                         }
                         self.rebuild_chrome();
                     }
                 }
-                let resize = self.resize_direction_at(position);
-                if resize != self.resize_hover {
-                    self.resize_hover = resize;
-                    if let Some(win) = &self.window {
-                        win.set_cursor(Cursor::Icon(resize.map_or(CursorIcon::Default, resize_cursor)));
+                if self.tab_drag.is_none() && self.bm_drag.is_none() {
+                    let resize = self.resize_direction_at(position);
+                    if resize != self.resize_hover {
+                        self.resize_hover = resize;
+                        if let Some(win) = &self.window {
+                            win.set_cursor(Cursor::Icon(resize.map_or(CursorIcon::Default, resize_cursor)));
+                        }
                     }
-                }
-                if resize.is_some() {
-                    return;
+                    if resize.is_some() {
+                        return;
+                    }
+                } else if self.resize_hover.take().is_some()
+                    && let Some(win) = &self.window
+                {
+                    win.set_cursor(Cursor::Icon(CursorIcon::Default));
                 }
                 if self.update_tab_drag(position) {
                     return;
@@ -252,6 +274,7 @@ impl BrowserApp {
                                 tab_id: self.tabs[idx].id,
                                 start_pos: position,
                                 active: false,
+                                detaching: false,
                             })
                         } else {
                             None
@@ -267,14 +290,27 @@ impl BrowserApp {
                 } else if btn == MouseEventButton::Main {
                     if let Some(tdrag) = self.tab_drag.take()
                         && tdrag.active
-                        && position.y / (self.hidpi_scale as f64) <= (TITLEBAR_HEIGHT + 16) as f64
                     {
-                        self.bm_drag = None;
-                        if let Some(win) = &self.window {
-                            win.set_cursor(Cursor::Icon(CursorIcon::Default));
+                        if tdrag.detaching {
+                            self.bm_drag = None;
+                            if let Some(win) = &self.window {
+                                win.set_cursor(Cursor::Icon(CursorIcon::Default));
+                            }
+                            self.detach_tab_to_new_window(tdrag.tab_id, position);
+                            self.send_pointer_leave(button_source_to_blitz(&button), primary, position, in_chrome);
+                            return;
                         }
-                        self.request_redraw();
-                        return;
+                        let dropping_on_bm =
+                            self.bm_drag.as_ref().is_some_and(|d| d.active) && self.bm_folder_at(position).is_some();
+                        if !dropping_on_bm {
+                            self.bm_drag = None;
+                            if let Some(win) = &self.window {
+                                win.set_cursor(Cursor::Icon(CursorIcon::Default));
+                            }
+                            self.rebuild_chrome();
+                            self.request_redraw();
+                            return;
+                        }
                     }
                     if let Some(drag) = self.bm_drag.take()
                         && drag.active
@@ -376,6 +412,7 @@ impl BrowserApp {
             KeyCode::BracketLeft => self.history_step(false),
             KeyCode::BracketRight => self.history_step(true),
             KeyCode::KeyO if shift => self.navigate_current("rust://bookmarks"),
+            KeyCode::KeyN => self.open_new_window(None),
             KeyCode::KeyT => {
                 self.open_new_tab("rust://home");
                 self.focus_url_bar();
@@ -428,6 +465,13 @@ impl BrowserApp {
             return true;
         }
         if code == KeyCode::Escape {
+            if self.tab_drag.take().is_some() || self.bm_drag.take().is_some() {
+                if let Some(win) = &self.window {
+                    win.set_cursor(Cursor::Icon(CursorIcon::Default));
+                }
+                self.rebuild_chrome();
+                return true;
+            }
             if self.has_find_bar() {
                 self.close_find_bar();
                 return true;
@@ -756,7 +800,8 @@ impl BrowserApp {
         None
     }
 
-    /// Reorders tabs in real time when dragging a tab horizontally across the tab strip.
+    /// Reorders tabs horizontally within the tab strip, or switches to tear-off mode when
+    /// dragged outside the tab strip (and not over a bookmark folder) to detach into a new window.
     fn update_tab_drag(&mut self, pos: PhysicalPosition<f64>) -> bool {
         let Some(drag) = &self.tab_drag else {
             return false;
@@ -767,27 +812,83 @@ impl BrowserApp {
         if !drag.active && (dx * dx + dy * dy) < threshold * threshold {
             return false;
         }
-        let l: LogicalPosition<f32> = pos.to_logical(self.hidpi_scale as f64);
-        if l.y > (TITLEBAR_HEIGHT + 16) as f32 {
-            // Dragged below the title bar: let bookmark drag-and-drop handle dropping onto a folder.
+        let scale = self.hidpi_scale.max(1.0) as f64;
+        let lx = pos.x / scale;
+        let ly = pos.y / scale;
+        let win_w = self.win_size.width as f64 / scale;
+
+        // Hovering a bookmark folder while dragging an http(s) tab: let bookmark D&D handle it.
+        if self.bm_drag.is_some() && self.bm_folder_at(pos).is_some() {
+            let was_detaching = self.tab_drag.as_ref().is_some_and(|d| d.detaching);
+            if let Some(d) = self.tab_drag.as_mut() {
+                d.active = true;
+                d.detaching = false;
+            }
+            if was_detaching {
+                self.rebuild_chrome();
+            }
             return false;
         }
+
+        // Dragged outside the tab strip: tear off into a new window (or move window for a lone tab).
+        if is_tab_detach_pos(lx, ly, win_w) {
+            if self.tabs.len() <= 1 {
+                self.tab_drag = None;
+                self.bm_drag = None;
+                self.buttons = MouseEventButtons::None;
+                if let Some(win) = &self.window {
+                    win.set_cursor(Cursor::Icon(CursorIcon::Default));
+                    let _ = win.drag_window();
+                }
+                return true;
+            }
+            let bm_had_hover = self.bm_drag.as_mut().is_some_and(|b| b.hover_folder.take().is_some());
+            let was_detaching = self.tab_drag.as_ref().is_some_and(|d| d.detaching);
+            if let Some(d) = self.tab_drag.as_mut() {
+                d.active = true;
+                d.detaching = true;
+            }
+            if let Some(win) = &self.window {
+                win.set_cursor(Cursor::Icon(CursorIcon::Move));
+            }
+            if !was_detaching || bm_had_hover {
+                if bm_had_hover && self.tabs[self.active_tab].url.starts_with("rust://bookmarks") {
+                    let scroll = self.current_scroll_y();
+                    self.load_active_tab(false, Some(scroll));
+                } else {
+                    self.rebuild_chrome();
+                }
+            }
+            return true;
+        }
+
         let tab_id = drag.tab_id;
-        self.tab_drag.as_mut().unwrap().active = true;
+        let was_detaching = drag.detaching;
+        if let Some(d) = self.tab_drag.as_mut() {
+            d.active = true;
+            d.detaching = false;
+        }
+        let bm_had_hover = self.bm_drag.as_mut().is_some_and(|b| b.hover_folder.take().is_some());
+        if was_detaching || bm_had_hover {
+            if let Some(win) = &self.window {
+                win.set_cursor(Cursor::Icon(CursorIcon::Default));
+            }
+            self.rebuild_chrome();
+        }
         let Some(cur_idx) = self.tabs.iter().position(|t| t.id == tab_id) else {
             return true;
         };
         if self.active_tab != cur_idx {
             self.switch_tab(cur_idx);
         }
-        if let Some((over_idx, tab_x, tab_w)) = self.tab_hit_at_x(l.x)
+        if let Some((over_idx, tab_x, tab_w)) = self.tab_hit_at_x(lx as f32)
             && over_idx != cur_idx
             && over_idx < self.tabs.len()
         {
             let should_swap = if over_idx > cur_idx {
-                l.x > tab_x + tab_w * 0.35
+                (lx as f32) > tab_x + tab_w * 0.35
             } else {
-                l.x < tab_x + tab_w * 0.65
+                (lx as f32) < tab_x + tab_w * 0.65
             };
             if should_swap {
                 let tab = self.tabs.remove(cur_idx);
@@ -844,6 +945,9 @@ impl BrowserApp {
 
     /// Finds a drop-target bookmark folder (`data-bm-folder`) under `pos`.
     fn bm_folder_at(&self, pos: PhysicalPosition<f64>) -> Option<String> {
+        if pos.x < 0.0 || pos.y < 0.0 || pos.x >= self.win_size.width as f64 || pos.y >= self.win_size.height as f64 {
+            return None;
+        }
         if self.is_in_chrome(pos) {
             let l: LogicalPosition<f32> = pos.to_logical(self.hidpi_scale as f64);
             let mut node_id = self.chrome_doc.element_from_point(l.x, l.y);
@@ -928,5 +1032,27 @@ impl BrowserApp {
         } else {
             self.rebuild_chrome();
         }
+    }
+}
+
+/// True when a dragged tab's logical pointer position `(lx, ly)` has left the tab strip
+/// far enough to detach into a new browser window.
+fn is_tab_detach_pos(lx: f64, ly: f64, win_w: f64) -> bool {
+    ly > (TITLEBAR_HEIGHT + 24) as f64 || ly < -24.0 || lx < -24.0 || lx > win_w + 24.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tab_detach_zone_triggers_only_outside_tab_strip() {
+        assert!(!is_tab_detach_pos(200.0, 20.0, 1280.0));
+        assert!(!is_tab_detach_pos(200.0, 56.0, 1280.0));
+        assert!(!is_tab_detach_pos(0.0, -10.0, 1280.0));
+        assert!(is_tab_detach_pos(200.0, 70.0, 1280.0));
+        assert!(is_tab_detach_pos(200.0, -30.0, 1280.0));
+        assert!(is_tab_detach_pos(-30.0, 20.0, 1280.0));
+        assert!(is_tab_detach_pos(1310.0, 20.0, 1280.0));
     }
 }

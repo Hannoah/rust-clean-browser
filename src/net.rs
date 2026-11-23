@@ -182,13 +182,19 @@ mod seal {
 }
 
 /// Writes `buf` to `path`, owner-only (0600) on Unix.
-fn write_private(path: &std::path::Path, buf: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &std::path::Path, buf: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
-    opts.open(path)?.write_all(buf)
+    let mut file = opts.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    file.write_all(buf)
 }
 
 /// Cookie jar persisted to disk so logins survive restarts (session cookies included,
@@ -233,7 +239,7 @@ impl PersistentCookieJar {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let tmp = path.with_extension("tmp");
+        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
         if write_private(&tmp, &seal::seal(buf)).is_err() {
             return;
         }

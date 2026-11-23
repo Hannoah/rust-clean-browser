@@ -77,7 +77,7 @@ impl UiPrefs {
             let _ = std::fs::create_dir_all(dir);
         }
         if let Ok(json) = serde_json::to_string_pretty(self) {
-            let tmp = path.with_extension("tmp");
+            let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
             if std::fs::write(&tmp, json).is_ok() {
                 let _ = std::fs::rename(&tmp, &path);
             }
