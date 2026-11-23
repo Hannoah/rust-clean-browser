@@ -86,7 +86,7 @@ impl DiskPageCache {
         buf.push_str(final_url);
         buf.push('\n');
         buf.push_str(html);
-        let tmp = path.with_extension("tmp");
+        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
         if std::fs::write(&tmp, &buf).is_ok() {
             let _ = std::fs::rename(&tmp, &path);
         }

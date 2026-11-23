@@ -413,7 +413,7 @@ fn store(key: &str, bytes: &[u8]) -> Option<bool> {
             return None;
         }
         let text = std::str::from_utf8(bytes).ok()?;
-        (crate::cleaner::sanitize_dangerous_attrs(text).into_bytes(), "svg")
+        (crate::cleaner::strip_scripts_and_bloat(text, true).into_bytes(), "svg")
     } else {
         let img = image::load_from_memory(bytes).ok()?;
         let img = if img.width() > ICON_PX || img.height() > ICON_PX {
@@ -432,7 +432,7 @@ fn store(key: &str, bytes: &[u8]) -> Option<bool> {
         return Some(false);
     }
     let _ = std::fs::create_dir_all(&dir);
-    let tmp = dir.join(format!("{key}.{ext}.tmp"));
+    let tmp = dir.join(format!("{key}.{ext}.{}.tmp", std::process::id()));
     std::fs::write(&tmp, &data).ok()?;
     std::fs::rename(&tmp, &path).ok()?;
     let other = if ext == "svg" { "png" } else { "svg" };
@@ -540,11 +540,14 @@ mod tests {
         let saved = image::open(&path).unwrap();
         assert_eq!((saved.width(), saved.height()), (64, 64));
 
-        let svg = br#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>"#;
+        let svg = br#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)" viewBox="0 0 1 1"><script>alert(2)</script><rect width="1" height="1"/></svg>"#;
         assert_eq!(store(&key, svg), Some(true));
         let svg_url = cached_icon_url(&format!("https://{key}/")).unwrap();
         assert!(svg_url.ends_with(".svg") && !path.exists(), "svg replaces png");
-        let _ = std::fs::remove_file(Url::parse(&svg_url).unwrap().to_file_path().unwrap());
+        let svg_path = Url::parse(&svg_url).unwrap().to_file_path().unwrap();
+        let saved_svg = std::fs::read_to_string(&svg_path).unwrap();
+        assert!(!saved_svg.contains("<script") && !saved_svg.contains("onload") && saved_svg.contains("<rect"));
+        let _ = std::fs::remove_file(svg_path);
         assert_eq!(store("bad.test", b"not an image"), None);
         assert!(looks_like_svg(
             br#"<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" ""><svg/>"#

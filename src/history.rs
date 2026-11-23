@@ -62,24 +62,39 @@ pub fn inline_match(query: &str, url: &str) -> bool {
     !q.is_empty() && !q.contains(char::is_whitespace) && bare(url).starts_with(&q)
 }
 
-/// How well `q` (lowercase) matches; `None` if it doesn't.
-fn match_score(q: &str, url: &str, title: &str) -> Option<i64> {
-    let b = bare(url);
-    let t = title.to_lowercase();
-    if b.starts_with(q) {
-        Some(1000)
-    } else if b.contains(&format!(".{q}"))
-        || b.contains(&format!("/{q}"))
-        || t.starts_with(q)
-        || t.contains(&format!(" {q}"))
-    {
-        Some(400)
-    } else if t.contains(q) {
-        Some(250)
-    } else if b.contains(q) {
-        Some(150)
-    } else {
-        None
+/// Precomputed lowercase query patterns so `suggest` doesn't allocate 3 strings per history item.
+struct QueryPatterns<'a> {
+    q: &'a str,
+    dot: String,
+    slash: String,
+    space: String,
+}
+
+impl<'a> QueryPatterns<'a> {
+    fn new(q: &'a str) -> Self {
+        Self {
+            q,
+            dot: format!(".{q}"),
+            slash: format!("/{q}"),
+            space: format!(" {q}"),
+        }
+    }
+
+    /// How well `self.q` (lowercase) matches; `None` if it doesn't.
+    fn score(&self, url: &str, title: &str) -> Option<i64> {
+        let b = bare(url);
+        let t = title.to_lowercase();
+        if b.starts_with(self.q) {
+            Some(1000)
+        } else if b.contains(&self.dot) || b.contains(&self.slash) || t.starts_with(self.q) || t.contains(&self.space) {
+            Some(400)
+        } else if t.contains(self.q) {
+            Some(250)
+        } else if b.contains(self.q) {
+            Some(150)
+        } else {
+            None
+        }
     }
 }
 
@@ -156,7 +171,7 @@ impl History {
         let Ok(json) = serde_json::to_string(&self.visits) else {
             return;
         };
-        let tmp = path.with_extension("tmp");
+        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
         if std::fs::write(&tmp, json).is_err() {
             return;
         }
@@ -171,10 +186,11 @@ impl History {
         if q.is_empty() {
             return Vec::new();
         }
+        let pat = QueryPatterns::new(&q);
         let ts = now();
         let mut scored: Vec<(i64, Suggestion)> = Vec::new();
         for v in &self.visits {
-            let Some(base) = match_score(&q, &v.url, &v.title) else {
+            let Some(base) = pat.score(&v.url, &v.title) else {
                 continue;
             };
             let age = ts.saturating_sub(v.last);
@@ -195,7 +211,7 @@ impl History {
             ));
         }
         for b in bookmarks.search(&q) {
-            let Some(base) = match_score(&q, &b.url, &b.title) else {
+            let Some(base) = pat.score(&b.url, &b.title) else {
                 continue;
             };
             let score = base + 150;

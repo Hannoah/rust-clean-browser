@@ -114,6 +114,7 @@ impl BrowserApp {
                     self.open_new_tab("rust://home");
                     self.focus_url_bar();
                 }
+                "new-window" => self.open_new_window(None),
                 "back" => self.history_step(false),
                 "forward" => self.history_step(true),
                 "reload" => self.reload_active_tab(),
@@ -278,7 +279,7 @@ impl BrowserApp {
                         && !self.tabs[idx].force_blitz
                         && !self.tabs[idx].reader_mode
                     {
-                        self.tabs[idx].url = final_url;
+                        self.tabs[idx].url = auto_js_target_url(requested_url, final_url, cacheable);
                         self.tabs[idx].is_loading = false;
                         self.set_status_note("Auto JS Mode (SPA)");
                         self.mount_or_navigate_webview(idx);
@@ -323,12 +324,16 @@ impl BrowserApp {
                         continue;
                     }
                     // PDF / image / media without a telltale extension: let WebView2's viewers render it.
-                    if error.starts_with(crate::cleaner::NOT_HTML_ERR)
+                    let is_pdf_resp = error == crate::cleaner::PDF_RESPONSE_ERR;
+                    if (is_pdf_resp || error.starts_with(crate::cleaner::NOT_HTML_ERR))
                         && !self.tabs[idx].js_mode
                         && !self.tabs[idx].force_blitz
                         && (url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://"))
                     {
-                        self.tabs[idx].pdf_hint = Some(url.clone());
+                        if is_pdf_resp {
+                            self.tabs[idx].pdf_hint = Some(url.clone());
+                            self.pdf_sources.allow_download(&url);
+                        }
                         self.tabs[idx].url = url;
                         self.tabs[idx].is_loading = false;
                         self.set_status_note("WebView2 뷰어로 열기");
@@ -365,6 +370,14 @@ impl BrowserApp {
                             self.set_status_note("차단됨: 페이지의 로컬 파일 접근");
                             self.rebuild_chrome();
                             continue;
+                        }
+                        if url.scheme() == "rust" {
+                            let tab = &self.tabs[self.active_tab];
+                            if !is_page_rust_nav_allowed(&tab.url, tab.is_error_page, tab.reader_mode, url_str) {
+                                self.set_status_note("차단됨: 페이지의 내부 주소 접근");
+                                self.rebuild_chrome();
+                                continue;
+                            }
                         }
                         let is_builtin_action = url_str.starts_with("rust://reader-opt")
                             || url_str.starts_with("rust://open-js")
@@ -501,5 +514,81 @@ impl BrowserApp {
             self.refresh_popup();
         }
         self.pump_favicons();
+    }
+}
+
+/// URL to open in WebView2 when a Clean-mode load auto-switches to JS mode.
+///
+/// For GET navigations (`cacheable == true`), always hand WebView2 the originally requested URL
+/// rather than a mid-redirect `final_url`: `blitz-net` and WebView2 have separate cookie jars,
+/// so sending WebView2 directly to an IdP/OAuth redirect URL leaves behind the SP's session and
+/// OAuth `state` cookies (causing 500 errors on the OAuth callback) and bypasses existing logins.
+fn auto_js_target_url(requested_url: String, final_url: String, cacheable: bool) -> String {
+    if cacheable { requested_url } else { final_url }
+}
+
+/// Only built-in `rust://` documents (or the built-in error page / reader toolbar) may navigate
+/// to internal `rust://` action URLs. External web pages must never clear history, delete
+/// bookmarks, or bounce `file://` URLs through `rust://open-js`.
+fn is_page_rust_nav_allowed(page_url: &str, is_error_page: bool, reader_mode: bool, target: &str) -> bool {
+    if page_url.starts_with("rust://") {
+        return true;
+    }
+    if is_error_page && (target.starts_with("rust://open-js") || target == "rust://home") {
+        return true;
+    }
+    reader_mode && target.starts_with("rust://reader-opt")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_js_prefers_requested_url_for_get_redirects() {
+        let req = "https://sas-demos.engage.sas.com/SASLanding/".to_string();
+        let idp = "https://auth.sas.com/login/login.htm?fromURI=%2Foauth2%2Fv1%2Fauthorize%3Fokta_key%3Dx".to_string();
+        assert_eq!(auto_js_target_url(req.clone(), idp.clone(), true), req);
+        assert_eq!(auto_js_target_url(req, idp.clone(), false), idp);
+    }
+
+    #[test]
+    fn blocks_external_pages_from_invoking_rust_internal_routes() {
+        assert!(!is_page_rust_nav_allowed(
+            "https://evil.test/",
+            false,
+            false,
+            "rust://history?clear=1"
+        ));
+        assert!(!is_page_rust_nav_allowed(
+            "https://evil.test/",
+            false,
+            false,
+            "rust://open-js?url=file:///C:/Windows/win.ini"
+        ));
+        assert!(!is_page_rust_nav_allowed(
+            "https://article.test/",
+            false,
+            true,
+            "rust://history?clear=1"
+        ));
+        assert!(is_page_rust_nav_allowed(
+            "https://article.test/",
+            false,
+            true,
+            "rust://reader-opt?theme=dark"
+        ));
+        assert!(is_page_rust_nav_allowed(
+            "https://down.test/",
+            true,
+            false,
+            "rust://open-js?url=https%3A%2F%2Fdown.test%2F"
+        ));
+        assert!(is_page_rust_nav_allowed(
+            "rust://history",
+            false,
+            false,
+            "rust://history?clear=1"
+        ));
     }
 }

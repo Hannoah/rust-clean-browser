@@ -150,6 +150,11 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--fram
 .tab.sleeping .fav { opacity: 0.65; }
 .tab.sleeping:hover { color: var(--text-2); }
 .tab.sleeping:hover .fav { opacity: 0.92; }
+.tab.detaching {
+  opacity: 0.45;
+  outline: 1.5px dashed var(--accent);
+  outline-offset: -2px;
+}
 .tab-sep {
   width: 1px; height: 15px; margin: 0 1px 9px;
   background: var(--border); flex-shrink: 0;
@@ -330,49 +335,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--fram
 const CUSTOM_WINDOW_CONTROLS: bool = cfg!(target_os = "windows") || cfg!(target_os = "linux");
 const TRAFFIC_LIGHT_INSET: u32 = if cfg!(target_os = "macos") { 78 } else { 8 };
 
-#[cfg(test)]
-fn substitute_icon_entities(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut rest = html;
-    while let Some(pos) = rest.find("&#xE") {
-        out.push_str(&rest[..pos]);
-        let entity = &rest[pos..];
-        let code = entity.get(3..7).unwrap_or("");
-        if entity.as_bytes().get(7) == Some(&b';') {
-            let sub = match code {
-                "E72B" => "←",
-                "E72A" => "→",
-                "E72C" | "E895" => "↻",
-                "E711" | "E8BB" => "✕",
-                "E80F" => "⌂",
-                "E710" => "+",
-                "E921" => "–",
-                "E922" => "□",
-                "E923" => "❐",
-                "E734" => "☆",
-                "E735" => "★",
-                "E72E" | "E721" => "",
-                "E946" => "ⓘ",
-                "E8B7" => "▸",
-                "E736" => "¶",
-                "E943" => "{}",
-                "EA18" => "◈",
-                "E728" => "☰",
-                "E76C" => "›",
-                "E783" => "⚠",
-                _ => "•",
-            };
-            out.push_str(sub);
-            rest = &entity[8..];
-        } else {
-            out.push('&');
-            rest = &entity[1..];
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
 pub struct ChromeRenderState<'a> {
     pub tabs: &'a [Tab],
     pub active_idx: usize,
@@ -391,6 +353,8 @@ pub struct ChromeRenderState<'a> {
     pub url_override: Option<&'a str>,
     /// Folder spec currently hovered during a bookmark drag-and-drop.
     pub drop_target_folder: Option<&'a str>,
+    /// Tab ID currently dragged outside the tab strip (releasing opens it in a new window).
+    pub detaching_tab_id: Option<u64>,
 }
 
 fn spinner_html(dark_mode: bool) -> String {
@@ -446,10 +410,14 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
         let is_active = idx == state.active_idx;
         let next_active = idx + 1 == state.active_idx;
         let is_sleeping = !is_active && !tab.is_loaded() && !tab.js_mode;
-        let cls = match (is_active, is_sleeping) {
-            (true, _) => "tab active",
-            (false, true) => "tab sleeping",
-            (false, false) => "tab",
+        let is_detaching = state.detaching_tab_id == Some(tab.id);
+        let cls = match (is_active, is_sleeping, is_detaching) {
+            (true, _, true) => "tab active detaching",
+            (true, _, false) => "tab active",
+            (false, true, true) => "tab sleeping detaching",
+            (false, true, false) => "tab sleeping",
+            (false, false, true) => "tab detaching",
+            (false, false, false) => "tab",
         };
         let fav = if tab.is_loading {
             spinner_html(state.dark_mode)
@@ -2034,12 +2002,6 @@ mod tests {
     }
 
     #[test]
-    fn maps_fluent_icon_entities_to_unicode() {
-        let html = "<b>&#xE72B;</b>&amp;&#xE8B7;&#xE72E;&#xEFFF;&#xE7";
-        assert_eq!(substitute_icon_entities(html), "<b>←</b>&amp;▸•&#xE7");
-    }
-
-    #[test]
     fn chrome_html_reflects_state_and_escapes() {
         let mut tab = Tab::new(1, "https://a.test/?x=<b>".into());
         tab.title = "T&T".into();
@@ -2061,6 +2023,7 @@ mod tests {
             status_note: Some("메모리 정리됨"),
             url_override: Some("typed"),
             drop_target_folder: None,
+            detaching_tab_id: None,
         });
         assert!(html.contains(r#"value="typed""#));
         assert!(html.contains("T&amp;T"));
@@ -2092,6 +2055,7 @@ mod tests {
             status_note: None,
             url_override: None,
             drop_target_folder: None,
+            detaching_tab_id: None,
         });
         assert!(html.contains(r#"class="fav-spin""#));
         assert!(html.contains("@keyframes tab-spin"));
@@ -2226,6 +2190,7 @@ mod tests {
             status_note: None,
             url_override: None,
             drop_target_folder: None,
+            detaching_tab_id: None,
         });
         let mut cdoc = blitz_html::HtmlDocument::from_html(
             &chrome_html,

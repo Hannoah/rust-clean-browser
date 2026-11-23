@@ -379,7 +379,7 @@ impl BookmarkStore {
             custom: self.custom.clone(),
         };
         if let Ok(json) = serde_json::to_string_pretty(&persisted) {
-            let tmp = path.with_extension("tmp");
+            let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
             if fs::write(&tmp, json).is_ok() {
                 let _ = fs::rename(&tmp, &path);
             }

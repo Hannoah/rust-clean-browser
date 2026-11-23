@@ -83,7 +83,7 @@ impl BrowserApp {
             return;
         };
         let tab_id = self.tabs[self.active_tab].id;
-        persist_session_cookies(&wv);
+        // Session cookies survive while the WebView stays parked; persist only on eviction/close/exit.
         let _ = wv.set_visible(false);
         super::helpers::suspend_webview(&wv);
         if let Some(win) = &self.window {
@@ -247,13 +247,16 @@ impl BrowserApp {
             })
             // Drive-by downloads have no consent UI in this browser: deny and
             // surface a toast instead of dropping files into Downloads silently.
-            // Exception: PDFs (the viewer's Save button, attachment PDFs) save to Downloads.
-            .with_download_started_handler(move |url, _path| {
-                if crate::pdfjs::is_pdf_url(&url) || url.starts_with(crate::pdfjs::BLOB_PREFIX) {
-                    return true;
+            // Exception: PDFs (the viewer's Save button, attachment/extensionless PDFs) save to Downloads.
+            .with_download_started_handler({
+                let dl_sources = Arc::clone(&self.pdf_sources);
+                move |url, _path| {
+                    if dl_sources.is_allowed_download(&url) {
+                        return true;
+                    }
+                    bus_dl.send(AppEvent::DownloadBlocked(url));
+                    false
                 }
-                bus_dl.send(AppEvent::DownloadBlocked(url));
-                false
             })
             .with_download_completed_handler(move |_url, path, success| {
                 bus_done.send(AppEvent::DownloadDone { path, success });
@@ -288,6 +291,7 @@ impl BrowserApp {
         let doc = self.build_content_doc(&err_html, "rust://error", None, self.tabs[tab_idx].zoom);
         let tab = &mut self.tabs[tab_idx];
         tab.doc = Some(doc);
+        tab.is_error_page = true;
         // Always clear the spinner; a None title keeps the previous title text.
         tab.is_loading = false;
         if let Some(t) = title {
@@ -310,6 +314,7 @@ impl BrowserApp {
         let url = self.tabs[idx].url.clone();
         let tab_id = self.tabs[idx].id;
         self.tabs[idx].cancel_inflight();
+        self.tabs[idx].is_error_page = false;
         let load_seq = self.tabs[idx].load_seq;
         self.hover_link_url = None;
         self.link_preview_doc = None;
@@ -458,10 +463,11 @@ impl BrowserApp {
                     });
                 }
                 Err(reason) => {
+                    let target_url = if final_url.is_empty() { fail_url_2 } else { final_url };
                     bus_ok.send(AppEvent::PageLoadFailed {
                         tab_id,
                         load_seq,
-                        url: fail_url_2,
+                        url: target_url,
                         error: reason,
                     });
                 }
@@ -496,13 +502,22 @@ impl BrowserApp {
         if target.starts_with("rust://open-js") {
             if let Some(orig) = parse_query_param(&target, "url") {
                 let idx = self.active_tab;
-                self.tabs[idx].url = orig;
-                self.tabs[idx].force_blitz = false;
-                self.tabs[idx].js_mode = true;
-                self.tabs[idx].reader_mode = false;
-                self.set_status_note("JS 모드로 열기");
-                self.mount_or_navigate_webview(idx);
-                self.rebuild_chrome();
+                let allowed = orig.starts_with("http://")
+                    || orig.starts_with("https://")
+                    || (self.tabs[idx].is_error_page && orig == self.tabs[idx].url && orig.starts_with("file://"));
+                if allowed {
+                    self.tabs[idx].url = orig;
+                    self.tabs[idx].force_blitz = false;
+                    self.tabs[idx].js_mode = true;
+                    self.tabs[idx].reader_mode = false;
+                    self.tabs[idx].is_error_page = false;
+                    self.set_status_note("JS 모드로 열기");
+                    self.mount_or_navigate_webview(idx);
+                    self.rebuild_chrome();
+                } else {
+                    self.set_status_note("차단됨: 허용되지 않은 JS 이동 주소");
+                    self.rebuild_chrome();
+                }
             }
             return;
         }
@@ -643,12 +658,16 @@ impl BrowserApp {
     }
 
     pub(super) fn close_tab(&mut self, idx: usize, event_loop: Option<&dyn ActiveEventLoop>) {
+        self.remove_tab(idx, event_loop, true);
+    }
+
+    fn remove_tab(&mut self, idx: usize, event_loop: Option<&dyn ActiveEventLoop>, record_closed: bool) {
         if idx >= self.tabs.len() {
             return;
         }
         self.close_popup();
         let closed_url = self.tabs[idx].url.clone();
-        if !closed_url.starts_with("rust://home") {
+        if record_closed && !closed_url.starts_with("rust://home") {
             if self.closed_tabs.len() >= 16 {
                 self.closed_tabs.remove(0);
             }
@@ -694,6 +713,94 @@ impl BrowserApp {
         }
     }
 
+    /// Detaches `tab_id` into a new browser window placed at `drop_pos` (client physical px).
+    pub(super) fn detach_tab_to_new_window(&mut self, tab_id: u64, drop_pos: winit::dpi::PhysicalPosition<f64>) {
+        if self.tabs.len() <= 1 {
+            self.rebuild_chrome();
+            return;
+        }
+        let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) else {
+            self.rebuild_chrome();
+            return;
+        };
+        // Persist latest cookies & history before spawning so the new window inherits logins.
+        if idx == self.active_tab {
+            if let Some(wv) = &self.active_webview {
+                persist_session_cookies(wv);
+            }
+        } else if let Some((_, wv)) = self.parked_webviews.iter().find(|(id, _)| *id == tab_id) {
+            persist_session_cookies(wv);
+        }
+        self.net_provider.cookies.save();
+        self.history.save();
+
+        let scale = self.hidpi_scale.max(1.0) as f64;
+        let position = self.window.as_ref().map(|win| {
+            let origin = super::helpers::client_origin_on_screen(&**win);
+            let x = origin.x + drop_pos.x.round() as i32 - (80.0 * scale).round() as i32;
+            let y = origin.y + drop_pos.y.round() as i32 - (20.0 * scale).round() as i32;
+            (x, y)
+        });
+        let cur_w = (self.win_size.width as f64 / scale).round() as u32;
+        let cur_h = (self.win_size.height as f64 / scale).round() as u32;
+        let size = if self.maximized {
+            Some((cur_w.clamp(520, 1280), cur_h.clamp(360, 820)))
+        } else {
+            Some((cur_w.max(520), cur_h.max(360)))
+        };
+
+        let tab = &self.tabs[idx];
+        let launch = super::LaunchOptions {
+            initial_url: Some(tab.url.clone()),
+            new_window: true,
+            js_mode: tab.js_mode,
+            reader_mode: tab.reader_mode,
+            zoom: ((tab.zoom - 1.0).abs() > 0.001).then_some(tab.zoom),
+            position,
+            size,
+        };
+        let spawned = std::env::current_exe()
+            .and_then(|exe| std::process::Command::new(exe).args(launch.to_args()).spawn())
+            .is_ok();
+        if spawned {
+            self.set_status_note("새 창으로 분리됨");
+            self.remove_tab(idx, None, false);
+        } else {
+            self.set_status_note("새 창 열기 실패");
+            self.rebuild_chrome();
+        }
+    }
+
+    /// Spawns a fresh browser window (`Ctrl+N` / palette), keeping logins & size consistent.
+    pub(super) fn open_new_window(&mut self, url: Option<&str>) {
+        if let Some(wv) = &self.active_webview {
+            persist_session_cookies(wv);
+        }
+        self.net_provider.cookies.save();
+        self.history.save();
+        let scale = self.hidpi_scale.max(1.0) as f64;
+        let cur_w = (self.win_size.width as f64 / scale).round() as u32;
+        let cur_h = (self.win_size.height as f64 / scale).round() as u32;
+        let size = if self.maximized {
+            Some((cur_w.clamp(520, 1280), cur_h.clamp(360, 820)))
+        } else {
+            Some((cur_w.max(520), cur_h.max(360)))
+        };
+        let launch = super::LaunchOptions {
+            initial_url: url.map(str::to_string),
+            new_window: true,
+            size,
+            ..Default::default()
+        };
+        if std::env::current_exe()
+            .and_then(|exe| std::process::Command::new(exe).args(launch.to_args()).spawn())
+            .is_err()
+        {
+            self.set_status_note("새 창 열기 실패");
+            self.rebuild_chrome();
+        }
+    }
+
     /// Back (`forward == false`) or forward one history entry, restoring its scroll position.
     pub(super) fn history_step(&mut self, forward: bool) {
         self.ensure_active_valid();
@@ -709,41 +816,8 @@ impl BrowserApp {
             if can_step {
                 let res = if forward { wv.go_forward() } else { wv.go_back() };
                 if res.is_ok() {
-                    // Keep tab stacks in sync optimistically; WebViewPageLoad
-                    // will correct tab.url asynchronously when the page lands.
-                    let scroll_y = self.current_scroll_y();
-                    let cur = self.tabs[idx].url.clone();
-                    // Move current URL to the opposite stack as a placeholder so
-                    // rapid back/forward doesn't desync; real URL arrives via event.
-                    if forward {
-                        let entry = self.tabs[idx].history_forward.pop();
-                        if let Some(e) = entry {
-                            let cur_js = self.tabs[idx].js_mode;
-                            let cur_force = self.tabs[idx].force_blitz;
-                            self.tabs[idx].history_back.push(HistoryEntry {
-                                url: cur,
-                                scroll_y,
-                                js_mode: cur_js,
-                                force_blitz: cur_force,
-                            });
-                            self.tabs[idx].url = e.url;
-                            self.tabs[idx].scroll_y = e.scroll_y;
-                        }
-                    } else {
-                        let entry = self.tabs[idx].history_back.pop();
-                        if let Some(e) = entry {
-                            let cur_js = self.tabs[idx].js_mode;
-                            let cur_force = self.tabs[idx].force_blitz;
-                            self.tabs[idx].history_forward.push(HistoryEntry {
-                                url: cur,
-                                scroll_y,
-                                js_mode: cur_js,
-                                force_blitz: cur_force,
-                            });
-                            self.tabs[idx].url = e.url;
-                            self.tabs[idx].scroll_y = e.scroll_y;
-                        }
-                    }
+                    // Let WebView2's own history stack and `WebViewPageLoad` drive `tab.url`;
+                    // mutating `tab.history_back/forward` here would pop pre-WebView entries.
                     self.rebuild_chrome();
                     return;
                 }
