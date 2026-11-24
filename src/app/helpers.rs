@@ -62,6 +62,181 @@ pub(super) fn focus_main_window(win: &dyn winit::window::Window, activate: bool)
     }
 }
 
+/// True when the main winit window itself currently owns OS keyboard focus (not a child WebView2
+/// HWND or another application). Used so clicking `#url-bar` after interacting with a JS-mode
+/// WebView2 page is reliably treated as an unfocused first click (select-all).
+pub(super) fn main_window_has_keyboard_focus(win: &dyn winit::window::Window) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn GetFocus() -> isize;
+        }
+        if let Ok(handle) = win.window_handle()
+            && let RawWindowHandle::Win32(h) = handle.as_raw()
+        {
+            return unsafe { GetFocus() == h.hwnd.get() };
+        }
+        true
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        win.has_focus()
+    }
+}
+
+/// Dangerous executable / script extensions that must never auto-download or auto-launch.
+pub(super) fn is_dangerous_download_ext(filename: &str) -> bool {
+    let trimmed = filename.trim().trim_end_matches('.');
+    let Some((_, ext)) = trimmed.rsplit_once('.') else {
+        return false;
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "exe"
+            | "msi"
+            | "msp"
+            | "bat"
+            | "cmd"
+            | "com"
+            | "pif"
+            | "scr"
+            | "ps1"
+            | "vbs"
+            | "vbe"
+            | "js"
+            | "jse"
+            | "wsf"
+            | "wsh"
+            | "hta"
+            | "lnk"
+            | "reg"
+            | "dll"
+            | "cpl"
+            | "jar"
+            | "app"
+            | "command"
+            | "sh"
+    )
+}
+
+/// Best-effort human-readable filename from a download path or URL.
+pub(super) fn download_display_name(path: Option<&std::path::Path>, url: &str) -> String {
+    if let Some(name) = path
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .filter(|s| !s.is_empty())
+    {
+        return name.to_string();
+    }
+    if let Ok(parsed) = Url::parse(url)
+        && let Some(seg) = parsed.path_segments().and_then(|mut s| s.next_back())
+        && !seg.is_empty()
+    {
+        return url::form_urlencoded::parse(format!("k={seg}").as_bytes())
+            .next()
+            .map(|(_, v)| v.into_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| seg.to_string());
+    }
+    "download".to_string()
+}
+
+/// Opens a completed non-executable downloaded file with the OS default application.
+pub(super) fn open_downloaded_file(path: &std::path::Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    if let Some(name) = path.file_name().and_then(|n| n.to_str())
+        && is_dangerous_download_ext(name)
+    {
+        return false;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name = "shell32")]
+        unsafe extern "system" {
+            fn ShellExecuteW(
+                hwnd: isize,
+                lp_operation: *const u16,
+                lp_file: *const u16,
+                lp_parameters: *const u16,
+                lp_directory: *const u16,
+                n_show_cmd: i32,
+            ) -> isize;
+        }
+        let op: Vec<u16> = "open\0".encode_utf16().collect();
+        let file: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let res = unsafe { ShellExecuteW(0, op.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), 1) };
+        res > 32
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(path).spawn().is_ok()
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open").arg(path).spawn().is_ok()
+    }
+}
+
+/// Reveals a downloaded file in the OS file manager (Explorer / Finder), selecting it.
+pub(super) fn reveal_in_file_manager(path: &std::path::Path) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        if path.exists() {
+            let mut arg = std::ffi::OsString::from("/select,");
+            arg.push(path.as_os_str());
+            return std::process::Command::new("explorer.exe").arg(arg).spawn().is_ok();
+        }
+        if let Some(parent) = path.parent().filter(|p| p.is_dir()) {
+            return std::process::Command::new("explorer.exe").arg(parent).spawn().is_ok();
+        }
+        open_downloads_folder()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if path.exists() {
+            std::process::Command::new("open").arg("-R").arg(path).spawn().is_ok()
+        } else {
+            open_downloads_folder()
+        }
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        let dir = path.parent().filter(|p| p.is_dir());
+        if let Some(d) = dir {
+            std::process::Command::new("xdg-open").arg(d).spawn().is_ok()
+        } else {
+            open_downloads_folder()
+        }
+    }
+}
+
+/// Opens the user's Downloads folder in the OS file manager.
+pub(super) fn open_downloads_folder() -> bool {
+    let dir = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(|h| std::path::PathBuf::from(h).join("Downloads"));
+    let Some(dir) = dir.filter(|d| d.is_dir()) else {
+        return false;
+    };
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer.exe").arg(dir).spawn().is_ok()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(dir).spawn().is_ok()
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open").arg(dir).spawn().is_ok()
+    }
+}
+
 /// Lets cached `file://` favicons decode before a freshly built UI document is shown, so
 /// icons don't flicker on every chrome rebuild. Bounded to 25 ms, and skips icon URLs that
 /// previously failed to decode so corrupt cached files never stall the UI thread.
@@ -517,5 +692,25 @@ mod tests {
         doc.resolve(0.0);
         doc.scroll_viewport_by(0.0, -120.0);
         assert!(doc.viewport_scroll().y > 100.0, "{:?}", doc.viewport_scroll());
+    }
+
+    #[test]
+    fn dangerous_download_extensions_are_blocked_while_documents_are_allowed() {
+        assert!(is_dangerous_download_ext("installer.exe"));
+        assert!(is_dangerous_download_ext("SETUP.MSI"));
+        assert!(is_dangerous_download_ext("payload.bat."));
+        assert!(is_dangerous_download_ext("script.ps1"));
+        assert!(is_dangerous_download_ext("macro.vbs"));
+        assert!(is_dangerous_download_ext("shortcut.lnk"));
+        assert!(!is_dangerous_download_ext("report.pdf"));
+        assert!(!is_dangerous_download_ext("export.xlsx"));
+        assert!(!is_dangerous_download_ext("data.csv"));
+        assert!(!is_dangerous_download_ext("archive.zip"));
+        assert!(!is_dangerous_download_ext("photo.png"));
+        assert!(!is_dangerous_download_ext("README"));
+        assert_eq!(
+            download_display_name(None, "https://example.com/files/quarterly%20report.pdf?dl=1"),
+            "quarterly report.pdf"
+        );
     }
 }

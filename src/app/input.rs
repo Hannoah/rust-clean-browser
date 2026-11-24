@@ -2,8 +2,8 @@
 //! window resize / drag.
 
 use super::helpers::{
-    RESIZE_EDGE, focus_main_window, is_primary_mouse_button_down, mouse_button, normalize_url_input, pointer_event,
-    primary_modifier, resize_cursor, wheel_delta,
+    RESIZE_EDGE, focus_main_window, is_primary_mouse_button_down, main_window_has_keyboard_focus, mouse_button,
+    normalize_url_input, pointer_event, primary_modifier, resize_cursor, wheel_delta,
 };
 use super::{BookmarkDrag, BrowserApp, TabDrag};
 use crate::chrome_ui::TITLEBAR_HEIGHT;
@@ -38,6 +38,12 @@ impl BrowserApp {
                     need_chrome = true;
                 }
                 self.url_bar_select_all_on_click = None;
+                self.url_bar_just_selected_all = None;
+                if self.chrome_focused {
+                    self.chrome_focused = false;
+                    self.chrome_doc.clear_focus();
+                    self.request_redraw();
+                }
                 if let Some(drag) = self.bm_drag.take()
                     && drag.active
                 {
@@ -170,20 +176,9 @@ impl BrowserApp {
                     if (dx * dx + dy * dy) < threshold * threshold {
                         return;
                     }
-                    // Intentional drag inside `#url-bar`: anchor selection at `start_pos` and let
-                    // normal pointer-move drag selection proceed.
+                    // Intentional drag inside `#url-bar`: cancel click-to-select-all and let
+                    // the original `PointerDown` from `Pressed` extend character selection cleanly.
                     self.url_bar_select_all_on_click = None;
-                    let id = pointer_source_to_blitz(&source);
-                    let down_ev = pointer_event(
-                        id,
-                        primary,
-                        self.coords_for(start_pos, true),
-                        MouseEventButton::Main,
-                        self.buttons,
-                        self.mods(),
-                        pointer_source_to_blitz_details(&source),
-                    );
-                    self.dispatch_to(true, UiEvent::PointerDown(down_ev));
                 }
                 let id = pointer_source_to_blitz(&source);
                 let now_in_chrome = self.is_in_chrome(position);
@@ -241,16 +236,19 @@ impl BrowserApp {
                 }
 
                 let in_chrome = self.is_in_chrome(position);
-                let mut select_all_url_bar_now = false;
+                let mut force_url_caret_at_pos = false;
                 if state == ElementState::Pressed {
-                    let was_url_focused = self.url_bar_focused();
+                    let win_had_kbd_focus = self.window.as_deref().is_none_or(main_window_has_keyboard_focus);
+                    let was_url_focused = self.url_bar_focused() && win_had_kbd_focus;
                     let hit_url_bar = in_chrome && self.is_url_bar_at(position);
+                    let hit_exact_url_input = hit_url_bar && self.is_exact_url_input_at(position);
                     if !self.has_find_bar() {
                         self.close_popup();
                     }
                     if !hit_url_bar {
                         self.chrome_doc.clear_focus();
                         self.url_bar_select_all_on_click = None;
+                        self.url_bar_just_selected_all = None;
                     }
                     if in_chrome && let Some(doc) = &mut self.tabs[self.active_tab].doc {
                         doc.clear_focus();
@@ -265,9 +263,22 @@ impl BrowserApp {
                     }
                     if btn == MouseEventButton::Main {
                         if hit_url_bar && !was_url_focused {
-                            self.suggest_query.clear();
+                            self.sync_suggest_query_to_url_bar();
                             self.url_bar_select_all_on_click = Some(position);
-                            select_all_url_bar_now = true;
+                            self.url_bar_just_selected_all = None;
+                            if !hit_exact_url_input {
+                                force_url_caret_at_pos = true;
+                            }
+                        } else if hit_url_bar && was_url_focused {
+                            let just_selected = self
+                                .url_bar_just_selected_all
+                                .take()
+                                .is_some_and(|t| t.elapsed().as_millis() < 600);
+                            if just_selected || !hit_exact_url_input {
+                                force_url_caret_at_pos = true;
+                            }
+                        } else {
+                            self.url_bar_just_selected_all = None;
                         }
                         self.tab_drag = if in_chrome {
                             self.tab_index_at(position).map(|idx| TabDrag {
@@ -337,12 +348,15 @@ impl BrowserApp {
                         ElementState::Released => UiEvent::PointerUp(pev),
                     },
                 );
-                if select_all_url_bar_now
-                    || (state == ElementState::Released
-                        && btn == MouseEventButton::Main
-                        && self.url_bar_select_all_on_click.take().is_some())
+                if force_url_caret_at_pos {
+                    self.place_url_bar_caret_at(position);
+                }
+                if state == ElementState::Released
+                    && btn == MouseEventButton::Main
+                    && self.url_bar_select_all_on_click.take().is_some()
                 {
                     self.select_all_url_bar();
+                    self.url_bar_just_selected_all = Some(Instant::now());
                 }
                 self.process_app_events(event_loop);
                 self.request_redraw();
@@ -406,6 +420,7 @@ impl BrowserApp {
             KeyCode::KeyK => self.open_command_palette(event_loop),
             KeyCode::KeyP if shift => self.open_command_palette(event_loop),
             KeyCode::KeyF => self.open_find_bar(event_loop),
+            KeyCode::KeyJ => self.toggle_downloads_popup(event_loop),
             KeyCode::KeyH => self.navigate_current("rust://history"),
             KeyCode::KeyB if shift => self.toggle_bookmarks_bar(),
             KeyCode::KeyQ if cfg!(target_os = "macos") => self.exit_app(event_loop),
@@ -736,6 +751,15 @@ impl BrowserApp {
             node_id = node.parent;
         }
         false
+    }
+
+    /// True when `pos` lands directly on the `<input id="url-bar">` box (not `.omni` padding/icons).
+    fn is_exact_url_input_at(&self, pos: PhysicalPosition<f64>) -> bool {
+        let l: LogicalPosition<f32> = pos.to_logical(self.hidpi_scale as f64);
+        let Some(url_id) = self.chrome_doc.get_element_by_id("url-bar") else {
+            return false;
+        };
+        self.chrome_doc.element_from_point(l.x, l.y) == Some(url_id)
     }
 
     fn update_link_hover(&mut self, in_chrome: bool) {
