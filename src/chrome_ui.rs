@@ -17,6 +17,27 @@ pub const PALETTE_WIDTH: u32 = 560;
 pub const PALETTE_MAX_HEIGHT: u32 = 480;
 pub const FIND_BAR_WIDTH: u32 = 388;
 pub const FIND_BAR_HEIGHT: u32 = 48;
+pub const DOWNLOADS_POPUP_WIDTH: u32 = 388;
+pub const DOWNLOADS_POPUP_MAX_HEIGHT: u32 = 440;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadStatus {
+    InProgress,
+    Completed,
+    Failed,
+    Blocked,
+}
+
+#[derive(Debug, Clone)]
+pub struct DownloadItem {
+    pub id: u64,
+    pub url: String,
+    pub filename: String,
+    pub path: Option<std::path::PathBuf>,
+    pub status: DownloadStatus,
+    pub size_bytes: Option<u64>,
+    pub started_at: u64,
+}
 
 pub const fn chrome_height(show_bookmarks_bar: bool) -> u32 {
     TITLEBAR_HEIGHT + TOOLBAR_HEIGHT + if show_bookmarks_bar { BMBAR_HEIGHT } else { 0 }
@@ -228,7 +249,14 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--fram
 .ib.off { color: var(--text-3); opacity: 0.42; }
 .ib.off:hover { background: transparent; color: var(--text-3); }
 .ib.on { color: var(--accent); background: var(--accent-bg); }
+.ib.dl-done { color: var(--green); background: var(--green-bg); }
 .ib.star-on { color: #f59e0b; }
+.dl-dot {
+  position: absolute; top: 5px; right: 5px; width: 7px; height: 7px;
+  border-radius: 50%; border: 1.5px solid var(--surface);
+}
+.dl-dot.active { background: var(--accent); }
+.dl-dot.done { background: var(--green); }
 
 /* ── Elevated Omnibox Pill ── */
 .omni {
@@ -355,6 +383,10 @@ pub struct ChromeRenderState<'a> {
     pub drop_target_folder: Option<&'a str>,
     /// Tab ID currently dragged outside the tab strip (releasing opens it in a new window).
     pub detaching_tab_id: Option<u64>,
+    /// Number of active in-progress downloads (lights up the toolbar download icon).
+    pub downloads_in_progress: usize,
+    /// Number of newly finished downloads not yet viewed in the Downloads popup.
+    pub downloads_unseen: usize,
 }
 
 fn spinner_html(dark_mode: bool) -> String {
@@ -608,17 +640,27 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
         format!("{:.0} MB", state.working_set_mb)
     };
 
+    let (dl_cls, dl_dot) = if state.downloads_in_progress > 0 {
+        ("ib on", r#"<span class="dl-dot active"></span>"#)
+    } else if state.downloads_unseen > 0 {
+        ("ib dl-done", r#"<span class="dl-dot done"></span>"#)
+    } else {
+        ("ib", "")
+    };
+
     let _ = write!(
         h,
         r#"{pdf_btn}<div class="{engine_cls}" data-action="toggle-js">{engine_svg}<span>{engine_label}</span></div>
   <div class="{shield_cls}" data-action="toggle-filter">{shield_svg}<span>{shield_label}</span></div>
   <div class="pill num" data-action="trim-memory">{cpu_svg}<span>{ram_label}</span></div>
   <div class="vsep"></div>
+  <div class="{dl_cls}" data-action="open-downloads" title="다운로드 목록 (Ctrl+J)">{dl_svg}{dl_dot}</div>
   <div class="ib" data-action="open-find">{find_svg}</div>
   <div class="ib" data-action="nav:rust://history">{hist_svg}</div>
   <div class="ib" data-action="nav:rust://bookmarks">{bm_svg}</div>
 </div>"#,
         cpu_svg = svg(Icon::Cpu, 13),
+        dl_svg = svg(Icon::Download, 14),
         find_svg = svg(Icon::Search, 14),
         hist_svg = svg(Icon::History, 14),
         bm_svg = svg(Icon::Bookmark, 14),
@@ -1097,6 +1139,208 @@ pub fn render_find_bar_html(query: &str, count_label: &str, no_match: bool) -> S
         up = svg(Icon::ChevronUp, 14),
         down = svg(Icon::ChevronDown, 14),
         close = svg(Icon::Close, 13),
+    );
+    h
+}
+
+// ── Downloads Popup (`Ctrl+J` / Toolbar Download Button) ──
+
+pub fn downloads_popup_height(item_count: usize) -> u32 {
+    if item_count == 0 {
+        return 174;
+    }
+    let rows = (item_count.min(6) as u32) * 58;
+    (44 + rows + 14 + 38).clamp(174, DOWNLOADS_POPUP_MAX_HEIGHT)
+}
+
+fn format_file_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.2} GB", b / GB)
+    } else if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.0} KB", (b / KB).max(1.0))
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+const DOWNLOADS_CSS: &str = r#"
+html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surface); user-select: none; }
+.dl-shell {
+  display: flex; flex-direction: column; width: 100%; height: 100%;
+  border: 1px solid var(--border); background: var(--surface);
+}
+.dl-hdr {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 44px; padding: 0 10px 0 14px; border-bottom: 1px solid var(--divider);
+  background: var(--surface-2); flex-shrink: 0;
+}
+.dl-title { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 700; color: var(--text); }
+.dl-title-ico { color: var(--accent); display: inline-flex; }
+.dl-hdr-acts { display: flex; align-items: center; gap: 4px; }
+.dl-hbtn {
+  display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 8px;
+  border-radius: 7px; font-size: 11.5px; font-weight: 500; color: var(--text-2);
+}
+.dl-hbtn:hover { background: var(--hover); color: var(--text); }
+.dl-list { flex: 1; min-height: 0; overflow-y: auto; padding: 7px; }
+.dl-row {
+  display: flex; align-items: center; gap: 10px; min-height: 54px;
+  padding: 8px 10px; border-radius: 10px; border: 1px solid transparent;
+}
+.dl-row:hover { background: var(--hover); border-color: var(--divider); }
+.dl-ico {
+  width: 32px; height: 32px; border-radius: 9px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--surface-3); color: var(--text-2); flex-shrink: 0;
+}
+.dl-ico.prog { background: var(--accent-bg); color: var(--accent); }
+.dl-ico.done { background: var(--green-bg); color: var(--green); }
+.dl-ico.fail { background: var(--danger-bg); color: var(--danger); }
+.dl-ico.block { background: var(--amber-bg); color: var(--amber); }
+.dl-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.dl-name { font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; }
+.dl-meta { font-size: 11px; color: var(--text-2); white-space: nowrap; overflow: hidden; }
+.dl-meta.done { color: var(--green-text); }
+.dl-meta.fail { color: var(--danger); }
+.dl-meta.block { color: var(--amber-text); }
+.dl-acts { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.dl-abtn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  height: 26px; padding: 0 8px; border-radius: 7px;
+  border: 1px solid var(--border); background: var(--surface);
+  font-size: 11px; font-weight: 600; color: var(--text);
+}
+.dl-abtn:hover { background: var(--accent-bg); border-color: var(--accent); color: var(--accent-text); }
+.dl-abtn.icon { width: 26px; padding: 0; color: var(--text-2); }
+.dl-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  padding: 26px 16px; text-align: center; color: var(--text-3); font-size: 12.5px;
+}
+.dl-empty-sub { font-size: 11.5px; opacity: 0.85; }
+.dl-ftr {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 38px; padding: 0 12px; border-top: 1px solid var(--divider);
+  background: var(--surface-2); font-size: 11.5px; color: var(--text-2); flex-shrink: 0;
+}
+.dl-flink { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 7px; font-weight: 500; }
+.dl-flink:hover { background: var(--hover); color: var(--text); }
+"#;
+
+pub fn render_downloads_popup_html(items: &[DownloadItem]) -> String {
+    let mut h = String::with_capacity(4096 + items.len() * 420);
+    h.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>");
+    h.push_str(THEME_CSS);
+    h.push_str(DOWNLOADS_CSS);
+    let count_badge = if items.is_empty() {
+        String::new()
+    } else {
+        format!(r#" <span class="num">({})</span>"#, items.len())
+    };
+    let clear_btn = if items.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"<div class="dl-hbtn" data-action="dl-clear">{}<span>지우기</span></div>"#,
+            svg(Icon::Trash, 12)
+        )
+    };
+    let _ = write!(
+        h,
+        r#"</style></head><body><div class="dl-shell">
+<div class="dl-hdr">
+  <div class="dl-title"><span class="dl-title-ico">{dl_ico}</span><span>다운로드{count_badge}</span></div>
+  <div class="dl-hdr-acts">{clear_btn}<div class="dl-hbtn" data-action="dl-close">{close_ico}</div></div>
+</div>
+<div class="dl-list">"#,
+        dl_ico = svg(Icon::Download, 14),
+        close_ico = svg(Icon::Close, 12),
+    );
+    if items.is_empty() {
+        let _ = write!(
+            h,
+            r#"<div class="dl-empty">{}<div>최근 다운로드한 파일이 없습니다.</div><div class="dl-empty-sub">파일을 다운로드하면 상태와 저장 위치가 여기에 표시됩니다.</div></div>"#,
+            svg(Icon::Download, 22),
+        );
+    } else {
+        let folder_ico = svg(Icon::Folder, 12);
+        for item in items {
+            let host = short_host(&item.url);
+            let ago = format_relative_time(item.started_at);
+            let (ico_cls, ico_svg, meta_cls, meta_text) = match item.status {
+                DownloadStatus::InProgress => (
+                    "dl-ico prog",
+                    svg(Icon::Download, 15),
+                    "dl-meta",
+                    if host.is_empty() {
+                        "다운로드 중…".to_string()
+                    } else {
+                        format!("다운로드 중… · {host}")
+                    },
+                ),
+                DownloadStatus::Completed => {
+                    let sz = item
+                        .size_bytes
+                        .map(|b| format!(" · {}", format_file_size(b)))
+                        .unwrap_or_default();
+                    (
+                        "dl-ico done",
+                        svg(Icon::Check, 15),
+                        "dl-meta done num",
+                        format!("완료{sz} · {ago}"),
+                    )
+                }
+                DownloadStatus::Failed => (
+                    "dl-ico fail",
+                    svg(Icon::AlertTriangle, 15),
+                    "dl-meta fail",
+                    if host.is_empty() {
+                        format!("저장 실패 · {ago}")
+                    } else {
+                        format!("저장 실패 · {host}")
+                    },
+                ),
+                DownloadStatus::Blocked => (
+                    "dl-ico block",
+                    svg(Icon::ShieldCheck, 15),
+                    "dl-meta block",
+                    if host.is_empty() {
+                        "보안상 차단됨 (실행 파일)".to_string()
+                    } else {
+                        format!("보안상 차단됨 (실행 파일) · {host}")
+                    },
+                ),
+            };
+            let acts = if item.status == DownloadStatus::Completed && item.path.is_some() {
+                format!(
+                    r#"<div class="dl-acts"><div class="dl-abtn" data-action="dl-open:{}">열기</div><div class="dl-abtn icon" data-action="dl-reveal:{}" title="폴더에서 보기">{folder_ico}</div></div>"#,
+                    item.id, item.id
+                )
+            } else {
+                String::new()
+            };
+            let _ = write!(
+                h,
+                r#"<div class="dl-row"><div class="{ico_cls}">{ico_svg}</div><div class="dl-body"><div class="dl-name">{name}</div><div class="{meta_cls}">{meta}</div></div>{acts}</div>"#,
+                name = html_escape(&truncate_chars(&item.filename, 34)),
+                meta = html_escape(&meta_text),
+            );
+        }
+    }
+    let _ = write!(
+        h,
+        r#"</div>
+<div class="dl-ftr">
+  <div class="dl-flink" data-action="dl-folder">{folder}<span>다운로드 폴더 열기</span></div>
+  <span><kbd>Ctrl+J</kbd></span>
+</div>
+</div></body></html>"#,
+        folder = svg(Icon::Folder, 13),
     );
     h
 }
@@ -2024,6 +2268,8 @@ mod tests {
             url_override: Some("typed"),
             drop_target_folder: None,
             detaching_tab_id: None,
+            downloads_in_progress: 0,
+            downloads_unseen: 0,
         });
         assert!(html.contains(r#"value="typed""#));
         assert!(html.contains("T&amp;T"));
@@ -2056,6 +2302,8 @@ mod tests {
             url_override: None,
             drop_target_folder: None,
             detaching_tab_id: None,
+            downloads_in_progress: 0,
+            downloads_unseen: 0,
         });
         assert!(html.contains(r#"class="fav-spin""#));
         assert!(html.contains("@keyframes tab-spin"));
@@ -2191,7 +2439,23 @@ mod tests {
             url_override: None,
             drop_target_folder: None,
             detaching_tab_id: None,
+            downloads_in_progress: 0,
+            downloads_unseen: 1,
         });
+        assert!(chrome_html.contains("open-downloads"));
+        let dl_html = render_downloads_popup_html(&[DownloadItem {
+            id: 1,
+            url: "https://example.com/report.pdf".into(),
+            filename: "report.pdf".into(),
+            path: Some(std::path::PathBuf::from("report.pdf")),
+            status: DownloadStatus::Completed,
+            size_bytes: Some(1_572_864),
+            started_at: 0,
+        }]);
+        assert!(dl_html.contains("report.pdf"));
+        assert!(dl_html.contains("1.5 MB"));
+        assert!(dl_html.contains("dl-open:1"));
+        assert!(dl_html.contains("dl-reveal:1"));
         let mut cdoc = blitz_html::HtmlDocument::from_html(
             &chrome_html,
             blitz_dom::DocumentConfig {

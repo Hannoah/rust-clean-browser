@@ -3,10 +3,11 @@
 use super::helpers::{arg_to_url, focus_main_window, primary_modifier, requires_js_engine};
 use super::{AppEvent, BrowserApp};
 use crate::bookmarks::BookmarkRootKind;
-use crate::chrome_ui::short_host;
+use crate::chrome_ui::{DownloadItem, DownloadStatus};
 use crate::favicon;
 use blitz_dom::Document;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use winit::event_loop::ActiveEventLoop;
 
 impl BrowserApp {
@@ -152,6 +153,7 @@ impl BrowserApp {
                 }
                 "open-palette" => self.open_command_palette(event_loop),
                 "open-find" => self.open_find_bar(event_loop),
+                "open-downloads" => self.toggle_downloads_popup(event_loop),
                 "cycle-theme" => self.cycle_theme(),
                 "toggle-bm-bar" => self.toggle_bookmarks_bar(),
                 "trim-memory" => {
@@ -478,22 +480,116 @@ impl BrowserApp {
                     self.zoom_by_notches(-dy * zoom / 100.0);
                 }
                 AppEvent::ZoomReset => self.set_zoom(1.0),
-                AppEvent::DownloadDone { path, success } => {
-                    let name = path
-                        .as_ref()
-                        .and_then(|p| p.file_name())
-                        .map(|n| n.to_string_lossy().into_owned());
-                    let msg = match (success, name) {
-                        (true, Some(n)) => format!("다운로드 폴더에 저장됨: {n}"),
-                        (true, None) => "저장 완료".to_string(),
-                        (false, _) => "저장 실패".to_string(),
+                AppEvent::DownloadStarted { url, path } => {
+                    let filename = super::helpers::download_display_name(Some(path.as_path()), &url);
+                    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                    let id = self.next_download_id;
+                    self.next_download_id += 1;
+                    self.downloads.insert(
+                        0,
+                        DownloadItem {
+                            id,
+                            url,
+                            filename: filename.clone(),
+                            path: Some(path),
+                            status: DownloadStatus::InProgress,
+                            size_bytes: None,
+                            started_at: now,
+                        },
+                    );
+                    self.downloads.truncate(50);
+                    self.set_status_note(&format!("다운로드 중: {filename}"));
+                    self.rebuild_chrome();
+                    self.open_downloads_popup(event_loop, false);
+                }
+                AppEvent::DownloadDone { url, path, success } => {
+                    // `wry` attaches WebView2's `StateChanged` listener before invoking
+                    // `download_started_handler`; cancelling a blocked download therefore fires
+                    // a spurious `DownloadDone { success: false }` right after `DownloadBlocked`.
+                    if !success
+                        && self
+                            .downloads
+                            .iter()
+                            .take(4)
+                            .any(|d| d.status == DownloadStatus::Blocked && d.url == url)
+                    {
+                        continue;
+                    }
+                    let size_bytes = path
+                        .as_deref()
+                        .filter(|_| success)
+                        .and_then(|p| std::fs::metadata(p).ok().map(|m| m.len()));
+                    let existing = self.downloads.iter_mut().find(|d| {
+                        d.status == DownloadStatus::InProgress && ((path.is_some() && d.path == path) || d.url == url)
+                    });
+                    let filename = if let Some(item) = existing {
+                        if let Some(p) = path {
+                            item.filename = super::helpers::download_display_name(Some(p.as_path()), &item.url);
+                            item.path = Some(p);
+                        }
+                        item.status = if success {
+                            DownloadStatus::Completed
+                        } else {
+                            DownloadStatus::Failed
+                        };
+                        item.size_bytes = size_bytes;
+                        item.filename.clone()
+                    } else {
+                        let filename = super::helpers::download_display_name(path.as_deref(), &url);
+                        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                        let id = self.next_download_id;
+                        self.next_download_id += 1;
+                        self.downloads.insert(
+                            0,
+                            DownloadItem {
+                                id,
+                                url,
+                                filename: filename.clone(),
+                                path,
+                                status: if success {
+                                    DownloadStatus::Completed
+                                } else {
+                                    DownloadStatus::Failed
+                                },
+                                size_bytes,
+                                started_at: now,
+                            },
+                        );
+                        self.downloads.truncate(50);
+                        filename
+                    };
+                    if success && !self.has_downloads_popup() {
+                        self.unseen_downloads = self.unseen_downloads.saturating_add(1);
+                    }
+                    let msg = if success {
+                        format!("다운로드 완료: {filename}")
+                    } else {
+                        format!("저장 실패: {filename}")
                     };
                     self.set_status_note(&msg);
                     self.rebuild_chrome();
+                    self.open_downloads_popup(event_loop, false);
                 }
-                AppEvent::DownloadBlocked(url) => {
-                    self.set_status_note(&format!("다운로드 차단됨: {}", short_host(&url)));
+                AppEvent::DownloadBlocked { url, filename } => {
+                    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                    let id = self.next_download_id;
+                    self.next_download_id += 1;
+                    self.downloads.insert(
+                        0,
+                        DownloadItem {
+                            id,
+                            url,
+                            filename: filename.clone(),
+                            path: None,
+                            status: DownloadStatus::Blocked,
+                            size_bytes: None,
+                            started_at: now,
+                        },
+                    );
+                    self.downloads.truncate(50);
+                    self.set_status_note(&format!("실행 파일 다운로드 차단됨: {filename}"));
                     self.rebuild_chrome();
+                    self.open_downloads_popup(event_loop, false);
                 }
                 AppEvent::ChromeAction(action) => self.handle_chrome_action(&action, event_loop),
                 AppEvent::OpenBookmarkPopup {

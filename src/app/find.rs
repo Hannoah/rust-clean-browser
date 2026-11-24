@@ -18,14 +18,26 @@ pub(super) struct FindMatch {
 }
 
 impl BrowserApp {
-    pub(super) fn open_find_bar(&mut self, event_loop: &dyn ActiveEventLoop) {
+    pub(super) fn select_all_find_input(&mut self) {
         if let Some(popup) = &mut self.popup
             && matches!(popup.kind, PopupKind::FindBar { .. })
+            && let Some(id) = popup.doc.get_element_by_id("find-input")
         {
-            if let Some(id) = popup.doc.get_element_by_id("find-input") {
-                popup.doc.set_focus_to(id);
-            }
-            popup.window.focus_window();
+            popup.doc.set_focus_to(id);
+            popup.doc.with_text_input(id, |mut driver| {
+                driver.select_all();
+            });
+            popup.window.request_redraw();
+        }
+    }
+
+    pub(super) fn open_find_bar(&mut self, event_loop: &dyn ActiveEventLoop) {
+        if let Some(popup) = &self.popup
+            && matches!(popup.kind, PopupKind::FindBar { .. })
+        {
+            let win = std::sync::Arc::clone(&popup.window);
+            self.select_all_find_input();
+            win.focus_window();
             return;
         }
         let scale = self.hidpi_scale.max(1.0) as f64;
@@ -177,6 +189,13 @@ impl BrowserApp {
                 true
             }
             KeyCode::Enter | KeyCode::NumpadEnter => {
+                if self
+                    .popup
+                    .as_ref()
+                    .is_some_and(|p| Self::is_input_composing(&p.doc, "find-input"))
+                {
+                    return false;
+                }
                 let shift = self.keyboard_modifiers.state().shift_key();
                 self.step_find_match(!shift);
                 true

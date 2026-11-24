@@ -245,21 +245,26 @@ impl BrowserApp {
                     NewWindowResponse::Deny
                 }
             })
-            // Drive-by downloads have no consent UI in this browser: deny and
-            // surface a toast instead of dropping files into Downloads silently.
-            // Exception: PDFs (the viewer's Save button, attachment/extensionless PDFs) save to Downloads.
+            // Allow normal file downloads with explicit UI visibility; block dangerous executable/script
+            // formats so drive-by downloads cannot silently drop executables into Downloads.
             .with_download_started_handler({
                 let dl_sources = Arc::clone(&self.pdf_sources);
-                move |url, _path| {
-                    if dl_sources.is_allowed_download(&url) {
-                        return true;
+                let bus_started = self.bus.clone();
+                move |url, path| {
+                    let filename = super::helpers::download_display_name(Some(path.as_path()), &url);
+                    if !dl_sources.is_allowed_download(&url) && super::helpers::is_dangerous_download_ext(&filename) {
+                        bus_dl.send(AppEvent::DownloadBlocked { url, filename });
+                        return false;
                     }
-                    bus_dl.send(AppEvent::DownloadBlocked(url));
-                    false
+                    bus_started.send(AppEvent::DownloadStarted {
+                        url,
+                        path: path.clone(),
+                    });
+                    true
                 }
             })
-            .with_download_completed_handler(move |_url, path, success| {
-                bus_done.send(AppEvent::DownloadDone { path, success });
+            .with_download_completed_handler(move |url, path, success| {
+                bus_done.send(AppEvent::DownloadDone { url, path, success });
             })
             .build_as_child(&win_handle);
 
@@ -804,6 +809,8 @@ impl BrowserApp {
     /// Back (`forward == false`) or forward one history entry, restoring its scroll position.
     pub(super) fn history_step(&mut self, forward: bool) {
         self.ensure_active_valid();
+        self.chrome_focused = false;
+        self.chrome_doc.clear_focus();
         let idx = self.active_tab;
         if self.tabs[idx].js_mode
             && let Some(wv) = &self.active_webview
@@ -855,6 +862,8 @@ impl BrowserApp {
     }
 
     pub(super) fn reload_active_tab(&mut self) {
+        self.chrome_focused = false;
+        self.chrome_doc.clear_focus();
         let idx = self.active_tab;
         if self.tabs[idx].js_mode {
             if let Some(wv) = &self.active_webview {

@@ -19,7 +19,9 @@ mod popup;
 mod suggest;
 
 use crate::bookmarks::{BookmarkNode, BookmarkRootKind, BookmarkStore};
-use crate::chrome_ui::{ChromeRenderState, chrome_height, render_chrome_html, render_link_preview_html};
+use crate::chrome_ui::{
+    ChromeRenderState, DownloadItem, DownloadStatus, chrome_height, render_chrome_html, render_link_preview_html,
+};
 use crate::cleaner::{build_reader_html_with_options, extract_title};
 use crate::events::{theme_to_color_scheme, winit_modifiers_to_kbt_modifiers};
 use crate::favicon;
@@ -40,7 +42,7 @@ use blitz_paint::paint_scene;
 use blitz_traits::events::{MouseEventButtons, UiEvent};
 use blitz_traits::net::{AbortController, Request};
 use blitz_traits::shell::{ColorScheme, ShellProvider, Viewport};
-use keyboard_types::{Code, Key, Modifiers as KbtModifiers, NamedKey};
+use keyboard_types::{Code, Key, Modifiers as KbtModifiers};
 use kurbo::{Affine, Rect};
 use peniko::Fill;
 use std::collections::VecDeque;
@@ -108,10 +110,19 @@ pub enum AppEvent {
     /// Raw `deltaY` of a Ctrl+wheel in a page (CSS px: Chromium divides it by the current zoom, 100 per notch at 100%).
     ZoomWheelPx(f32),
     ZoomReset,
-    /// A WebView download was denied for lack of a consent UI.
-    DownloadBlocked(String),
-    /// An allowed (PDF) download finished.
+    /// A download started in WebView2 (recorded immediately in the Downloads UI).
+    DownloadStarted {
+        url: String,
+        path: std::path::PathBuf,
+    },
+    /// A dangerous executable/script download was blocked by policy.
+    DownloadBlocked {
+        url: String,
+        filename: String,
+    },
+    /// A download finished (succeeded or failed).
     DownloadDone {
+        url: String,
         path: Option<std::path::PathBuf>,
         success: bool,
     },
@@ -328,8 +339,16 @@ pub struct BrowserApp {
     tab_drag: Option<TabDrag>,
     /// PDFs opened in the pdf.js annotator (see `pdfjs.rs`).
     pdf_sources: Arc<crate::pdfjs::PdfSources>,
-    /// Set when clicking an unfocused `#url-bar`, so a click without drag selects all text.
+    /// Set when clicking an unfocused `#url-bar`, so a click without drag selects all text on release.
     url_bar_select_all_on_click: Option<PhysicalPosition<f64>>,
+    /// Timestamp of the last click-to-select-all on `#url-bar` so an immediate 2nd click places
+    /// the caret cleanly instead of triggering blitz-dom's 500ms double-click word selection.
+    url_bar_just_selected_all: Option<Instant>,
+    /// Recent downloads (newest first), shown in the toolbar Downloads popup.
+    downloads: Vec<DownloadItem>,
+    next_download_id: u64,
+    /// Completed downloads since the user last opened the Downloads popup.
+    unseen_downloads: usize,
     /// Requested initial position (physical px) when launched via tab tear-off (`--pos`).
     initial_position: Option<PhysicalPosition<i32>>,
     /// Requested initial surface size (logical px) when launched via tab tear-off (`--size`).
@@ -438,6 +457,10 @@ impl BrowserApp {
             bm_drag: None,
             tab_drag: None,
             url_bar_select_all_on_click: None,
+            url_bar_just_selected_all: None,
+            downloads: Vec::new(),
+            next_download_id: 1,
+            unseen_downloads: 0,
             initial_position: launch.position.map(|(x, y)| PhysicalPosition::new(x, y)),
             initial_size: launch.size.map(|(w, h)| LogicalSize::new(w as f64, h as f64)),
         };
@@ -730,10 +753,10 @@ impl BrowserApp {
             self.update_window_title();
             return;
         }
-        // Keep whatever the user is typing (and focus / caret) when background events rebuild chrome.
+        // Keep whatever the user is typing (and focus / selection / scroll) when background events rebuild chrome.
         let typing = self.url_bar_focused().then(|| self.read_url_bar_text()).flatten();
-        let saved_sel_range = if typing.is_some() {
-            self.read_url_bar_selection()
+        let saved_url_state = if typing.is_some() {
+            self.read_url_bar_state()
         } else {
             None
         };
@@ -748,6 +771,11 @@ impl BrowserApp {
         } else {
             self.status_note.as_deref()
         };
+        let downloads_in_progress = self
+            .downloads
+            .iter()
+            .filter(|d| d.status == DownloadStatus::InProgress)
+            .count();
         let active = &self.tabs[self.active_tab];
         let (wv_back, wv_fwd) = self.active_webview.as_ref().map_or((false, false), |wv| {
             (wv.can_go_back().unwrap_or(false), wv.can_go_forward().unwrap_or(false))
@@ -771,6 +799,8 @@ impl BrowserApp {
             url_override: typing.as_deref(),
             drop_target_folder: drop_target,
             detaching_tab_id,
+            downloads_in_progress,
+            downloads_unseen: self.unseen_downloads,
         });
         self.update_window_title();
         if html == self.last_chrome_html {
@@ -786,7 +816,7 @@ impl BrowserApp {
         self.chrome_doc = doc;
         self.last_chrome_html = html;
         if let Some(text) = typing {
-            self.restore_url_bar_focus_and_caret(&text, saved_sel_range);
+            self.restore_url_bar_focus_and_caret(&text, saved_url_state);
         }
         self.request_redraw();
     }
@@ -894,7 +924,7 @@ impl BrowserApp {
 
     fn focus_url_bar(&mut self) {
         self.chrome_focused = true;
-        self.suggest_query.clear();
+        self.sync_suggest_query_to_url_bar();
         if let Some(doc) = &mut self.tabs[self.active_tab].doc {
             doc.clear_focus();
         }
@@ -906,6 +936,15 @@ impl BrowserApp {
         self.request_redraw();
     }
 
+    /// Snapshots the current trimmed `#url-bar` text into `suggest_query` so non-editing keys
+    /// (ArrowRight, End, Ctrl, Shift) right after focusing don't pop open the suggestion list.
+    pub(super) fn sync_suggest_query_to_url_bar(&mut self) {
+        self.suggest_query = self
+            .read_url_bar_text()
+            .map(|t| t.trim().to_string())
+            .unwrap_or_default();
+    }
+
     pub(super) fn select_all_url_bar(&mut self) {
         if let Some(url_id) = self.chrome_doc.get_element_by_id("url-bar") {
             self.chrome_doc.set_focus_to(url_id);
@@ -914,7 +953,48 @@ impl BrowserApp {
         }
     }
 
-    /// Trimmed text of a focused `<input id=...>` on a built-in `rust://` page (including IME preedit).
+    /// Places `#url-bar`'s caret directly at physical pointer position `pos`, clamping left/right
+    /// clicks on `.omni` padding/icons cleanly to the start/end of the URL.
+    pub(super) fn place_url_bar_caret_at(&mut self, pos: PhysicalPosition<f64>) {
+        let Some(url_id) = self.chrome_doc.get_element_by_id("url-bar") else {
+            return;
+        };
+        let scale = self.chrome_doc.viewport().scale_f64();
+        let logical_x = (pos.x / (self.hidpi_scale.max(1.0) as f64)) as f32;
+        let logical_y = (pos.y / (self.hidpi_scale.max(1.0) as f64)) as f32;
+        let Some((tx, ty, content_w, content_h)) = self.chrome_doc.get_node(url_id).and_then(|node| {
+            let ti = node.element_data()?.text_input_data()?;
+            let lay = ti.editor.try_layout()?;
+            let abs = node.absolute_position(0.0, 0.0);
+            let fl = node.final_layout();
+            let content_x = abs.x + fl.padding.left + fl.border.left;
+            let content_h = fl.content_box_height();
+            let content_w = fl.content_box_width();
+            let input_h = lay.height() / lay.scale();
+            let y_offset = ((content_h - input_h) / 2.0).max(0.0);
+            let content_y = abs.y + fl.padding.top + fl.border.top + y_offset;
+            let tx = (logical_x - content_x) as f64 * scale + (ti.scroll_offset as f64) * scale;
+            let ty = (logical_y - content_y) as f64 * scale;
+            Some((tx as f32, ty as f32, content_w, content_h))
+        }) else {
+            return;
+        };
+        self.chrome_doc.set_focus_to(url_id);
+        self.chrome_doc.with_text_input(url_id, |mut driver| {
+            driver.move_to_point(tx, ty);
+        });
+        if let Some(input) = self
+            .chrome_doc
+            .get_node_mut(url_id)
+            .and_then(|n| n.element_data_mut())
+            .and_then(|e| e.text_input_data_mut())
+        {
+            input.clamp_scroll_offset(content_w, content_h);
+        }
+    }
+
+    /// Trimmed text of a focused `<input id=...>` on a built-in `rust://` page, returning `None`
+    /// while an IME preedit syllable is active so Enter confirms IME instead of submitting.
     fn focused_builtin_input(&self, id: &str) -> Option<String> {
         let tab = &self.tabs[self.active_tab];
         if !tab.url.starts_with("rust://") {
@@ -926,6 +1006,9 @@ impl BrowserApp {
             return None;
         }
         let input = doc.get_node(sid)?.element_data()?.text_input_data()?;
+        if input.editor.is_composing() {
+            return None;
+        }
         Some(input.editor.raw_text().trim().to_string())
     }
 
@@ -935,73 +1018,47 @@ impl BrowserApp {
         }
     }
 
-    fn read_url_bar_selection(&self) -> Option<std::ops::Range<usize>> {
+    /// Captures `(anchor_byte, focus_byte, scroll_offset)` of `#url-bar` before a chrome rebuild.
+    fn read_url_bar_state(&self) -> Option<(usize, usize, f32)> {
         let url_id = self.chrome_doc.get_element_by_id("url-bar")?;
         let input = self.chrome_doc.get_node(url_id)?.element_data()?.text_input_data()?;
-        Some(input.editor.raw_selection().text_range())
+        let sel = input.editor.raw_selection();
+        Some((sel.anchor().index(), sel.focus().index(), input.scroll_offset))
     }
 
-    fn restore_url_bar_focus_and_caret(&mut self, text: &str, saved: Option<std::ops::Range<usize>>) {
+    fn restore_url_bar_focus_and_caret(&mut self, text: &str, saved: Option<(usize, usize, f32)>) {
         let Some(url_id) = self.chrome_doc.get_element_by_id("url-bar") else {
             return;
         };
         self.chrome_doc.set_focus_to(url_id);
-        let Some(range) = saved else {
-            self.dispatch_chrome_ui(UiEvent::KeyDown(synthetic_key(
-                Key::Named(NamedKey::End),
-                Code::End,
-                KbtModifiers::empty(),
-            )));
+        let Some((anchor, focus, saved_scroll)) = saved else {
+            self.chrome_doc.with_text_input(url_id, |mut driver| {
+                driver.move_to_text_end();
+            });
             return;
         };
-        if range.start == 0 && range.end == text.len() && !text.is_empty() {
-            self.dispatch_chrome_ui(UiEvent::KeyDown(synthetic_key(
-                Key::Character("a".to_string()),
-                Code::KeyA,
-                ACTION_MOD,
-            )));
-            return;
-        }
-        let pos = range.end.min(text.len());
-        if range.start == range.end && pos < text.len() && text.is_char_boundary(pos) {
-            let from_start = text[..pos].chars().count();
-            let from_end = text[pos..].chars().count();
-            if from_start <= from_end && from_start <= 256 {
-                self.dispatch_chrome_ui(UiEvent::KeyDown(synthetic_key(
-                    Key::Named(NamedKey::Home),
-                    Code::Home,
-                    KbtModifiers::empty(),
-                )));
-                for _ in 0..from_start {
-                    self.dispatch_chrome_ui(UiEvent::KeyDown(synthetic_key(
-                        Key::Named(NamedKey::ArrowRight),
-                        Code::ArrowRight,
-                        KbtModifiers::empty(),
-                    )));
-                }
-                return;
+        let len = text.len();
+        let a = anchor.min(len);
+        let f = focus.min(len);
+        self.chrome_doc.with_text_input(url_id, |mut driver| {
+            if a == 0 && f == len && !text.is_empty() {
+                driver.select_all();
+            } else if a == f && text.is_char_boundary(f) {
+                driver.move_to_byte(f);
+            } else if text.is_char_boundary(a) && text.is_char_boundary(f) {
+                driver.select_byte_range(a, f);
+            } else {
+                driver.move_to_text_end();
             }
-            if from_end <= 256 {
-                self.dispatch_chrome_ui(UiEvent::KeyDown(synthetic_key(
-                    Key::Named(NamedKey::End),
-                    Code::End,
-                    KbtModifiers::empty(),
-                )));
-                for _ in 0..from_end {
-                    self.dispatch_chrome_ui(UiEvent::KeyDown(synthetic_key(
-                        Key::Named(NamedKey::ArrowLeft),
-                        Code::ArrowLeft,
-                        KbtModifiers::empty(),
-                    )));
-                }
-                return;
+        });
+        if let Some(node) = self.chrome_doc.get_node_mut(url_id) {
+            let content_w = node.final_layout().content_box_width();
+            let content_h = node.final_layout().content_box_height();
+            if let Some(input) = node.element_data_mut().and_then(|e| e.text_input_data_mut()) {
+                input.scroll_offset = saved_scroll;
+                input.clamp_scroll_offset(content_w, content_h);
             }
         }
-        self.dispatch_chrome_ui(UiEvent::KeyDown(synthetic_key(
-            Key::Named(NamedKey::End),
-            Code::End,
-            KbtModifiers::empty(),
-        )));
     }
 
     fn read_url_bar_text(&self) -> Option<String> {
@@ -1010,20 +1067,18 @@ impl BrowserApp {
         Some(input.editor.raw_text().to_string())
     }
 
-    /// True when `#url-bar` has an in-progress IME preedit syllable (`raw_text` != committed `text`).
-    pub(super) fn url_bar_composing(&self) -> bool {
-        let Some(url_id) = self.chrome_doc.get_element_by_id("url-bar") else {
-            return false;
-        };
-        let Some(input) = self
-            .chrome_doc
-            .get_node(url_id)
+    /// True when `<input id=...>` inside `doc` has an active IME preedit composition.
+    pub(super) fn is_input_composing(doc: &HtmlDocument, id: &str) -> bool {
+        doc.get_element_by_id(id)
+            .and_then(|nid| doc.get_node(nid))
             .and_then(|n| n.element_data())
             .and_then(|e| e.text_input_data())
-        else {
-            return false;
-        };
-        input.editor.raw_text().len() != input.editor.text().to_string().len()
+            .is_some_and(|input| input.editor.is_composing())
+    }
+
+    /// True when `#url-bar` has an in-progress IME preedit syllable.
+    pub(super) fn url_bar_composing(&self) -> bool {
+        Self::is_input_composing(&self.chrome_doc, "url-bar")
     }
 
     fn dispatch_chrome_ui(&mut self, event: UiEvent) {
@@ -1245,5 +1300,54 @@ mod tests {
         let dashed = LaunchOptions::from_args(["--new-window".into(), "--".into(), "-weird.html".into()]);
         assert!(dashed.new_window);
         assert_eq!(dashed.initial_url.as_deref(), Some("-weird.html"));
+    }
+
+    #[test]
+    fn url_bar_direct_selection_and_ime_composing_work() {
+        let html = r#"<!DOCTYPE html><html><body><input id="url-bar" type="text" value="https://sas-demos.engage.sas.com/SASLanding/" style="width:400px;height:30px;border:none;padding:0;" /></body></html>"#;
+        let mut doc = HtmlDocument::from_html(
+            html,
+            DocumentConfig {
+                viewport: Some(Viewport::new(800, 80, 1.0, ColorScheme::Light)),
+                style_threading: StyleThreading::Sequential,
+                ..Default::default()
+            },
+        );
+        doc.resolve(0.0);
+        let id = doc.get_element_by_id("url-bar").expect("url-bar");
+        doc.set_focus_to(id);
+        assert!(!BrowserApp::is_input_composing(&doc, "url-bar"));
+
+        // Direct byte-range restoration preserves partial selection accurately (no 256-char cap).
+        doc.with_text_input(id, |mut driver| {
+            driver.select_byte_range(8, 17);
+        });
+        let range = doc
+            .get_node(id)
+            .unwrap()
+            .element_data()
+            .unwrap()
+            .text_input_data()
+            .unwrap()
+            .editor
+            .raw_selection()
+            .text_range();
+        assert_eq!(range, 8..17);
+
+        // Moving past text end lands cleanly at text length.
+        doc.with_text_input(id, |mut driver| {
+            driver.move_to_point(9999.0, 10.0);
+        });
+        let end_range = doc
+            .get_node(id)
+            .unwrap()
+            .element_data()
+            .unwrap()
+            .text_input_data()
+            .unwrap()
+            .editor
+            .raw_selection()
+            .text_range();
+        assert_eq!(end_range, 44..44);
     }
 }

@@ -8,8 +8,8 @@ use super::find::FindMatch;
 use super::helpers::{mouse_button, plain_coords, pointer_event, popup_window_style, primary_modifier, wheel_delta};
 use crate::bookmarks::{BookmarkNode, BookmarkRootKind};
 use crate::chrome_ui::{
-    POPUP_WIDTH, PaletteEntry, estimate_popup_height, render_bookmark_popup_html, render_suggest_popup_html,
-    suggest_popup_height,
+    DOWNLOADS_POPUP_WIDTH, POPUP_WIDTH, PaletteEntry, downloads_popup_height, estimate_popup_height,
+    render_bookmark_popup_html, render_downloads_popup_html, render_suggest_popup_html, suggest_popup_height,
 };
 use crate::events::{winit_ime_to_blitz, winit_key_event_to_blitz};
 use crate::history::Suggestion;
@@ -56,6 +56,8 @@ pub(super) enum PopupKind {
         matches: Vec<FindMatch>,
         current: usize,
     },
+    /// Recent downloads flyout (`Ctrl+J` or auto-opened on download start/finish).
+    Downloads,
 }
 
 pub(super) struct Popup {
@@ -92,11 +94,18 @@ impl BrowserApp {
         matches!(self.popup.as_ref().map(|p| &p.kind), Some(PopupKind::FindBar { .. }))
     }
 
+    pub(super) fn has_downloads_popup(&self) -> bool {
+        matches!(self.popup.as_ref().map(|p| &p.kind), Some(PopupKind::Downloads))
+    }
+
     pub(super) fn close_popup(&mut self) {
         if let Some(mut popup) = self.popup.take() {
             let had_focus = matches!(
                 popup.kind,
-                PopupKind::Bookmarks { .. } | PopupKind::CommandPalette { .. } | PopupKind::FindBar { .. }
+                PopupKind::Bookmarks { .. }
+                    | PopupKind::CommandPalette { .. }
+                    | PopupKind::FindBar { .. }
+                    | PopupKind::Downloads
             );
             if matches!(popup.kind, PopupKind::FindBar { .. }) {
                 if let Some(wv) = &self.active_webview {
@@ -146,7 +155,11 @@ impl BrowserApp {
             window: Arc::clone(window),
         });
         let vp = Viewport::new(w, h, scale, self.color_scheme);
-        HtmlDocument::from_html(html, self.doc_config(vp, Some(shell)))
+        let mut doc = HtmlDocument::from_html(html, self.doc_config(vp, Some(shell)));
+        // Resolve layout immediately so `set_focus_to` on `#find-input` / `#palette-input`
+        // finds an initialized `TextInputData` and sets the OS IME cursor area accurately.
+        doc.resolve(self.anim_time());
+        doc
     }
 
     /// HTML and logical height for a popup's current content.
@@ -179,6 +192,10 @@ impl BrowserApp {
                 matches,
                 current,
             } => Some(self.find_bar_popup_html(query, matches, *current)),
+            PopupKind::Downloads => Some((
+                render_downloads_popup_html(&self.downloads),
+                downloads_popup_height(self.downloads.len()),
+            )),
         }
     }
 
@@ -364,7 +381,107 @@ impl BrowserApp {
         popup.window.request_redraw();
     }
 
+    /// Opens or refreshes the Downloads flyout anchored at the top-right below the toolbar.
+    pub(super) fn open_downloads_popup(&mut self, event_loop: &dyn ActiveEventLoop, focus: bool) {
+        const KEY: &str = "downloads";
+        if focus && self.unseen_downloads > 0 {
+            self.unseen_downloads = 0;
+            self.rebuild_chrome();
+        }
+        if self.has_downloads_popup() {
+            self.refresh_popup();
+            if focus && let Some(p) = &self.popup {
+                p.window.focus_window();
+            }
+            return;
+        }
+        let scale = self.hidpi_scale.max(1.0) as f64;
+        let win_w = (self.win_size.width as f64 / scale).max(DOWNLOADS_POPUP_WIDTH as f64 + 16.0);
+        let x = (win_w - DOWNLOADS_POPUP_WIDTH as f64 - 14.0).max(8.0);
+        let y = self.chrome_height() as f64 + 2.0;
+        self.show_popup(
+            event_loop,
+            KEY.to_string(),
+            PopupKind::Downloads,
+            x,
+            y,
+            DOWNLOADS_POPUP_WIDTH,
+            focus,
+        );
+    }
+
+    /// Toggles the Downloads flyout from the toolbar button or `Ctrl+J`.
+    pub(super) fn toggle_downloads_popup(&mut self, event_loop: &dyn ActiveEventLoop) {
+        const KEY: &str = "downloads";
+        if self.has_downloads_popup() {
+            self.close_popup();
+            return;
+        }
+        if self
+            .recently_closed_popup
+            .as_ref()
+            .is_some_and(|(k, t)| k == KEY && t.elapsed().as_millis() < 250)
+        {
+            self.recently_closed_popup = None;
+            return;
+        }
+        self.open_downloads_popup(event_loop, true);
+    }
+
     pub(super) fn handle_popup_action(&mut self, action: &str, new_tab: bool, event_loop: &dyn ActiveEventLoop) {
+        if let Some(rest) = action.strip_prefix("dl-open:") {
+            if let Ok(id) = rest.parse::<u64>()
+                && let Some(path) = self
+                    .downloads
+                    .iter()
+                    .find(|d| d.id == id && d.status == crate::chrome_ui::DownloadStatus::Completed)
+                    .and_then(|d| d.path.clone())
+            {
+                self.unseen_downloads = 0;
+                if !super::helpers::open_downloaded_file(&path) {
+                    self.set_status_note("파일을 열 수 없음 (이동되었거나 삭제됨)");
+                } else {
+                    self.close_popup();
+                }
+                self.rebuild_chrome();
+            }
+            return;
+        }
+        if let Some(rest) = action.strip_prefix("dl-reveal:") {
+            if let Ok(id) = rest.parse::<u64>()
+                && let Some(path) = self.downloads.iter().find(|d| d.id == id).and_then(|d| d.path.clone())
+            {
+                self.unseen_downloads = 0;
+                let _ = super::helpers::reveal_in_file_manager(&path);
+                self.close_popup();
+                self.rebuild_chrome();
+            }
+            return;
+        }
+        match action {
+            "dl-folder" => {
+                self.unseen_downloads = 0;
+                let _ = super::helpers::open_downloads_folder();
+                self.close_popup();
+                self.rebuild_chrome();
+                return;
+            }
+            "dl-clear" => {
+                self.downloads
+                    .retain(|d| d.status == crate::chrome_ui::DownloadStatus::InProgress);
+                self.unseen_downloads = 0;
+                self.rebuild_chrome();
+                self.refresh_popup();
+                return;
+            }
+            "dl-close" => {
+                self.unseen_downloads = 0;
+                self.close_popup();
+                self.rebuild_chrome();
+                return;
+            }
+            _ => {}
+        }
         if let Some(rest) = action.strip_prefix("palette-exec:") {
             if let Ok(idx) = rest.parse::<usize>() {
                 self.execute_palette_index(idx, event_loop);
@@ -579,6 +696,17 @@ impl BrowserApp {
                     popup.window.request_redraw();
                 }
             }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                if let Some(popup) = &mut self.popup {
+                    popup.hidpi_scale = scale_factor as f32;
+                    let w = popup.win_size.width.max(1);
+                    let h = popup.win_size.height.max(1);
+                    popup
+                        .doc
+                        .set_viewport(Viewport::new(w, h, popup.hidpi_scale, self.color_scheme));
+                    popup.window.request_redraw();
+                }
+            }
             WindowEvent::ModifiersChanged(m) => self.keyboard_modifiers = m,
             WindowEvent::Ime(ime_ev) => {
                 self.dispatch_popup_ui(UiEvent::Ime(winit_ime_to_blitz(ime_ev)));
@@ -604,11 +732,11 @@ impl BrowserApp {
                         return;
                     }
                     if ctrl && code == KeyCode::KeyF && self.has_find_bar() {
-                        if let Some(p) = &mut self.popup
-                            && let Some(id) = p.doc.get_element_by_id("find-input")
-                        {
-                            p.doc.set_focus_to(id);
-                        }
+                        self.select_all_find_input();
+                        return;
+                    }
+                    if ctrl && code == KeyCode::KeyJ && self.has_downloads_popup() {
+                        self.close_popup();
                         return;
                     }
                     if self.palette_key(code, event_loop) || self.find_key(code) || self.bookmark_popup_key(code) {

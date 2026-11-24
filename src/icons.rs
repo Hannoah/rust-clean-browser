@@ -43,6 +43,7 @@ pub enum Icon {
     Check,
     PanelTop,
     Pencil,
+    Download,
 }
 
 impl Icon {
@@ -121,6 +122,9 @@ impl Icon {
             }
             Icon::Check => r#"<path d="M3.5 8.2l3 3 6-6.2"/>"#,
             Icon::PanelTop => r#"<rect x="2.2" y="2.8" width="11.6" height="10.4" rx="1.4"/><path d="M2.2 6.2h11.6"/>"#,
+            Icon::Download => {
+                r#"<path d="M8 2.5v7.5M5.2 7.4L8 10.2l2.8-2.8"/><path d="M3 11.8v1.2a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1.2"/>"#
+            }
         }
     }
 }

@@ -121,6 +121,13 @@ impl BrowserApp {
                 true
             }
             KeyCode::Enter | KeyCode::NumpadEnter => {
+                if self
+                    .popup
+                    .as_ref()
+                    .is_some_and(|p| Self::is_input_composing(&p.doc, "palette-input"))
+                {
+                    return false;
+                }
                 self.execute_palette_index(cur, event_loop);
                 true
             }
@@ -249,6 +256,14 @@ impl BrowserApp {
                 if is_mac { "⌘F" } else { "Ctrl+F" },
                 PaletteIcon::Search,
                 "find search",
+            ),
+            (
+                "open-downloads".into(),
+                "다운로드 목록",
+                "최근 다운로드 파일 확인 및 열기",
+                if is_mac { "⌘J" } else { "Ctrl+J" },
+                PaletteIcon::Command,
+                "download file 다운로드 파일 저장",
             ),
             (
                 "toggle-reader".into(),
