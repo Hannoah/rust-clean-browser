@@ -207,6 +207,31 @@ impl BrowserApp {
     }
 
     /// Popups need the `ActiveEventLoop` to create their window, so they open via the queue.
+    /// Records a download at the top of the Downloads list (newest first, at most 50 kept).
+    fn push_download(
+        &mut self,
+        url: String,
+        filename: String,
+        path: Option<std::path::PathBuf>,
+        status: DownloadStatus,
+        size_bytes: Option<u64>,
+    ) {
+        let started_at = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let id = self.next_download_id;
+        self.next_download_id += 1;
+        let item = DownloadItem {
+            id,
+            url,
+            filename,
+            path,
+            status,
+            size_bytes,
+            started_at,
+        };
+        self.downloads.insert(0, item);
+        self.downloads.truncate(50);
+    }
+
     fn queue_popup(&self, key: &str, root: BookmarkRootKind, path: Vec<usize>, index_offset: usize, title: String) {
         self.bus.send(AppEvent::OpenBookmarkPopup {
             key: key.to_string(),
@@ -334,7 +359,6 @@ impl BrowserApp {
                     {
                         if is_pdf_resp {
                             self.tabs[idx].pdf_hint = Some(url.clone());
-                            self.pdf_sources.allow_download(&url);
                         }
                         self.tabs[idx].url = url;
                         self.tabs[idx].is_loading = false;
@@ -482,22 +506,7 @@ impl BrowserApp {
                 AppEvent::ZoomReset => self.set_zoom(1.0),
                 AppEvent::DownloadStarted { url, path } => {
                     let filename = super::helpers::download_display_name(Some(path.as_path()), &url);
-                    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-                    let id = self.next_download_id;
-                    self.next_download_id += 1;
-                    self.downloads.insert(
-                        0,
-                        DownloadItem {
-                            id,
-                            url,
-                            filename: filename.clone(),
-                            path: Some(path),
-                            status: DownloadStatus::InProgress,
-                            size_bytes: None,
-                            started_at: now,
-                        },
-                    );
-                    self.downloads.truncate(50);
+                    self.push_download(url, filename.clone(), Some(path), DownloadStatus::InProgress, None);
                     self.set_status_note(&format!("다운로드 중: {filename}"));
                     self.rebuild_chrome();
                     self.open_downloads_popup(event_loop, false);
@@ -536,26 +545,12 @@ impl BrowserApp {
                         item.filename.clone()
                     } else {
                         let filename = super::helpers::download_display_name(path.as_deref(), &url);
-                        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-                        let id = self.next_download_id;
-                        self.next_download_id += 1;
-                        self.downloads.insert(
-                            0,
-                            DownloadItem {
-                                id,
-                                url,
-                                filename: filename.clone(),
-                                path,
-                                status: if success {
-                                    DownloadStatus::Completed
-                                } else {
-                                    DownloadStatus::Failed
-                                },
-                                size_bytes,
-                                started_at: now,
-                            },
-                        );
-                        self.downloads.truncate(50);
+                        let status = if success {
+                            DownloadStatus::Completed
+                        } else {
+                            DownloadStatus::Failed
+                        };
+                        self.push_download(url, filename.clone(), path, status, size_bytes);
                         filename
                     };
                     if success && !self.has_downloads_popup() {
@@ -571,22 +566,7 @@ impl BrowserApp {
                     self.open_downloads_popup(event_loop, false);
                 }
                 AppEvent::DownloadBlocked { url, filename } => {
-                    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-                    let id = self.next_download_id;
-                    self.next_download_id += 1;
-                    self.downloads.insert(
-                        0,
-                        DownloadItem {
-                            id,
-                            url,
-                            filename: filename.clone(),
-                            path: None,
-                            status: DownloadStatus::Blocked,
-                            size_bytes: None,
-                            started_at: now,
-                        },
-                    );
-                    self.downloads.truncate(50);
+                    self.push_download(url, filename.clone(), None, DownloadStatus::Blocked, None);
                     self.set_status_note(&format!("실행 파일 다운로드 차단됨: {filename}"));
                     self.rebuild_chrome();
                     self.open_downloads_popup(event_loop, false);

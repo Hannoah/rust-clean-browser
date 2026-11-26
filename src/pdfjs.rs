@@ -16,8 +16,6 @@ use wry::http::{Request, Response};
 include!(concat!(env!("OUT_DIR"), "/pdfjs_assets.rs")); // FILES: &[(&str, &[u8])] (deflated)
 
 const ORIGIN: &str = "http://rcbpdf.localhost";
-/// `blob:` downloads created by the annotator's Save button.
-pub const BLOB_PREFIX: &str = "blob:http://rcbpdf.localhost/";
 const MAX_PDF_BYTES: u64 = 256 * 1024 * 1024;
 
 /// `true` when the URL path names a PDF (`.pdf`, any case; query/fragment ignored).
@@ -25,78 +23,37 @@ pub fn is_pdf_url(url: &str) -> bool {
     url::Url::parse(url).is_ok_and(|u| u.path().to_ascii_lowercase().ends_with(".pdf"))
 }
 
+/// Maps random tokens to the PDF source URLs the app chose to open in the annotator.
 #[derive(Default)]
-struct PdfSourcesInner {
-    tokens: Vec<(String, String)>,
-    /// Extensionless URLs confirmed to serve `%PDF-`, allowed to save via WebView2's built-in viewer.
-    allowed_downloads: Vec<String>,
-}
-
-/// Maps random tokens to the PDF source URLs the app chose to open in the annotator,
-/// and tracks extensionless PDF URLs allowed to save from WebView2's built-in viewer.
-#[derive(Default)]
-pub struct PdfSources(Mutex<PdfSourcesInner>);
+pub struct PdfSources(Mutex<Vec<(String, String)>>);
 
 /// Newest tokens kept; older PDF tabs lose their annotator link (reloading the PDF re-issues one).
 const MAX_SOURCES: usize = 64;
-
-fn strip_fragment(url: &str) -> &str {
-    url.split('#').next().unwrap_or(url)
-}
 
 impl PdfSources {
     /// Viewer URL that shows `src` (a `file://` or `http(s)://` PDF URL).
     pub fn editor_url(&self, src: &str) -> String {
         let token = crate::single::random_token();
-        let mut inner = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let token = match inner.tokens.iter().find(|(_, s)| s == src) {
+        let mut tokens = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let token = match tokens.iter().find(|(_, s)| s == src) {
             Some((t, _)) => t.clone(),
             None => {
-                if inner.tokens.len() >= MAX_SOURCES {
-                    inner.tokens.remove(0);
+                if tokens.len() >= MAX_SOURCES {
+                    tokens.remove(0);
                 }
-                inner.tokens.push((token, src.to_string()));
-                inner.tokens[inner.tokens.len() - 1].0.clone()
+                tokens.push((token.clone(), src.to_string()));
+                token
             }
         };
-        drop(inner);
+        drop(tokens);
         let path = format!("/pdf/{token}/{}", enc(&file_name(src)));
         format!("{ORIGIN}/web/viewer.html?file={}", enc(&path))
-    }
-
-    /// Marks an extensionless URL that served `%PDF-` as allowed for WebView2's Save button.
-    pub fn allow_download(&self, url: &str) {
-        let key = strip_fragment(url);
-        let mut inner = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if inner.allowed_downloads.iter().any(|u| u == key) {
-            return;
-        }
-        if inner.allowed_downloads.len() >= MAX_SOURCES {
-            inner.allowed_downloads.remove(0);
-        }
-        inner.allowed_downloads.push(key.to_string());
-    }
-
-    /// True when WebView2 should allow saving `url` to Downloads (`.pdf` URL, annotator `blob:`,
-    /// or a URL previously confirmed to serve `%PDF-`).
-    pub fn is_allowed_download(&self, url: &str) -> bool {
-        if is_pdf_url(url) || url.starts_with(BLOB_PREFIX) {
-            return true;
-        }
-        let key = strip_fragment(url);
-        self.0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .allowed_downloads
-            .iter()
-            .any(|u| u == key)
     }
 
     fn get(&self, token: &str) -> Option<String> {
         self.0
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .tokens
             .iter()
             .find(|(t, _)| t == token)
             .map(|(_, s)| s.clone())
@@ -305,16 +262,7 @@ mod tests {
         for i in 0..MAX_SOURCES + 5 {
             s.editor_url(&format!("file:///C:/{i}.pdf"));
         }
-        assert!(s.0.lock().unwrap().tokens.len() <= MAX_SOURCES && s.get(token).is_none());
-
-        // Extensionless PDF download allowlist + fragment stripping + size cap helper.
-        assert!(!s.is_allowed_download("https://arxiv.org/pdf/2401.12345"));
-        s.allow_download("https://arxiv.org/pdf/2401.12345#page=2");
-        assert!(s.is_allowed_download("https://arxiv.org/pdf/2401.12345"));
-        assert!(s.is_allowed_download("https://arxiv.org/pdf/2401.12345#page=9"));
-        assert!(s.is_allowed_download("https://e.test/report.pdf"));
-        assert!(s.is_allowed_download("blob:http://rcbpdf.localhost/abc"));
-        assert!(!s.is_allowed_download("https://e.test/archive.zip"));
+        assert!(s.0.lock().unwrap().len() <= MAX_SOURCES && s.get(token).is_none());
 
         let mut buf = Vec::new();
         append_bounded(&mut buf, b"1234", 6).unwrap();

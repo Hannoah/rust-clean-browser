@@ -209,6 +209,8 @@ impl BrowserApp {
                 move |_id, req, responder| crate::pdfjs::handle(&sources, &jar, &rt, req, responder)
             })
             .with_bounds(bounds)
+            // `rust://` is our internal privileged scheme; a web page must never put one in the tab URL.
+            .with_navigation_handler(|url| !url.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("rust:")))
             .with_document_title_changed_handler(move |title| {
                 bus_title.send(AppEvent::WebViewTitleChanged { tab_id, title });
             })
@@ -247,12 +249,13 @@ impl BrowserApp {
             })
             // Allow normal file downloads with explicit UI visibility; block dangerous executable/script
             // formats so drive-by downloads cannot silently drop executables into Downloads.
+            // The check uses the on-disk name (it follows `Content-Disposition`), never the URL:
+            // `https://x/doc.pdf` can still serve `filename=setup.exe`.
             .with_download_started_handler({
-                let dl_sources = Arc::clone(&self.pdf_sources);
                 let bus_started = self.bus.clone();
                 move |url, path| {
                     let filename = super::helpers::download_display_name(Some(path.as_path()), &url);
-                    if !dl_sources.is_allowed_download(&url) && super::helpers::is_dangerous_download_ext(&filename) {
+                    if super::helpers::is_dangerous_download_ext(&filename) {
                         bus_dl.send(AppEvent::DownloadBlocked { url, filename });
                         return false;
                     }

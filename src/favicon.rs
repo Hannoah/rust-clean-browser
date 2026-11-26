@@ -255,10 +255,16 @@ pub fn icon_fetched(key: String, fallback: Option<Url>, guess: bool, bytes: Opti
 // ponytail: compares the last two host labels; wrong for `co.kr`-style suffixes, where it is
 // merely permissive. Use a public-suffix list if that ever matters.
 fn same_site(a: &Url, b: &Url) -> bool {
+    // ponytail: heuristic registrable domain (2-letter ccTLD + short SLD like `co.kr` keeps 3 labels);
+    // swap for a public-suffix list if icons ever pick the wrong site.
     fn site(u: &Url) -> String {
         let host = u.host_str().unwrap_or("");
-        let labels: Vec<&str> = host.rsplitn(3, '.').take(2).collect();
-        labels.join(".")
+        let labels: Vec<&str> = host.rsplit('.').collect();
+        let n = match labels.as_slice() {
+            [tld, sld, _, ..] if tld.len() == 2 && sld.len() <= 3 => 3,
+            _ => 2,
+        };
+        labels.iter().take(n).rev().copied().collect::<Vec<_>>().join(".")
     }
     site(a) == site(b)
 }
@@ -275,18 +281,10 @@ pub fn pick_icon(links: &[Link], page: &Url) -> Option<Url> {
         if !(is_icon || touch) || href.is_empty() {
             continue;
         }
-        // Only allow http(s) icon URLs; data:/javascript:/blob: are never fetched.
-        let h_lower = href.trim_start().to_ascii_lowercase();
-        if h_lower.starts_with("data:")
-            || h_lower.starts_with("javascript:")
-            || h_lower.starts_with("blob:")
-            || h_lower.starts_with("about:")
-        {
-            continue;
-        }
         let Ok(url) = page.join(&href) else {
             continue;
         };
+        // Only http(s) icons are fetched (no data:/javascript:/blob:/file:).
         if !matches!(url.scheme(), "http" | "https") {
             continue;
         }
@@ -518,6 +516,15 @@ mod tests {
             panic!()
         };
         assert_eq!(icon.as_str(), "https://app.example.com/favicon.ico");
+        assert!(same_site(
+            &url("https://a.naver.co.kr/"),
+            &url("https://www.naver.co.kr/")
+        ));
+        assert!(!same_site(&url("https://naver.co.kr/"), &url("https://evil.co.kr/")));
+        assert!(same_site(
+            &url("https://login.example.com/"),
+            &url("https://example.com/")
+        ));
     }
 
     #[test]
