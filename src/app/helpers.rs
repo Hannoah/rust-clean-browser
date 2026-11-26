@@ -118,6 +118,28 @@ pub(super) fn is_dangerous_download_ext(filename: &str) -> bool {
             | "app"
             | "command"
             | "sh"
+            // Packaged apps, disk images (bypass Mark-of-the-Web), and other shell-launchable formats.
+            | "msix"
+            | "msixbundle"
+            | "appx"
+            | "appxbundle"
+            | "appinstaller"
+            | "iso"
+            | "img"
+            | "vhd"
+            | "vhdx"
+            | "chm"
+            | "url"
+            | "scf"
+            | "xll"
+            | "psm1"
+            | "psd1"
+            | "settingcontent-ms"
+            | "application"
+            | "gadget"
+            | "inf"
+            | "sct"
+            | "wsc"
     )
 }
 
@@ -702,6 +724,9 @@ mod tests {
         assert!(is_dangerous_download_ext("script.ps1"));
         assert!(is_dangerous_download_ext("macro.vbs"));
         assert!(is_dangerous_download_ext("shortcut.lnk"));
+        assert!(is_dangerous_download_ext("App.MSIX"));
+        assert!(is_dangerous_download_ext("bundle.iso"));
+        assert!(is_dangerous_download_ext("help.chm"));
         assert!(!is_dangerous_download_ext("report.pdf"));
         assert!(!is_dangerous_download_ext("export.xlsx"));
         assert!(!is_dangerous_download_ext("data.csv"));

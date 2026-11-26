@@ -48,7 +48,8 @@ const BLOCKED_TRACKER_DOMAINS: &[&str] = &[
     "fullstory.com",
 ];
 
-/// True when a `file://` URL points inside our own app-data dir (favicon cache, etc.).
+/// True when a `file://` URL points inside the favicon cache, the only local files pages may load.
+/// (Not the whole app-data dir: that holds cookies, history and the WebView2 profile.)
 pub(crate) fn is_app_data_file_url(url: &Url) -> bool {
     let Ok(path) = url.to_file_path() else {
         return false;
@@ -61,7 +62,7 @@ pub(crate) fn is_app_data_file_url(url: &Url) -> bool {
     let Some(base) = crate::bookmarks::app_data_dir() else {
         return false;
     };
-    path.starts_with(base)
+    path.starts_with(base.join("favicons2"))
 }
 
 pub fn is_blocked_url(url: &Url) -> bool {
@@ -79,12 +80,14 @@ pub fn is_blocked_url(url: &Url) -> bool {
 /// wrapped with DPAPI (bound to the user account, like Chrome's cookie store). Other platforms use 0600.
 // ponytail: macOS Keychain not wired; the 0600 file is the ceiling there.
 mod seal {
-    const MAGIC: &[u8] = b"RCBDPAPI1
-";
+    // Escaped on purpose: a literal newline here followed git's autocrlf setting, so shipped
+    // Windows builds wrote CRLF. Builds from an LF checkout must still read those files.
+    const MAGIC: &[u8] = b"RCBDPAPI1\r\n";
+    const MAGIC_LF: &[u8] = b"RCBDPAPI1\n";
 
     /// Plain JSON (legacy files, non-Windows) passes through; sealed files are unwrapped.
     pub fn open(bytes: Vec<u8>) -> Option<Vec<u8>> {
-        match bytes.strip_prefix(MAGIC) {
+        match bytes.strip_prefix(MAGIC).or_else(|| bytes.strip_prefix(MAGIC_LF)) {
             Some(blob) => os::unprotect(blob),
             None => Some(bytes),
         }
@@ -454,6 +457,11 @@ mod tests {
         // Login tokens are not readable on disk on Windows (DPAPI); a legacy plaintext file still loads.
         let on_disk = std::fs::read(&path).unwrap();
         assert_eq!(cfg!(windows), !String::from_utf8_lossy(&on_disk).contains("user=abc"));
+        // Files sealed by builds whose magic ended in a bare LF (LF checkout) still open.
+        if cfg!(windows) {
+            let lf = [b"RCBDPAPI1\n".as_slice(), &on_disk[b"RCBDPAPI1\r\n".len()..]].concat();
+            assert!(String::from_utf8_lossy(&seal::open(lf).unwrap()).contains("user=abc"));
+        }
         std::fs::write(&path, seal::open(on_disk).unwrap()).unwrap();
         assert!(PersistentCookieJar::load(Some(path.clone())).cookies(&url).is_some());
         // Empty Set-Cookie iteration must not mark the jar dirty.
@@ -470,6 +478,8 @@ mod tests {
         assert!(is_app_data_file_url(&inside));
         let outside = url::Url::parse("file:///C:/Windows/win.ini").unwrap();
         assert!(!is_app_data_file_url(&outside));
+        let cookies = url::Url::from_file_path(base.join("cookies.json")).unwrap();
+        assert!(!is_app_data_file_url(&cookies));
         let escape = url::Url::parse(&format!(
             "file://{}",
             base.join("..").join("other").to_string_lossy().replace('\\', "/")
