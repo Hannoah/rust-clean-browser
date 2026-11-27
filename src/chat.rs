@@ -2572,6 +2572,7 @@ fn run_claude_persistent(
 }
 
 fn find_cli_binary(name: &str) -> Option<PathBuf> {
+    #[cfg_attr(not(windows), allow(unused_mut))] // only mutated by the Windows block below
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|v| std::env::split_paths(&v).collect())
         .unwrap_or_default();
@@ -2616,6 +2617,7 @@ fn build_cli_command(bin_path: &Path, args: &[String]) -> Result<Command, String
         return Err("CLI 인자에 cmd.exe가 해석하는 특수문자(\" % & | < > ^ ! 또는 줄바꿈)가 있어 실행하지 않았습니다. 모델 ID를 확인하세요.".to_string());
     }
 
+    #[cfg_attr(not(windows), allow(unused_mut))] // only mutated by the Windows block below
     let mut cmd = if cfg!(windows) && is_cmd_shim {
         let mut c = Command::new("cmd.exe");
         c.arg("/C").arg(bin_path).args(args);
