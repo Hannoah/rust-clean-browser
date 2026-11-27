@@ -62,6 +62,41 @@ pub(super) fn focus_main_window(win: &dyn winit::window::Window, activate: bool)
     }
 }
 
+/// Captures pointer input onto the main window (so sidebar sash dragging keeps tracking even if
+/// the cursor crosses over a child WebView2 HWND or outside the window).
+pub(super) fn capture_mouse(win: &dyn winit::window::Window) {
+    #[cfg(target_os = "windows")]
+    {
+        use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn SetCapture(hwnd: isize) -> isize;
+        }
+        if let Ok(handle) = win.window_handle()
+            && let RawWindowHandle::Win32(h) = handle.as_raw()
+        {
+            unsafe {
+                SetCapture(h.hwnd.get());
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = win;
+}
+
+pub(super) fn release_mouse_capture() {
+    #[cfg(target_os = "windows")]
+    {
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn ReleaseCapture() -> i32;
+        }
+        unsafe {
+            ReleaseCapture();
+        }
+    }
+}
+
 /// True when the main winit window itself currently owns OS keyboard focus (not a child WebView2
 /// HWND or another application). Used so clicking `#url-bar` after interacting with a JS-mode
 /// WebView2 page is reliably treated as an unfocused first click (select-all).
@@ -435,6 +470,22 @@ pub(super) fn requires_js_engine(url: &str) -> bool {
     if crate::pdfjs::is_pdf_url(url) {
         return true;
     }
+    let lower = url.to_ascii_lowercase();
+    if [
+        "/protocol/openid-connect/",
+        "/oauth2/authorize",
+        "/oauth/authorize",
+        "/oauth2/callback",
+        "/saml2",
+        "/adfs/ls",
+        "code_challenge=",
+        "samlrequest=",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
+    {
+        return true;
+    }
     const JS_HOSTS: &[&str] = &[
         "login.microsoftonline.com",
         "login.microsoft.com",
@@ -458,6 +509,20 @@ pub(super) fn requires_js_engine(url: &str) -> bool {
         "naver.com",
         // Google Search no longer serves results without JavaScript.
         "www.google.com",
+        // AI & modern web apps requiring full JS, WebView2 session cookies, or Cloudflare turnstile/cookie gates.
+        "claude.ai",
+        "claude.com",
+        "chatgpt.com",
+        "openai.com",
+        "gemini.google.com",
+        "perplexity.ai",
+        "notion.so",
+        "linear.app",
+        "figma.com",
+        "slack.com",
+        "discord.com",
+        "youtube.com",
+        "x.com",
     ];
     let Some(host) = Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_owned)) else {
         return false;
@@ -667,6 +732,13 @@ mod tests {
         assert!(requires_js_engine("https://contoso.sharepoint.com/sites/x"));
         assert!(requires_js_engine("https://www.google.com/search?q=x"));
         assert!(requires_js_engine("https://github.com/meta/astryx"));
+        assert!(requires_js_engine(
+            "https://claude.ai/new?redirect=claude.com&via=cookie"
+        ));
+        assert!(requires_js_engine("https://chatgpt.com/"));
+        assert!(requires_js_engine(
+            "https://sso.example.org/auth/realms/main/protocol/openid-connect/auth?client_id=app"
+        ));
         assert!(!requires_js_engine("https://mail.google.com/"));
         assert!(!requires_js_engine("https://news.ycombinator.com/"));
         assert!(!requires_js_engine("https://notoffice.com/"));

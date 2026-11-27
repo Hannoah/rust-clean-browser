@@ -43,6 +43,9 @@ pub struct Tab {
     pub pdf_editor: Option<String>,
     /// True while `doc` is the built-in `rust://error` page (allows its `rust://open-js` button).
     pub is_error_page: bool,
+    /// The JS-mode page is using the camera/mic or playing audible media (video call, music):
+    /// its WebView must never be suspended or evicted while parked, or the call drops.
+    pub media_active: bool,
 }
 
 impl Tab {
@@ -69,6 +72,7 @@ impl Tab {
             pdf_hint: None,
             pdf_editor: None,
             is_error_page: false,
+            media_active: false,
         }
     }
 

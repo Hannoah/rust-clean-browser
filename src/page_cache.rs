@@ -55,9 +55,18 @@ impl DiskPageCache {
         }
         let text = std::fs::read_to_string(&path).ok()?;
         let (req_key, rest) = text.split_once('\n')?;
+        let req_key = req_key.trim_end_matches('\r');
         let (final_url, html) = rest.split_once('\n')?;
-        // Verify the stored request key to survive 64-bit hash collisions.
+        let final_url = final_url.trim_end_matches('\r');
+        // Verify the stored request key and ensure `final_url` is a real hierarchical URL;
+        // legacy 2-line entries (`url\nhtml`) put `<!DOCTYPE html>` on line 2, which would
+        // fall back to a `data:` base_url in blitz-dom and panic on relative subresource URLs.
+        let valid_final = url::Url::parse(final_url).ok().is_some_and(|u| !u.cannot_be_a_base());
         if req_key != Self::cache_key(url) {
+            return None;
+        }
+        if !valid_final {
+            let _ = std::fs::remove_file(&path);
             return None;
         }
         Some(CachedDoc {
@@ -68,6 +77,9 @@ impl DiskPageCache {
 
     pub fn put(&mut self, url: &str, final_url: &str, html: &str) {
         if html.len() > MAX_PAGE_BYTES || final_url.contains('\n') {
+            return;
+        }
+        if url::Url::parse(final_url).map_or(true, |u| u.cannot_be_a_base()) {
             return;
         }
         let req_key = Self::cache_key(url);
@@ -144,6 +156,22 @@ mod tests {
         assert_eq!(doc.final_url, "https://a.test/x/");
         assert_eq!(&*doc.html, "<p>hello</p>\n<p>2</p>");
         assert!(cache.get("https://a.test/y").is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rejects_and_evicts_legacy_two_line_cache_entry() {
+        let dir = std::env::temp_dir().join(format!("rb-pages-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = DiskPageCache::new(Some(dir.clone()));
+        let url = "https://example.test/auth";
+        let path = cache.path_for(url).expect("cache path");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Legacy 2-line format stored `<!DOCTYPE html>` as line 2.
+        std::fs::write(&path, format!("{url}\n<!DOCTYPE html>\n<html></html>")).unwrap();
+        assert!(path.exists());
+        assert!(cache.get(url).is_none());
+        assert!(!path.exists(), "stale/legacy entry should be deleted");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

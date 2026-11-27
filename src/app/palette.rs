@@ -350,6 +350,26 @@ impl BrowserApp {
                 "bookmark bar toggle",
             ),
             (
+                "toggle-sidebar".into(),
+                if self.sidebar_open {
+                    "AI 어시스턴트 사이드바 닫기"
+                } else {
+                    "AI 어시스턴트 사이드바 열기"
+                },
+                "AGY · Claude · Gemini · Codex · API 챗봇 패널",
+                if is_mac { "⌘⇧I" } else { "Ctrl+Shift+I" },
+                PaletteIcon::Zap,
+                "ai chat copilot assistant claude agy gemini codex 사이드바 챗봇",
+            ),
+            (
+                "chat-summarize-page".into(),
+                "현재 페이지 AI 요약",
+                "열린 웹페이지의 핵심 내용을 AI 어시스턴트로 요약",
+                "",
+                PaletteIcon::Zap,
+                "ai summarize summary copilot 요약 정리 챗봇",
+            ),
+            (
                 "cite:ieee".into(),
                 "출처 복사 · IEEE",
                 "현재 페이지 인용문을 클립보드로 복사",

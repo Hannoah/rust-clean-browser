@@ -44,6 +44,11 @@ pub enum Icon {
     PanelTop,
     Pencil,
     Download,
+    Sparkles,
+    Send,
+    Copy,
+    Sliders,
+    MoveHorizontal,
 }
 
 impl Icon {
@@ -125,6 +130,17 @@ impl Icon {
             Icon::Download => {
                 r#"<path d="M8 2.5v7.5M5.2 7.4L8 10.2l2.8-2.8"/><path d="M3 11.8v1.2a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1.2"/>"#
             }
+            Icon::Sparkles => {
+                r#"<path d="M8 2.2l1.2 3.8L13 7.2l-3.8 1.2L8 12.2l-1.2-3.8L3 7.2l3.8-1.2L8 2.2z"/><path d="M12.8 10.6l.5 1.4 1.4.5-1.4.5-.5 1.4-.5-1.4-1.4-.5 1.4-.5.5-1.4z"/>"#
+            }
+            Icon::Send => r#"<path d="M8 12.5V3.5M4.2 7.3L8 3.5l3.8 3.8"/>"#,
+            Icon::Copy => {
+                r#"<rect x="5.5" y="5.5" width="7.5" height="7.5" rx="1.2"/><path d="M3.5 10.5H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h6.5a1 1 0 0 1 1 1v.5"/>"#
+            }
+            Icon::Sliders => {
+                r#"<path d="M2.5 5h2.2M7.3 5h6.2M2.5 11h6.2M11.3 11h2.2"/><circle cx="6" cy="5" r="1.3"/><circle cx="10" cy="11" r="1.3"/>"#
+            }
+            Icon::MoveHorizontal => r#"<path d="M5 5L2 8l3 3M11 5l3 3-3 3M2.5 8h11"/>"#,
         }
     }
 }
@@ -137,7 +153,7 @@ pub fn svg_colored(icon: Icon, size: u32, stroke_color: &str) -> String {
     let mut s = String::with_capacity(220);
     let _ = write!(
         s,
-        r#"<svg class="svg-ico" width="{size}" height="{size}" viewBox="0 0 16 16" fill="none" stroke="{stroke_color}" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round">{}</svg>"#,
+        r#"<svg class="svg-ico" width="{size}" height="{size}" viewBox="0 0 16 16" fill="none" stroke="{stroke_color}" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round">{}</svg>"#,
         icon.body()
     );
     s
@@ -146,17 +162,17 @@ pub fn svg_colored(icon: Icon, size: u32, stroke_color: &str) -> String {
 /// Brand emblem used on `rust://home` (vector shield + stylized compass needle).
 pub fn brand_emblem_svg(dark_mode: bool) -> &'static str {
     if dark_mode {
-        r##"<svg width="44" height="44" viewBox="0 0 44 44" fill="none"><rect x="2" y="2" width="40" height="40" rx="13" fill="#1b3863" stroke="#7ab3ff" stroke-opacity="0.35" stroke-width="1.5"/><path d="M22 9l10 4v7.5c0 6.5-4.3 11.4-10 13.5-5.7-2.1-10-7-10-13.5V13l10-4z" fill="#7ab3ff" fill-opacity="0.16" stroke="#7ab3ff" stroke-width="1.8" stroke-linejoin="round"/><path d="M25.2 16.8l-2 5.4-5.4 2 2-5.4 5.4-2z" fill="#7ab3ff"/></svg>"##
+        r##"<svg width="44" height="44" viewBox="0 0 44 44" fill="none"><rect x="2" y="2" width="40" height="40" rx="12" fill="#22252b" stroke="rgba(255,255,255,0.14)" stroke-width="1.25"/><path d="M22 9l10 4v7.5c0 6.5-4.3 11.4-10 13.5-5.7-2.1-10-7-10-13.5V13l10-4z" fill="rgba(255,255,255,0.06)" stroke="#f4f5f7" stroke-width="1.65" stroke-linejoin="round"/><path d="M25.2 16.8l-2 5.4-5.4 2 2-5.4 5.4-2z" fill="#60a5fa"/></svg>"##
     } else {
-        r##"<svg width="44" height="44" viewBox="0 0 44 44" fill="none"><rect x="2" y="2" width="40" height="40" rx="13" fill="#dbeafe" stroke="#1b6ef3" stroke-opacity="0.24" stroke-width="1.5"/><path d="M22 9l10 4v7.5c0 6.5-4.3 11.4-10 13.5-5.7-2.1-10-7-10-13.5V13l10-4z" fill="#1b6ef3" fill-opacity="0.14" stroke="#1b6ef3" stroke-width="1.8" stroke-linejoin="round"/><path d="M25.2 16.8l-2 5.4-5.4 2 2-5.4 5.4-2z" fill="#1b6ef3"/></svg>"##
+        r##"<svg width="44" height="44" viewBox="0 0 44 44" fill="none"><rect x="2" y="2" width="40" height="40" rx="12" fill="#14161a"/><path d="M22 9l10 4v7.5c0 6.5-4.3 11.4-10 13.5-5.7-2.1-10-7-10-13.5V13l10-4z" fill="rgba(255,255,255,0.08)" stroke="#ffffff" stroke-width="1.65" stroke-linejoin="round"/><path d="M25.2 16.8l-2 5.4-5.4 2 2-5.4 5.4-2z" fill="#60a5fa"/></svg>"##
     }
 }
 
 /// Error page emblem illustration.
 pub fn error_emblem_svg(dark_mode: bool) -> &'static str {
     if dark_mode {
-        r##"<svg width="52" height="52" viewBox="0 0 52 52" fill="none"><rect x="2" y="2" width="48" height="48" rx="15" fill="#3f1618" stroke="#f87171" stroke-opacity="0.35" stroke-width="1.5"/><circle cx="26" cy="26" r="11" stroke="#f87171" stroke-width="2"/><path d="M26 20v7" stroke="#f87171" stroke-width="2.2" stroke-linecap="round"/><circle cx="26" cy="31.5" r="1.3" fill="#f87171"/></svg>"##
+        r##"<svg width="52" height="52" viewBox="0 0 52 52" fill="none"><rect x="2" y="2" width="48" height="48" rx="14" fill="#2b1517" stroke="#f87171" stroke-opacity="0.32" stroke-width="1.5"/><circle cx="26" cy="26" r="11" stroke="#f87171" stroke-width="2"/><path d="M26 20v7" stroke="#f87171" stroke-width="2.2" stroke-linecap="round"/><circle cx="26" cy="31.5" r="1.3" fill="#f87171"/></svg>"##
     } else {
-        r##"<svg width="52" height="52" viewBox="0 0 52 52" fill="none"><rect x="2" y="2" width="48" height="48" rx="15" fill="#fee2e2" stroke="#dc2626" stroke-opacity="0.22" stroke-width="1.5"/><circle cx="26" cy="26" r="11" stroke="#dc2626" stroke-width="2"/><path d="M26 20v7" stroke="#dc2626" stroke-width="2.2" stroke-linecap="round"/><circle cx="26" cy="31.5" r="1.3" fill="#dc2626"/></svg>"##
+        r##"<svg width="52" height="52" viewBox="0 0 52 52" fill="none"><rect x="2" y="2" width="48" height="48" rx="14" fill="#fef2f2" stroke="#dc2626" stroke-opacity="0.22" stroke-width="1.5"/><circle cx="26" cy="26" r="11" stroke="#dc2626" stroke-width="2"/><path d="M26 20v7" stroke="#dc2626" stroke-width="2.2" stroke-linecap="round"/><circle cx="26" cy="31.5" r="1.3" fill="#dc2626"/></svg>"##
     }
 }

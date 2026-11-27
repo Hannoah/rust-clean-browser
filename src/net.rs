@@ -79,7 +79,7 @@ pub fn is_blocked_url(url: &Url) -> bool {
 /// At-rest protection for `cookies.json`: session cookies are login tokens, so on Windows the file is
 /// wrapped with DPAPI (bound to the user account, like Chrome's cookie store). Other platforms use 0600.
 // ponytail: macOS Keychain not wired; the 0600 file is the ceiling there.
-mod seal {
+pub(crate) mod seal {
     // Escaped on purpose: a literal newline here followed git's autocrlf setting, so shipped
     // Windows builds wrote CRLF. Builds from an LF checkout must still read those files.
     const MAGIC: &[u8] = b"RCBDPAPI1\r\n";

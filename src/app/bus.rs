@@ -170,6 +170,29 @@ impl EventHandler for ChromeEventHandler {
     }
 }
 
+/// AI Assistant sidebar: clicks on `data-action` elements post `AppEvent::SidebarAction`.
+pub(super) struct SidebarEventHandler {
+    pub(super) bus: AppBus,
+}
+
+impl EventHandler for SidebarEventHandler {
+    fn handle_event(
+        &mut self,
+        chain: &[NodeId],
+        event: &mut DomEvent,
+        doc: &mut dyn Document,
+        event_state: &mut EventState,
+    ) {
+        if let DomEventData::Click(click) = &event.data
+            && click.button == MouseEventButton::Main
+            && let Some(action) = find_action(chain, doc)
+        {
+            self.bus.send(AppEvent::SidebarAction(action));
+            event_state.stop_propagation();
+        }
+    }
+}
+
 /// Bookmark folder popup: click opens in place, Ctrl/Cmd+click or middle-click opens a tab.
 pub(super) struct PopupEventHandler {
     pub(super) bus: AppBus,

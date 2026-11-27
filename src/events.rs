@@ -12,11 +12,29 @@ pub fn theme_to_color_scheme(theme: Theme) -> ColorScheme {
     }
 }
 
+fn is_hangul_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{1100}'..='\u{11FF}'
+            | '\u{3130}'..='\u{318F}'
+            | '\u{A960}'..='\u{A97F}'
+            | '\u{AC00}'..='\u{D7AF}'
+            | '\u{D7B0}'..='\u{D7FF}'
+    )
+}
+
 pub fn winit_ime_to_blitz(event: Ime) -> BlitzImeEvent {
     match event {
         Ime::Enabled => BlitzImeEvent::Enabled,
         Ime::Disabled => BlitzImeEvent::Disabled,
-        Ime::Preedit(text, cursor) => BlitzImeEvent::Preedit(text, cursor),
+        Ime::Preedit(text, mut cursor) => {
+            // Windows Hangul IME reports `GCS_CURSORPOS = 0` with `ATTR_INPUT`, which makes
+            // Parley place the caret at the left edge of the composing syllable instead of its end.
+            if !text.is_empty() && text.chars().all(is_hangul_char) && matches!(cursor, None | Some((0, 0))) {
+                cursor = Some((text.len(), text.len()));
+            }
+            BlitzImeEvent::Preedit(text, cursor)
+        }
         Ime::Commit(text) => BlitzImeEvent::Commit(text),
         Ime::DeleteSurrounding {
             before_bytes,
@@ -121,5 +139,81 @@ pub fn winit_key_to_kbt_key(winit_key: &WinitKey) -> Key {
         WinitKey::Character(c) => Key::Character(c.to_string()),
         WinitKey::Unidentified(_) => Key::Named(NamedKey::Unidentified),
         WinitKey::Dead(_) => Key::Named(NamedKey::Dead),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blitz_dom::{Document, DocumentConfig, EventDriver, EventHandler, NodeId, StyleThreading};
+    use blitz_traits::events::{DomEvent, EventState, UiEvent};
+    use blitz_traits::shell::{ColorScheme, Viewport};
+
+    struct NoopHandler;
+
+    impl EventHandler for NoopHandler {
+        fn handle_event(&mut self, _: &[NodeId], _: &mut DomEvent, _: &mut dyn Document, _: &mut EventState) {}
+    }
+
+    #[test]
+    fn hangul_preedit_moves_caret_to_end() {
+        assert_eq!(
+            winit_ime_to_blitz(Ime::Preedit("ㄴ".into(), Some((0, 0)))),
+            BlitzImeEvent::Preedit("ㄴ".into(), Some(("ㄴ".len(), "ㄴ".len())))
+        );
+        assert_eq!(
+            winit_ime_to_blitz(Ime::Preedit("한".into(), None)),
+            BlitzImeEvent::Preedit("한".into(), Some(("한".len(), "한".len())))
+        );
+        assert_eq!(
+            winit_ime_to_blitz(Ime::Preedit(String::new(), None)),
+            BlitzImeEvent::Preedit(String::new(), None)
+        );
+        assert_eq!(
+            winit_ime_to_blitz(Ime::Preedit("あ".into(), Some((0, 0)))),
+            BlitzImeEvent::Preedit("あ".into(), Some((0, 0)))
+        );
+        assert_eq!(
+            winit_ime_to_blitz(Ime::Preedit("abc".into(), Some((0, 0)))),
+            BlitzImeEvent::Preedit("abc".into(), Some((0, 0)))
+        );
+        assert_eq!(
+            winit_ime_to_blitz(Ime::Preedit("한".into(), Some((0, 3)))),
+            BlitzImeEvent::Preedit("한".into(), Some((0, 3)))
+        );
+    }
+
+    #[test]
+    fn hangul_preedit_caret_sits_after_composing_syllable_in_blitz() {
+        let html =
+            r#"<!DOCTYPE html><html><body><input id="t" type="text" style="width:240px;height:28px;" /></body></html>"#;
+        let mut doc = blitz_html::HtmlDocument::from_html(
+            html,
+            DocumentConfig {
+                viewport: Some(Viewport::new(320, 80, 1.0, ColorScheme::Light)),
+                style_threading: StyleThreading::Sequential,
+                ..Default::default()
+            },
+        );
+        doc.resolve(0.0);
+        let id = doc.get_element_by_id("t").expect("input #t");
+        doc.set_focus_to(id);
+
+        EventDriver::new(&mut doc, NoopHandler)
+            .handle_ui_event(UiEvent::Ime(winit_ime_to_blitz(Ime::Commit("안".into()))));
+        EventDriver::new(&mut doc, NoopHandler).handle_ui_event(UiEvent::Ime(winit_ime_to_blitz(Ime::Preedit(
+            "ㄴ".into(),
+            Some((0, 0)),
+        ))));
+
+        let ti = doc
+            .get_node(id)
+            .unwrap()
+            .element_data()
+            .unwrap()
+            .text_input_data()
+            .unwrap();
+        assert_eq!(ti.editor.raw_text(), "안ㄴ");
+        assert_eq!(ti.editor.raw_selection().focus().index(), "안ㄴ".len());
     }
 }
