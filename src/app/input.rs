@@ -434,6 +434,13 @@ impl BrowserApp {
                     self.zoom_by_notches(notches);
                     return;
                 }
+                // Mouse-wheel notches glide (like Chrome/Edge smooth scrolling); precision touchpads
+                // already send fine-grained pixel deltas with OS inertia, so those pass through.
+                if let BlitzWheelDelta::Lines(lx, ly) = wheel_delta(delta) {
+                    let px = self.wheel_line_px(region);
+                    self.queue_smooth_scroll(region, false, lx * px, ly * px);
+                    return;
+                }
                 let ev = UiEvent::Wheel(BlitzWheelEvent {
                     delta: wheel_delta(delta),
                     coords: self.coords_for_region(self.pointer_pos, region),
@@ -686,20 +693,93 @@ impl BrowserApp {
             return false;
         }
         let dy = match code {
-            KeyCode::ArrowDown => 48.0,
-            KeyCode::ArrowUp => -48.0,
+            KeyCode::ArrowDown => 60.0,
+            KeyCode::ArrowUp => -60.0,
             KeyCode::PageDown => page_h * 0.88,
             KeyCode::PageUp => -page_h * 0.88,
             KeyCode::Space if shift => -page_h * 0.88,
             KeyCode::Space => page_h * 0.88,
-            KeyCode::Home => -1.0e9,
-            KeyCode::End => 1.0e9,
+            KeyCode::Home => -doc.viewport_scroll().y,
+            // Overshoot is clamped by Blitz; the animator stops once the viewport stops moving.
+            KeyCode::End => 1.0e7,
             _ => return false,
         };
         // Blitz uses wheel-style deltas: negative scrolls the page down.
-        doc.scroll_viewport_by(0.0, -dy);
-        self.request_redraw();
+        self.queue_smooth_scroll(UiRegion::Content, true, 0.0, -dy);
         true
+    }
+
+    /// CSS px one wheel "line" scrolls in `region`: the OS lines-per-notch setting × 100/3 px
+    /// (Chromium's step, ~100 px per notch at the Windows default of 3), kept the same physical
+    /// distance at any page zoom.
+    fn wheel_line_px(&self, region: UiRegion) -> f64 {
+        let zoom = if region == UiRegion::Content {
+            self.tabs.get(self.active_tab).map_or(1.0, |t| t.zoom.max(0.1) as f64)
+        } else {
+            1.0
+        };
+        system_wheel_lines() * (100.0 / 3.0) / zoom
+    }
+
+    /// Adds a scroll (wheel-style deltas) to the running glide, or starts one.
+    pub(super) fn queue_smooth_scroll(&mut self, region: UiRegion, viewport: bool, dx: f64, dy: f64) {
+        let tab_id = (region == UiRegion::Content).then(|| self.tabs[self.active_tab].id);
+        match &mut self.smooth_scroll {
+            Some(s) if s.region == region && s.viewport == viewport && s.tab_id == tab_id => {
+                s.rem_x = accumulate_scroll(s.rem_x, dx);
+                s.rem_y = accumulate_scroll(s.rem_y, dy);
+            }
+            _ => {
+                self.smooth_scroll = Some(SmoothScroll {
+                    region,
+                    viewport,
+                    tab_id,
+                    rem_x: dx,
+                    rem_y: dy,
+                    last: Instant::now(),
+                });
+            }
+        }
+        self.request_redraw();
+    }
+
+    /// One frame of the glide (called from `redraw`). Returns whether more frames are needed.
+    pub(super) fn step_smooth_scroll(&mut self) -> bool {
+        let Some(mut s) = self.smooth_scroll.take() else {
+            return false;
+        };
+        if s.tab_id
+            .is_some_and(|id| self.tabs.get(self.active_tab).map(|t| t.id) != Some(id))
+        {
+            return false; // switched tabs mid-glide
+        }
+        let now = Instant::now();
+        let dt_ms = now.saturating_duration_since(s.last).as_secs_f64() * 1000.0;
+        s.last = now;
+        let (px, py) = (glide_portion(s.rem_x, dt_ms), glide_portion(s.rem_y, dt_ms));
+        s.rem_x -= px;
+        s.rem_y -= py;
+        let moved = if s.viewport {
+            self.tabs
+                .get_mut(self.active_tab)
+                .and_then(|t| t.doc.as_mut())
+                .is_some_and(|d| d.scroll_viewport_by_has_changed(px, py))
+        } else {
+            let ev = UiEvent::Wheel(BlitzWheelEvent {
+                delta: BlitzWheelDelta::Pixels(px, py),
+                coords: self.coords_for_region(self.pointer_pos, s.region),
+                buttons: self.buttons,
+                mods: self.mods(),
+                element: Default::default(),
+            });
+            self.dispatch_to_region(s.region, ev);
+            true
+        };
+        let more = moved && (s.rem_x != 0.0 || s.rem_y != 0.0);
+        if more {
+            self.smooth_scroll = Some(s);
+        }
+        more
     }
 
     /// Mouse-down on the window frame: edge resize or title-bar drag / double-click maximize.
@@ -1215,5 +1295,118 @@ mod tests {
         assert!(is_tab_detach_pos(200.0, -30.0, 1280.0));
         assert!(is_tab_detach_pos(-30.0, 20.0, 1280.0));
         assert!(is_tab_detach_pos(1310.0, 20.0, 1280.0));
+    }
+}
+
+/// A wheel-notch or keyboard scroll gliding to its target over a few frames.
+#[derive(Debug, Clone)]
+pub(super) struct SmoothScroll {
+    region: UiRegion,
+    /// Keyboard scrolls move the page viewport; wheel glides go to whatever is under the pointer.
+    viewport: bool,
+    /// Content glides belong to one tab and stop if the user switches away.
+    tab_id: Option<u64>,
+    rem_x: f64,
+    rem_y: f64,
+    last: Instant,
+}
+
+/// Glide time constant: ~95% of a notch lands within 3τ ≈ 120 ms, then it eases to a stop.
+const GLIDE_TAU_MS: f64 = 40.0;
+
+/// Portion of `remaining` to scroll this frame (exponential ease-out); the tail under half a
+/// pixel is taken at once so the glide ends exactly on target.
+fn glide_portion(remaining: f64, dt_ms: f64) -> f64 {
+    let dt = dt_ms.clamp(1.0, 50.0); // a stalled frame shouldn't jump the whole way
+    let step = remaining * (1.0 - (-dt / GLIDE_TAU_MS).exp());
+    if (remaining - step).abs() < 0.5 {
+        remaining
+    } else {
+        step
+    }
+}
+
+/// Repeated notches in one direction add up (fast wheel spins accelerate); reversing direction
+/// drops what was left, so the page turns around immediately.
+fn accumulate_scroll(remaining: f64, delta: f64) -> f64 {
+    if delta != 0.0 && remaining != 0.0 && remaining.signum() != delta.signum() {
+        delta
+    } else {
+        remaining + delta
+    }
+}
+
+/// Lines per wheel notch from the OS ("마우스 → 한 번에 스크롤할 줄 수"); "one screen at a time"
+/// maps to a long jump. Non-Windows wheels already report accelerated line counts.
+fn system_wheel_lines() -> f64 {
+    #[cfg(windows)]
+    {
+        const SPI_GETWHEELSCROLLLINES: u32 = 0x0068;
+        const WHEEL_PAGESCROLL: u32 = u32::MAX;
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn SystemParametersInfoW(action: u32, param: u32, pv: *mut core::ffi::c_void, win_ini: u32) -> i32;
+        }
+        let mut lines: u32 = 3;
+        // SAFETY: SPI_GETWHEELSCROLLLINES writes one UINT to the provided pointer.
+        let ok = unsafe { SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, (&raw mut lines).cast(), 0) };
+        match (ok, lines) {
+            (0, _) | (_, 0) => 3.0,
+            (_, WHEEL_PAGESCROLL) => 20.0,
+            (_, n) => f64::from(n.min(100)),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        1.0
+    }
+}
+
+#[cfg(test)]
+mod smooth_scroll_tests {
+    use super::*;
+
+    #[test]
+    fn a_notch_glides_to_exactly_its_target_in_about_120ms() {
+        let (mut remaining, mut scrolled, mut t) = (100.0_f64, 0.0_f64, 0.0_f64);
+        let mut first = None;
+        while remaining != 0.0 {
+            let step = glide_portion(remaining, 16.0);
+            first.get_or_insert(step);
+            assert!(step.abs() <= remaining.abs() + 1e-9 && step.signum() == remaining.signum());
+            scrolled += step;
+            remaining -= step;
+            t += 16.0;
+            assert!(t < 400.0, "glide must finish");
+        }
+        assert!((scrolled - 100.0).abs() < 1e-9, "lands on target: {scrolled}");
+        assert!(
+            first.unwrap() > 25.0,
+            "responds immediately: first frame moves a big chunk"
+        );
+        assert!(t <= 240.0, "finished in {t} ms");
+    }
+
+    #[test]
+    fn notches_accumulate_and_reversal_turns_around() {
+        assert_eq!(accumulate_scroll(-60.0, -100.0), -160.0);
+        assert_eq!(accumulate_scroll(-60.0, 100.0), 100.0);
+        assert_eq!(accumulate_scroll(0.0, 100.0), 100.0);
+        assert_eq!(
+            accumulate_scroll(-60.0, 0.0),
+            -60.0,
+            "an axis without input keeps gliding"
+        );
+    }
+
+    #[test]
+    fn stalled_frame_does_not_jump_to_the_end() {
+        assert!(glide_portion(1000.0, 5000.0) < 1000.0);
+    }
+
+    #[test]
+    fn wheel_lines_setting_is_sane() {
+        let n = system_wheel_lines();
+        assert!((1.0..=100.0).contains(&n), "{n}");
     }
 }

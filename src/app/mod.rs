@@ -455,6 +455,8 @@ pub struct BrowserApp {
     chat_msg_added: Option<(usize, Instant)>,
     sidebar_panel_key: u8,
     sidebar_panel_at: Option<Instant>,
+    /// Wheel-notch / keyboard scroll currently gliding (Clean-mode pages and the sidebar).
+    smooth_scroll: Option<input::SmoothScroll>,
 }
 
 const FRESH_TAB_MS: u64 = 130;
@@ -604,6 +606,7 @@ impl BrowserApp {
             chat_msg_added: None,
             sidebar_panel_key: 0,
             sidebar_panel_at: None,
+            smooth_scroll: None,
         };
 
         app.load_active_tab(false, None);
@@ -1307,6 +1310,7 @@ impl BrowserApp {
             return;
         }
         let anim_time = self.anim_time();
+        let gliding = self.step_smooth_scroll();
         let scale = self.hidpi_scale as f64;
         let win_w = self.win_size.width.max(1);
         let win_h = self.win_size.height.max(1);
@@ -1318,7 +1322,7 @@ impl BrowserApp {
         self.chrome_doc.poll(None);
         self.chrome_doc.resolve(anim_time);
 
-        let mut needs_more_frames = self.chrome_doc.is_animating();
+        let mut needs_more_frames = self.chrome_doc.is_animating() || gliding;
         // Empty content area while a Clean-mode page loads: show the page skeleton. Under a WebView
         // about to appear, paint the static one (`paint_under_webview`).
         let show_skeleton = self.prepaint_skeleton
