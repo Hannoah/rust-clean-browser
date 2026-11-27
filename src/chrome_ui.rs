@@ -43,72 +43,84 @@ pub const fn chrome_height(show_bookmarks_bar: bool) -> u32 {
     TITLEBAR_HEIGHT + TOOLBAR_HEIGHT + if show_bookmarks_bar { BMBAR_HEIGHT } else { 0 }
 }
 
-/// Design tokens shared by every built-in page and popup, following Fluent 2 + Material 3
-/// tonal surface elevation and dark-mode contrast ergonomics.
+/// Design tokens shared by every built-in page and popup — Neutral Paper & Obsidian
+/// minimal monochrome system with crisp cobalt focus accents.
 const THEME_CSS: &str = r#"
 :root {
   color-scheme: light dark;
-  --frame: #e3e8f0;
-  --frame-hover: #edf0f6;
+  --frame: #eff1f4;
+  --frame-hover: rgba(0, 0, 0, 0.048);
   --surface: #ffffff;
-  --surface-2: #f6f8fb;
-  --surface-3: #edf1f7;
-  --omni: #eef2f7;
-  --omni-hover: #e5ebf3;
-  --border: rgba(15, 23, 42, 0.11);
-  --divider: rgba(15, 23, 42, 0.08);
-  --tab-specular: rgba(255, 255, 255, 0.9);
-  --text: #16181d;
-  --text-2: #525a69;
-  --text-3: #838d9e;
-  --accent: #1b6ef3;
-  --accent-bg: #dbeafe;
-  --accent-text: #0f3a8a;
-  --accent-ring: rgba(27, 110, 243, 0.22);
-  --green: #0f8a5f;
-  --green-bg: #dcfce7;
-  --green-text: #065f46;
+  --surface-2: #f7f8fa;
+  --surface-3: #eef0f4;
+  --omni: #f1f3f6;
+  --omni-hover: #e8ebef;
+  --border: rgba(0, 0, 0, 0.075);
+  --border-strong: rgba(0, 0, 0, 0.13);
+  --divider: rgba(0, 0, 0, 0.055);
+  --tab-specular: rgba(255, 255, 255, 0.96);
+  --text: #14161a;
+  --text-2: #5b616e;
+  --text-3: #8b919e;
+  --ink: #14161a;
+  --ink-fg: #ffffff;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-grad: linear-gradient(180deg, #2563eb 0%, #1d4ed8 100%);
+  --accent-bg: rgba(37, 99, 235, 0.09);
+  --accent-text: #1d4ed8;
+  --accent-ring: rgba(37, 99, 235, 0.18);
+  --green: #0d9468;
+  --green-bg: rgba(13, 148, 104, 0.09);
+  --green-text: #0b6e4e;
   --amber: #b45309;
-  --amber-bg: #fef3c7;
-  --amber-text: #78350f;
-  --hover: rgba(15, 23, 42, 0.055);
-  --press: rgba(15, 23, 42, 0.11);
+  --amber-bg: rgba(217, 119, 6, 0.10);
+  --amber-text: #92400e;
+  --hover: rgba(0, 0, 0, 0.045);
+  --press: rgba(0, 0, 0, 0.085);
   --danger: #dc2626;
-  --danger-bg: #fee2e2;
-  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
-  --shadow-md: 0 6px 20px rgba(15, 23, 42, 0.09), 0 1px 3px rgba(15, 23, 42, 0.05);
+  --danger-bg: rgba(220, 38, 38, 0.09);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.03);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.08), 0 2px 6px rgba(0, 0, 0, 0.03);
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --frame: #121418;
-    --frame-hover: #1c1f26;
-    --surface: #1e2127;
-    --surface-2: #17191e;
-    --surface-3: #262a33;
-    --omni: #13151a;
-    --omni-hover: #181b21;
-    --border: rgba(255, 255, 255, 0.10);
-    --divider: rgba(255, 255, 255, 0.07);
-    --tab-specular: rgba(255, 255, 255, 0.09);
-    --text: #e9edf5;
-    --text-2: #9da6b5;
-    --text-3: #6c7585;
-    --accent: #7ab3ff;
-    --accent-bg: #1b3863;
-    --accent-text: #d6e6ff;
-    --accent-ring: rgba(122, 179, 255, 0.25);
+    --frame: #0e0f12;
+    --frame-hover: rgba(255, 255, 255, 0.055);
+    --surface: #18191d;
+    --surface-2: #121317;
+    --surface-3: #22242a;
+    --omni: #111216;
+    --omni-hover: #1c1e24;
+    --border: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.14);
+    --divider: rgba(255, 255, 255, 0.055);
+    --tab-specular: rgba(255, 255, 255, 0.07);
+    --text: #f1f2f5;
+    --text-2: #9499a6;
+    --text-3: #636875;
+    --ink: #f1f2f5;
+    --ink-fg: #111216;
+    --accent: #60a5fa;
+    --accent-hover: #7cb6fb;
+    --accent-grad: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%);
+    --accent-bg: rgba(96, 165, 250, 0.13);
+    --accent-text: #bfdbfe;
+    --accent-ring: rgba(96, 165, 250, 0.24);
     --green: #34d399;
-    --green-bg: #0d3326;
-    --green-text: #a7f3d0;
+    --green-bg: rgba(52, 211, 153, 0.11);
+    --green-text: #86efac;
     --amber: #fbbf24;
-    --amber-bg: #3b2a0d;
+    --amber-bg: rgba(251, 191, 36, 0.12);
     --amber-text: #fde68a;
-    --hover: rgba(255, 255, 255, 0.075);
-    --press: rgba(255, 255, 255, 0.14);
+    --hover: rgba(255, 255, 255, 0.055);
+    --press: rgba(255, 255, 255, 0.105);
     --danger: #f87171;
-    --danger-bg: #3f1618;
-    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35);
-    --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.30);
+    --danger-bg: rgba(248, 113, 113, 0.13);
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.30);
+    --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    --shadow-md: 0 12px 32px rgba(0, 0, 0, 0.52), 0 2px 6px rgba(0, 0, 0, 0.32);
   }
 }
 * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
@@ -127,13 +139,13 @@ img.fav { border-radius: 3px; }
 .fav.glyph { color: var(--text-2); background: transparent; }
 kbd {
   display: inline-flex; align-items: center; justify-content: center;
-  padding: 1px 6px; border-radius: 5px;
-  font-family: inherit; font-size: 10.5px; font-weight: 600;
+  height: 20px; padding: 0 6px; border-radius: 5px;
+  font-family: inherit; font-size: 10.5px; font-weight: 600; letter-spacing: 0.01em;
   color: var(--text-2); background: var(--surface-3);
   border: 1px solid var(--border);
   box-shadow: inset 0 -1px 0 var(--border);
 }
-a:focus-visible, .ib:focus-visible, .tile:focus-visible, .btn:focus-visible {
+a:focus-visible, .ib:focus-visible, .ai-btn:focus-visible, .tile:focus-visible, .btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -146,39 +158,44 @@ const CHROME_CSS: &str = r#"
 html, body { width: 100%; height: 100%; overflow: hidden; background: var(--frame); user-select: none; }
 .chrome { display: flex; flex-direction: column; width: 100%; height: 100%; }
 
-/* ── Title bar & Tab strip ── */
+/* ── Title bar & Flush Modern Tab Strip ── */
 .titlebar {
-  display: flex; align-items: flex-end; height: 40px;
+  display: flex; align-items: center; height: 40px;
   padding-left: 8px; background: var(--frame);
 }
 .tabs {
-  display: flex; align-items: flex-end; flex: 0 1 auto;
-  min-width: 0; overflow: hidden; height: 40px; padding-top: 6px;
+  display: flex; align-items: flex-end; gap: 2px; flex: 0 1 auto;
+  min-width: 0; overflow: hidden; height: 40px;
 }
 .tab {
   position: relative; display: flex; align-items: center; gap: 7px;
-  width: 214px; flex: 0 1 auto; min-width: 68px; height: 34px;
-  padding: 0 8px 0 11px; border-radius: 10px 10px 0 0;
+  width: 204px; flex: 0 1 auto; min-width: 68px; height: 32px; margin-bottom: 4px;
+  padding: 0 8px 0 10px; border-radius: 9px;
+  border: 1px solid transparent;
   color: var(--text-2); font-size: 12px;
   transition: background 110ms ease, color 110ms ease;
 }
 .tab:hover { background: var(--frame-hover); color: var(--text); }
+.tab:active { background: var(--press); }
 .tab.active {
-  background: var(--surface); color: var(--text); font-weight: 600;
-  box-shadow: inset 0 1px 0 var(--tab-specular), 0 -1px 4px rgba(0, 0, 0, 0.04);
+  height: 34px; margin-bottom: 0;
+  border-radius: 10px 10px 0 0;
+  background: var(--surface); border-color: var(--border); border-bottom-color: transparent;
+  color: var(--text); font-weight: 600;
+  box-shadow: inset 0 1px 0 var(--tab-specular);
 }
 .tab.sleeping { color: var(--text-3); }
-.tab.sleeping .fav { opacity: 0.65; }
+.tab.sleeping .fav { opacity: 0.52; }
 .tab.sleeping:hover { color: var(--text-2); }
-.tab.sleeping:hover .fav { opacity: 0.92; }
+.tab.sleeping:hover .fav { opacity: 0.88; }
 .tab.detaching {
   opacity: 0.45;
   outline: 1.5px dashed var(--accent);
   outline-offset: -2px;
 }
 .tab-sep {
-  width: 1px; height: 15px; margin: 0 1px 9px;
-  background: var(--border); flex-shrink: 0;
+  width: 1px; height: 13px; margin: 0 1px 13px;
+  background: var(--divider); flex-shrink: 0;
 }
 .tab:hover + .tab-sep { opacity: 0; }
 @keyframes tab-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
@@ -189,52 +206,57 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--fram
 }
 .tab-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; }
 .tab-dot {
-  width: 6px; height: 6px; border-radius: 3px; flex-shrink: 0;
+  width: 5px; height: 5px; border-radius: 3px; flex-shrink: 0;
 }
 .tab-dot.sleep { background: var(--text-3); opacity: 0.55; }
 .tab-badge {
-  font-size: 9.5px; font-weight: 700; padding: 1px 4px;
-  border-radius: 4px; flex-shrink: 0; letter-spacing: 0.02em;
+  font-size: 9.5px; font-weight: 700; padding: 1px 5px;
+  border-radius: 999px; flex-shrink: 0; letter-spacing: 0.02em;
 }
-.tab-badge.js { background: var(--accent-bg); color: var(--accent-text); }
-.tab-badge.reader { background: var(--green-bg); color: var(--green); }
+.tab-badge.js { background: var(--surface-3); color: var(--text-2); }
+.tab-badge.reader { background: var(--green-bg); color: var(--green-text); }
+.tab-badge.live { background: var(--danger-bg); color: var(--danger); }
 .tab-close {
   display: flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px; border-radius: 9px;
-  color: var(--text-2); flex-shrink: 0; opacity: 0.35;
+  width: 18px; height: 18px; border-radius: 999px;
+  color: var(--text-2); flex-shrink: 0; opacity: 0;
 }
-.tab.active .tab-close, .tab:hover .tab-close { opacity: 1; }
+.tab.active .tab-close { opacity: 0.55; }
+.tab:hover .tab-close, .tab-close:hover { opacity: 1; }
 .tab-close:hover { background: var(--press); color: var(--text); }
 .newtab {
   display: flex; align-items: center; justify-content: center;
-  width: 28px; height: 28px; margin: 0 0 3px 5px;
-  border-radius: 14px; color: var(--text-2); flex-shrink: 0;
+  width: 26px; height: 26px; margin-left: 4px;
+  border-radius: 999px; color: var(--text-2); flex-shrink: 0;
 }
-.newtab:hover { background: var(--hover); color: var(--text); }
+.newtab:hover { background: var(--frame-hover); color: var(--text); }
+.newtab:active { background: var(--press); }
 .drag { flex: 1 1 0; min-width: 28px; height: 40px; }
 .title-tools {
-  display: flex; align-items: center; gap: 4px;
+  display: flex; align-items: center; gap: 2px;
   height: 40px; padding-right: 6px; flex-shrink: 0;
 }
 .tchip {
-  display: inline-flex; align-items: center; gap: 5px;
-  height: 26px; padding: 0 9px; border-radius: 13px;
-  font-size: 11px; font-weight: 500; color: var(--text-2);
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 26px; padding: 0 8px; border-radius: 7px;
+  font-size: 11px; font-weight: 500; color: var(--text-3);
   background: transparent;
 }
-.tchip:hover { background: var(--hover); color: var(--text); }
+.tchip:hover { background: var(--frame-hover); color: var(--text); }
+.tchip:active { background: var(--press); }
 .tchip.icon-only { width: 28px; padding: 0; justify-content: center; }
 .winctl { display: flex; align-self: flex-start; height: 40px; flex-shrink: 0; }
 .wbtn {
   display: flex; align-items: center; justify-content: center;
-  width: 46px; height: 40px; color: var(--text-2);
+  width: 44px; height: 40px; color: var(--text-2);
 }
-.wbtn:hover { background: var(--hover); color: var(--text); }
-.wbtn.close:hover { background: var(--danger); color: #ffffff; }
+.wbtn:hover { background: var(--frame-hover); color: var(--text); }
+.wbtn:active { background: var(--press); }
+.wbtn.close:hover { background: #e5484d; color: #ffffff; }
 
 /* ── Main Toolbar ── */
 .toolbar {
-  position: relative; display: flex; align-items: center; gap: 4px;
+  position: relative; display: flex; align-items: center; gap: 6px;
   height: 46px; padding: 0 10px; background: var(--surface);
   border-bottom: 1px solid var(--divider);
 }
@@ -242,29 +264,30 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--fram
 .nav-group { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
 .ib {
   position: relative; display: flex; align-items: center; justify-content: center;
-  width: 32px; height: 32px; border-radius: 16px;
+  width: 29px; height: 29px; border-radius: 999px;
   color: var(--text-2); flex-shrink: 0;
 }
 .ib:hover { background: var(--hover); color: var(--text); }
-.ib.off { color: var(--text-3); opacity: 0.42; }
-.ib.off:hover { background: transparent; color: var(--text-3); }
+.ib:active { background: var(--press); }
+.ib.off { color: var(--text-3); opacity: 0.35; }
+.ib.off:hover, .ib.off:active { background: transparent; color: var(--text-3); }
 .ib.on { color: var(--accent); background: var(--accent-bg); }
 .ib.dl-done { color: var(--green); background: var(--green-bg); }
 .ib.star-on { color: #f59e0b; }
 .dl-dot {
-  position: absolute; top: 5px; right: 5px; width: 7px; height: 7px;
+  position: absolute; top: 4px; right: 4px; width: 6px; height: 6px;
   border-radius: 50%; border: 1.5px solid var(--surface);
 }
 .dl-dot.active { background: var(--accent); }
 .dl-dot.done { background: var(--green); }
 
-/* ── Elevated Omnibox Pill ── */
+/* ── Pill Omnibox ── */
 .omni {
   display: flex; align-items: center; gap: 6px;
   flex: 1; min-width: 160px; height: 34px; margin: 0 6px;
-  padding: 0 5px 0 8px; border-radius: 17px;
-  border: 1.5px solid transparent; background: var(--omni);
-  transition: background 120ms ease, border-color 120ms ease;
+  padding: 0 6px 0 8px; border-radius: 999px;
+  border: 1px solid transparent; background: var(--omni);
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
 }
 .omni:hover { background: var(--omni-hover); }
 .omni:focus-within {
@@ -273,49 +296,78 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--fram
 }
 .omni-lead {
   display: flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px; border-radius: 11px; flex-shrink: 0;
-  color: var(--text-2);
+  width: 22px; height: 22px; border-radius: 999px; flex-shrink: 0;
+  color: var(--text-3); background: transparent;
 }
 .omni-lead.secure { color: var(--green); }
 .omni-lead.warn { color: var(--amber); }
-.omni-lead.internal { color: var(--accent); }
+.omni-lead.internal { color: var(--text-2); }
 #url-bar {
   flex: 1; min-width: 40px; height: 100%; border: none;
-  background: transparent; color: var(--text); font-size: 13.5px; outline: none;
+  background: transparent; color: var(--text); font-size: 13px; outline: none;
 }
 .omni-end { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
 .omni-btn {
   display: flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; border-radius: 13px;
+  width: 24px; height: 24px; border-radius: 999px;
   color: var(--text-2); flex-shrink: 0;
 }
 .omni-btn:hover { background: var(--hover); color: var(--text); }
+.omni-btn:active { background: var(--press); }
 .omni-btn.on { color: var(--accent); background: var(--accent-bg); }
 .omni-btn.star-on { color: #f59e0b; }
 .zoom-pill {
-  display: inline-flex; align-items: center; height: 22px; padding: 0 8px;
-  border-radius: 11px; background: var(--accent-bg); color: var(--accent-text);
+  display: inline-flex; align-items: center; height: 22px; padding: 0 7px;
+  border-radius: 999px; background: var(--surface-3); color: var(--text);
   font-size: 11px; font-weight: 600; white-space: nowrap;
 }
 
-/* ── Right Utility Pills ── */
-.util-group { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
-.pill {
-  display: inline-flex; align-items: center; gap: 5px;
-  height: 28px; padding: 0 10px; border-radius: 14px;
-  background: var(--omni); border: 1px solid var(--divider);
-  font-size: 11.5px; font-weight: 600; color: var(--text-2);
+/* ── Right Utility & Whisper-Quiet Status Pill ── */
+.util-group { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.status-cluster {
+  display: inline-flex; align-items: center; height: 28px; padding: 0 3px; gap: 1px;
+  border-radius: 999px; background: var(--surface-2); border: 1px solid var(--divider);
+  flex-shrink: 0;
+}
+.seg {
+  display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 7px;
+  border-radius: 999px; font-size: 11px; font-weight: 500; color: var(--text-2);
   white-space: nowrap; flex-shrink: 0;
 }
-.pill:hover { background: var(--omni-hover); color: var(--text); border-color: var(--border); }
-.pill.clean { background: var(--green-bg); color: var(--green-text); border-color: transparent; }
+.seg:hover { background: var(--hover); color: var(--text); }
+.seg:active { background: var(--press); }
+.seg.clean { background: var(--green-bg); color: var(--green-text); font-weight: 600; }
+.seg.js { background: var(--accent-bg); color: var(--accent-text); font-weight: 600; }
+.seg.shield-on { color: var(--text-2); }
+.seg.shield-on .svg-ico { color: var(--green); }
+.seg-sep { width: 1px; height: 11px; background: var(--divider); flex-shrink: 0; }
+.ai-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 28px; padding: 0 11px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface);
+  font-size: 11.5px; font-weight: 600; color: var(--text);
+  white-space: nowrap; flex-shrink: 0;
+}
+.ai-btn:hover { background: var(--hover); border-color: var(--border-strong); }
+.ai-btn:active { background: var(--press); }
+.ai-btn.on {
+  background: var(--ink); border-color: var(--ink); color: var(--ink-fg);
+}
+.ai-btn.on:hover { opacity: 0.88; color: var(--ink-fg); }
+.pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 9px; border-radius: 999px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  font-size: 11px; font-weight: 600; color: var(--text-2);
+  white-space: nowrap; flex-shrink: 0;
+}
+.pill:hover { background: var(--hover); color: var(--text); border-color: var(--border-strong); }
 .pill.js { background: var(--accent-bg); color: var(--accent-text); border-color: transparent; }
-.pill.shield-on { color: var(--green); }
 .pill.toast {
-  background: var(--accent-bg); color: var(--accent-text);
+  background: var(--surface-3); color: var(--text);
   border-color: transparent; font-weight: 500;
 }
-.vsep { width: 1px; height: 18px; margin: 0 2px; background: var(--divider); flex-shrink: 0; }
+.vsep { width: 1px; height: 14px; margin: 0 2px; background: var(--divider); flex-shrink: 0; }
 
 /* ── Animated 2px Loading Progress Bar ── */
 .progress-track {
@@ -341,21 +393,23 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--fram
 .bm-items { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; overflow: hidden; }
 .chip {
   display: inline-flex; align-items: center; gap: 6px;
-  height: 24px; padding: 0 9px; border-radius: 12px;
-  color: var(--text); font-size: 12px; white-space: nowrap; flex-shrink: 0;
+  height: 24px; padding: 0 9px; border-radius: 999px;
+  color: var(--text-2); font-size: 12px; white-space: nowrap; flex-shrink: 0;
 }
-.chip:hover { background: var(--hover); }
+.chip:hover { background: var(--hover); color: var(--text); }
+.chip:active { background: var(--press); }
 .chip.drop { background: var(--accent-bg); color: var(--accent-text); font-weight: 600; }
 .chip .fav { width: 14px; height: 14px; font-size: 9px; }
-.chip .fico { color: var(--text-2); display: inline-flex; }
-.chip.drop .fico { color: var(--accent-text); }
+.chip .fico { color: var(--amber); opacity: 0.85; display: inline-flex; }
+.chip.drop .fico { color: var(--accent-text); opacity: 1; }
 .chip.muted { color: var(--text-2); font-size: 11.5px; }
+.chip.muted .fico { color: var(--text-2); opacity: 1; }
 .bm-right { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
 .bm-empty { font-size: 11.5px; color: var(--text-3); padding-left: 6px; }
 @media (max-width: 780px) {
   .ib { width: 28px; height: 28px; }
   .omni { min-width: 96px; margin: 0 3px; }
-  .pill { padding: 0 8px; font-size: 11px; }
+  .seg { padding: 0 5px; font-size: 10.5px; }
   .hide-narrow { display: none; }
 }
 "#;
@@ -387,10 +441,12 @@ pub struct ChromeRenderState<'a> {
     pub downloads_in_progress: usize,
     /// Number of newly finished downloads not yet viewed in the Downloads popup.
     pub downloads_unseen: usize,
+    /// Whether the AI assistant sidebar is currently open.
+    pub sidebar_open: bool,
 }
 
 fn spinner_html(dark_mode: bool) -> String {
-    let accent = if dark_mode { "#7ab3ff" } else { "#1b6ef3" };
+    let accent = if dark_mode { "#60a5fa" } else { "#2563eb" };
     format!(
         r#"<span class="fav-spin"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="5.5" fill="none" stroke="{accent}" stroke-opacity="0.22" stroke-width="2" /><path d="M 8 2.5 A 5.5 5.5 0 0 1 11.89 11.89" fill="none" stroke="{accent}" stroke-width="2" stroke-linecap="round" /></svg></span>"#
     )
@@ -456,7 +512,9 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
         } else {
             favicon_html(&tab.title, &tab.url)
         };
-        let mode_badge = if tab.js_mode {
+        let mode_badge = if tab.media_active {
+            r#"<span class="tab-badge live" title="카메라·마이크 또는 소리 사용 중 (탭을 옮겨도 계속 실행)">LIVE</span>"#
+        } else if tab.js_mode {
             r#"<span class="tab-badge js">JS</span>"#
         } else if tab.reader_mode {
             r#"<span class="tab-badge reader">R</span>"#
@@ -492,10 +550,10 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
     let palette_label = if cfg!(target_os = "macos") { "⌘K" } else { "Ctrl+K" };
     let _ = write!(
         h,
-        r#"</div><div class="newtab" data-action="new-tab">{plus_svg}</div><div class="drag" data-drag="1"></div>
+        r#"</div><div class="newtab" data-action="new-tab" title="새 탭 (Ctrl+T)">{plus_svg}</div><div class="drag" data-drag="1"></div>
 <div class="title-tools">
-  <div class="tchip icon-only" data-action="cycle-theme">{theme_svg}</div>
-  <div class="tchip" data-action="open-palette">{cmd_svg}<span>{palette_label}</span></div>
+  <div class="tchip icon-only" data-action="cycle-theme" title="테마 전환 (시스템 · 라이트 · 다크)">{theme_svg}</div>
+  <div class="tchip" data-action="open-palette" title="명령 팔레트 ({palette_label})">{cmd_svg}<span>{palette_label}</span></div>
 </div>"#,
         theme_svg = svg(theme_icon, 13),
         cmd_svg = svg(Icon::Command, 12),
@@ -516,12 +574,15 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
     let can_forward = state.can_forward;
     let is_bookmarked = state.bookmarks.contains_url(&active.url);
     let idn_suspicious = is_suspicious_host(&active.url);
+    let loopback_http = is_loopback_http(&active.url);
     let (lead_cls, lead_svg) = if idn_suspicious {
         ("omni-lead warn", svg(Icon::AlertTriangle, 13))
     } else if active.url.starts_with("https://") {
         ("omni-lead secure", svg(Icon::Lock, 13))
     } else if active.url.starts_with("rust://") {
         ("omni-lead internal", svg(Icon::Compass, 14))
+    } else if loopback_http {
+        ("omni-lead", svg(Icon::Monitor, 13))
     } else if active.url.starts_with("http://") {
         ("omni-lead warn", svg(Icon::AlertTriangle, 13))
     } else {
@@ -538,14 +599,19 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
     } else {
         "toolbar no-bm"
     };
+    let reload_tip = if active.is_loading {
+        "로딩 중지 (Esc)"
+    } else {
+        "새로고침 (Ctrl+R)"
+    };
     let _ = write!(
         h,
         r#"<div class="{toolbar_cls}">
 <div class="nav-group">
-  <div class="ib{back_off}" data-action="back">{back}</div>
-  <div class="ib{fwd_off}" data-action="forward">{fwd}</div>
-  <div class="ib" data-action="reload">{reload}</div>
-  <div class="ib" data-action="nav:rust://home">{home}</div>
+  <div class="ib{back_off}" data-action="back" title="뒤로 (Alt+←)">{back}</div>
+  <div class="ib{fwd_off}" data-action="forward" title="앞으로 (Alt+→)">{fwd}</div>
+  <div class="ib" data-action="reload" title="{reload_tip}">{reload}</div>
+  <div class="ib" data-action="nav:rust://home" title="새 탭 페이지 (Alt+Home)">{home}</div>
 </div>
 <div id="omni-box" class="omni">
   <span class="{lead_cls}"{lead_tip}>{lead_svg}</span>
@@ -560,6 +626,10 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
         url_val = html_escape(url_val),
         lead_tip = if idn_suspicious {
             " title=\"도메인에 서로 다른 문자 체계가 섞여 있습니다. 피싱 사이트일 수 있으니 주의하세요.\""
+        } else if loopback_http {
+            " title=\"로컬 서버 연결 (HTTP)\""
+        } else if active.url.starts_with("http://") {
+            " title=\"암호화되지 않은 HTTP 연결\""
         } else {
             ""
         },
@@ -568,7 +638,7 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
     if (active.zoom - 1.0).abs() > 0.001 {
         let _ = write!(
             h,
-            r#"<div class="zoom-pill num" data-action="zoom-reset">{:.0}%</div>"#,
+            r#"<div class="zoom-pill num" data-action="zoom-reset" title="확대/축소 초기화 (Ctrl+0)">{:.0}%</div>"#,
             active.zoom * 100.0
         );
     }
@@ -576,7 +646,7 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
         let r_cls = if active.reader_mode { "omni-btn on" } else { "omni-btn" };
         let _ = write!(
             h,
-            r#"<div class="{r_cls}" data-action="toggle-reader">{}</div>"#,
+            r#"<div class="{r_cls}" data-action="toggle-reader" title="리더 모드 전환 (Alt+R)">{}</div>"#,
             svg(Icon::BookOpen, 14)
         );
     }
@@ -586,9 +656,14 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
     } else {
         svg(Icon::StarOutline, 14)
     };
+    let star_tip = if is_bookmarked {
+        "북마크 해제 (Ctrl+D)"
+    } else {
+        "북마크 추가 (Ctrl+D)"
+    };
     let _ = write!(
         h,
-        r#"<div class="{star_cls}" data-action="toggle-bookmark">{star_svg}</div>
+        r#"<div class="{star_cls}" data-action="toggle-bookmark" title="{star_tip}">{star_svg}</div>
   </div>
 </div>
 <div class="util-group">"#
@@ -597,7 +672,7 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
     if let Some(note) = state.status_note {
         let _ = write!(
             h,
-            r#"<div class="pill toast hide-narrow" data-action="dismiss-toast">{}<span>{}</span></div>"#,
+            r#"<div class="pill toast hide-narrow" data-action="dismiss-toast" title="닫기">{}<span>{}</span></div>"#,
             svg(Icon::Check, 12),
             html_escape(&truncate_chars(note, 26)),
         );
@@ -611,25 +686,25 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
             ("pill", "필기")
         };
         format!(
-            r#"<div class="{cls}" data-action="pdf-editor">{}<span>{label}</span></div>"#,
+            r#"<div class="{cls}" data-action="pdf-editor" title="PDF 필기 모드 전환 (Alt+E)">{}<span>{label}</span></div>"#,
             svg(Icon::Pencil, 12)
         )
     } else {
         String::new()
     };
     let (engine_cls, engine_svg, engine_label) = if active.js_mode {
-        ("pill js", svg(Icon::Code, 12), "JS")
+        ("seg js", svg(Icon::Code, 12), "JS")
     } else {
-        ("pill clean", svg(Icon::Zap, 12), "Clean")
+        ("seg clean", svg(Icon::Zap, 12), "Clean")
     };
     let (shield_cls, shield_svg, shield_label) = if state.filter_enabled {
         (
-            "pill shield-on num",
-            svg(Icon::ShieldCheck, 13),
+            "seg shield-on num",
+            svg(Icon::ShieldCheck, 12),
             state.blocked_count.to_string(),
         )
     } else {
-        ("pill", svg(Icon::ShieldOff, 13), "OFF".to_string())
+        ("seg", svg(Icon::ShieldOff, 12), "OFF".to_string())
     };
     let ram_label = if sleeping_count > 0 {
         format!(
@@ -647,23 +722,30 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
     } else {
         ("ib", "")
     };
+    let ai_cls = if state.sidebar_open { "ai-btn on" } else { "ai-btn" };
 
     let _ = write!(
         h,
-        r#"{pdf_btn}<div class="{engine_cls}" data-action="toggle-js">{engine_svg}<span>{engine_label}</span></div>
-  <div class="{shield_cls}" data-action="toggle-filter">{shield_svg}<span>{shield_label}</span></div>
-  <div class="pill num" data-action="trim-memory">{cpu_svg}<span>{ram_label}</span></div>
+        r#"{pdf_btn}<div class="status-cluster">
+    <div class="{engine_cls}" data-action="toggle-js" title="렌더링 엔진 전환 (Clean / JS)">{engine_svg}<span>{engine_label}</span></div>
+    <div class="seg-sep"></div>
+    <div class="{shield_cls}" data-action="toggle-filter" title="트래커·광고 차단 전환">{shield_svg}<span>{shield_label}</span></div>
+    <div class="seg-sep"></div>
+    <div class="seg num" data-action="trim-memory" title="메모리 즉시 회수">{cpu_svg}<span>{ram_label}</span></div>
+  </div>
   <div class="vsep"></div>
   <div class="{dl_cls}" data-action="open-downloads" title="다운로드 목록 (Ctrl+J)">{dl_svg}{dl_dot}</div>
-  <div class="ib" data-action="open-find">{find_svg}</div>
-  <div class="ib" data-action="nav:rust://history">{hist_svg}</div>
-  <div class="ib" data-action="nav:rust://bookmarks">{bm_svg}</div>
+  <div class="ib hide-narrow" data-action="open-find" title="페이지 내 찾기 (Ctrl+F)">{find_svg}</div>
+  <div class="ib" data-action="nav:rust://history" title="방문 기록 (Ctrl+H)">{hist_svg}</div>
+  <div class="ib" data-action="nav:rust://bookmarks" title="북마크 관리자">{bm_svg}</div>
+  <div class="{ai_cls}" data-action="toggle-sidebar" title="AI 어시스턴트 (Ctrl+Shift+I)">{ai_svg}<span class="hide-narrow">AI</span></div>
 </div>"#,
-        cpu_svg = svg(Icon::Cpu, 13),
+        cpu_svg = svg(Icon::Cpu, 12),
         dl_svg = svg(Icon::Download, 14),
         find_svg = svg(Icon::Search, 14),
         hist_svg = svg(Icon::History, 14),
         bm_svg = svg(Icon::Bookmark, 14),
+        ai_svg = svg(Icon::Sparkles, 14),
     );
 
     if active.is_loading {
@@ -732,7 +814,7 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
         }
         let _ = write!(
             h,
-            r#"<div class="chip muted" data-action="toggle-bm-bar">{}</div></div></div>"#,
+            r#"<div class="chip muted" data-action="toggle-bm-bar" title="북마크 바 숨기기 (Ctrl+Shift+B)">{}</div></div></div>"#,
             svg(Icon::PanelTop, 12),
         );
     }
@@ -762,18 +844,19 @@ pub fn estimate_popup_height(item_count: usize, can_go_back: bool) -> u32 {
 
 const POPUP_CSS: &str = r#"
 html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surface); user-select: none; }
-.shell { display: flex; flex-direction: column; width: 100%; height: 100%; border: 1px solid var(--border); background: var(--surface); }
+.shell { display: flex; flex-direction: column; width: 100%; height: 100%; border: 1px solid var(--border-strong); background: var(--surface); }
 .hdr { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 10px; border-bottom: 1px solid var(--divider); background: var(--surface-2); flex-shrink: 0; }
-.back { display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 12px; color: var(--text-2); }
+.back { display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 999px; color: var(--text-2); }
 .back:hover { background: var(--hover); color: var(--text); }
 .hdr-ico { color: var(--text-2); display: inline-flex; }
 .hdr-title { flex: 1; font-size: 12px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; }
-.hdr-cnt { font-size: 11px; color: var(--text-3); padding: 1px 7px; border-radius: 999px; background: var(--surface-3); }
+.hdr-cnt { font-size: 11px; color: var(--text-2); padding: 1px 7px; border-radius: 999px; background: var(--surface-3); }
 .list { flex: 1; min-height: 0; overflow-y: auto; padding: 6px; }
 .row { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; border-radius: 8px; font-size: 12.5px; color: var(--text); }
 .row:hover { background: var(--hover); }
-.row.sel { background: var(--accent-bg); color: var(--accent-text); font-weight: 500; }
-.fico { color: var(--text-2); display: inline-flex; flex-shrink: 0; }
+.row:active { background: var(--press); }
+.row.sel { background: var(--surface-3); color: var(--text); font-weight: 600; }
+.fico { color: var(--amber); opacity: 0.85; display: inline-flex; flex-shrink: 0; }
 .title { flex: 1; white-space: nowrap; overflow: hidden; }
 .arrow { color: var(--text-3); display: inline-flex; }
 .empty { padding: 18px; text-align: center; color: var(--text-3); font-size: 12px; }
@@ -853,7 +936,7 @@ pub fn suggest_popup_height(rows: usize) -> u32 {
 
 const SUGGEST_CSS: &str = r#"
 html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surface); user-select: none; }
-.shell { display: flex; flex-direction: column; height: 100vh; border: 1px solid var(--border); background: var(--surface); }
+.shell { display: flex; flex-direction: column; height: 100vh; border: 1px solid var(--border-strong); background: var(--surface); }
 .list { flex: 1; padding: 6px; overflow: hidden; }
 .row {
   position: relative; display: flex; align-items: center; gap: 10px;
@@ -861,13 +944,13 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surf
   font-size: 13px; white-space: nowrap; overflow: hidden;
 }
 .row:hover { background: var(--hover); }
-.row.sel { background: var(--accent-bg); color: var(--accent-text); }
+.row.sel { background: var(--surface-3); color: var(--text); }
 .sico { width: 16px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-2); flex-shrink: 0; }
 .row.sel .sico { color: var(--accent); }
 .main { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; overflow: hidden; }
 .title { flex: 0 1 auto; min-width: 0; overflow: hidden; font-weight: 500; }
 .url { flex: 1 1 0; min-width: 0; overflow: hidden; color: var(--text-3); font-size: 12px; }
-.row.sel .url { color: var(--accent-text); opacity: 0.78; }
+.row.sel .url { color: var(--text-2); }
 .hl { font-weight: 700; color: var(--accent); }
 .row.sel .hl { color: var(--accent-text); text-decoration: underline; }
 .badge {
@@ -876,7 +959,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surf
 }
 .badge.tab { background: var(--green-bg); color: var(--green-text); }
 .badge.bm { background: var(--amber-bg); color: var(--amber-text); }
-.row.sel .badge { background: var(--surface); color: var(--accent-text); }
+.row.sel .badge { background: var(--surface); color: var(--text); }
 .ftr {
   display: flex; align-items: center; justify-content: space-between;
   height: 30px; padding: 0 12px; border-top: 1px solid var(--divider);
@@ -991,15 +1074,15 @@ pub enum PaletteIcon {
 
 const PALETTE_CSS: &str = r#"
 html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surface); user-select: none; }
-.shell { display: flex; flex-direction: column; width: 100%; height: 100%; border: 1px solid var(--border); background: var(--surface); }
+.shell { display: flex; flex-direction: column; width: 100%; height: 100%; border: 1px solid var(--border-strong); background: var(--surface); }
 .search-row {
   display: flex; align-items: center; gap: 10px; height: 50px;
   padding: 0 14px; border-bottom: 1px solid var(--divider); background: var(--surface); flex-shrink: 0;
 }
-.search-ico { color: var(--accent); display: inline-flex; flex-shrink: 0; }
+.search-ico { color: var(--text-2); display: inline-flex; flex-shrink: 0; }
 #palette-input {
   flex: 1; height: 34px; border: none; background: transparent;
-  color: var(--text); font-size: 14.5px; outline: none;
+  color: var(--text); font-size: 14px; outline: none;
 }
 .list { flex: 1; min-height: 0; overflow-y: auto; padding: 6px; }
 .cat { padding: 7px 10px 4px; font-size: 11px; font-weight: 600; color: var(--text-3); letter-spacing: 0.03em; }
@@ -1008,17 +1091,18 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surf
   padding: 0 10px; border-radius: 9px; font-size: 13px; color: var(--text);
 }
 .row:hover { background: var(--hover); }
-.row.sel { background: var(--accent-bg); color: var(--accent-text); }
+.row:active { background: var(--press); }
+.row.sel { background: var(--surface-3); color: var(--text); }
 .pico {
   width: 24px; height: 24px; border-radius: 7px;
   display: inline-flex; align-items: center; justify-content: center;
-  background: var(--surface-3); color: var(--text-2); flex-shrink: 0;
+  background: var(--surface-2); color: var(--text-2); flex-shrink: 0;
 }
-.row.sel .pico { background: var(--surface); color: var(--accent); }
+.row.sel .pico { background: var(--ink); color: var(--ink-fg); }
 .pmain { display: flex; align-items: baseline; gap: 8px; flex: 1; min-width: 0; overflow: hidden; }
 .ptitle { font-weight: 500; white-space: nowrap; overflow: hidden; flex-shrink: 0; max-width: 58%; }
 .psub { font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; flex: 1; }
-.row.sel .psub { color: var(--accent-text); opacity: 0.78; }
+.row.sel .psub { color: var(--text-2); }
 .hl { font-weight: 700; color: var(--accent); }
 .empty { padding: 28px; text-align: center; font-size: 13px; color: var(--text-3); }
 .ftr {
@@ -1098,23 +1182,26 @@ const FIND_CSS: &str = r#"
 html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surface); user-select: none; }
 .find-shell {
   display: flex; align-items: center; gap: 6px; width: 100%; height: 100%;
-  padding: 0 8px 0 12px; border: 1px solid var(--border); background: var(--surface);
+  padding: 0 8px 0 12px; border: 1px solid var(--border-strong); background: var(--surface);
 }
-.find-ico { color: var(--text-2); display: inline-flex; flex-shrink: 0; }
+.find-shell:focus-within { border-color: var(--accent); }
+.find-ico { color: var(--accent); display: inline-flex; flex-shrink: 0; }
 #find-input {
-  flex: 1; min-width: 80px; height: 30px; border: none; background: transparent;
+  flex: 1; min-width: 80px; height: 30px; padding: 0 6px; border-radius: 6px;
+  border: none; background: transparent;
   color: var(--text); font-size: 13px; outline: none;
 }
 #find-count {
-  font-size: 11.5px; color: var(--text-2); padding: 2px 7px; border-radius: 6px;
+  font-size: 11.5px; font-weight: 600; color: var(--text-2); padding: 2px 7px; border-radius: 6px;
   background: var(--surface-3); white-space: nowrap; flex-shrink: 0;
 }
 #find-count.none { color: var(--danger); background: var(--danger-bg); }
 .fbtn {
   display: flex; align-items: center; justify-content: center;
-  width: 28px; height: 28px; border-radius: 8px; color: var(--text-2); flex-shrink: 0;
+  width: 28px; height: 28px; border-radius: 999px; color: var(--text-2); flex-shrink: 0;
 }
 .fbtn:hover { background: var(--hover); color: var(--text); }
+.fbtn:active { background: var(--press); }
 "#;
 
 pub fn render_find_bar_html(query: &str, count_label: &str, no_match: bool) -> String {
@@ -1173,7 +1260,7 @@ const DOWNLOADS_CSS: &str = r#"
 html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surface); user-select: none; }
 .dl-shell {
   display: flex; flex-direction: column; width: 100%; height: 100%;
-  border: 1px solid var(--border); background: var(--surface);
+  border: 1px solid var(--border-strong); background: var(--surface);
 }
 .dl-hdr {
   display: flex; align-items: center; justify-content: space-between;
@@ -1184,18 +1271,19 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surf
 .dl-title-ico { color: var(--accent); display: inline-flex; }
 .dl-hdr-acts { display: flex; align-items: center; gap: 4px; }
 .dl-hbtn {
-  display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 8px;
-  border-radius: 7px; font-size: 11.5px; font-weight: 500; color: var(--text-2);
+  display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 9px;
+  border-radius: 999px; font-size: 11.5px; font-weight: 500; color: var(--text-2);
 }
 .dl-hbtn:hover { background: var(--hover); color: var(--text); }
 .dl-list { flex: 1; min-height: 0; overflow-y: auto; padding: 7px; }
 .dl-row {
   display: flex; align-items: center; gap: 10px; min-height: 54px;
-  padding: 8px 10px; border-radius: 10px; border: 1px solid transparent;
+  padding: 8px 10px; border-radius: 9px; border: 1px solid transparent;
 }
 .dl-row:hover { background: var(--hover); border-color: var(--divider); }
+.dl-row:active { background: var(--press); }
 .dl-ico {
-  width: 32px; height: 32px; border-radius: 9px;
+  width: 32px; height: 32px; border-radius: 8px;
   display: flex; align-items: center; justify-content: center;
   background: var(--surface-3); color: var(--text-2); flex-shrink: 0;
 }
@@ -1212,15 +1300,21 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surf
 .dl-acts { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .dl-abtn {
   display: inline-flex; align-items: center; justify-content: center; gap: 4px;
-  height: 26px; padding: 0 8px; border-radius: 7px;
+  height: 26px; padding: 0 10px; border-radius: 999px;
   border: 1px solid var(--border); background: var(--surface);
   font-size: 11px; font-weight: 600; color: var(--text);
 }
-.dl-abtn:hover { background: var(--accent-bg); border-color: var(--accent); color: var(--accent-text); }
+.dl-abtn:hover { background: var(--ink); border-color: var(--ink); color: var(--ink-fg); }
+.dl-abtn:active { background: var(--press); }
 .dl-abtn.icon { width: 26px; padding: 0; color: var(--text-2); }
 .dl-empty {
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
-  padding: 26px 16px; text-align: center; color: var(--text-3); font-size: 12.5px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px;
+  padding: 22px 16px; text-align: center; color: var(--text-3); font-size: 12.5px;
+}
+.dl-empty-ico {
+  width: 38px; height: 38px; border-radius: 19px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--surface-3); color: var(--text-2);
 }
 .dl-empty-sub { font-size: 11.5px; opacity: 0.85; }
 .dl-ftr {
@@ -1264,8 +1358,8 @@ pub fn render_downloads_popup_html(items: &[DownloadItem]) -> String {
     if items.is_empty() {
         let _ = write!(
             h,
-            r#"<div class="dl-empty">{}<div>최근 다운로드한 파일이 없습니다.</div><div class="dl-empty-sub">파일을 다운로드하면 상태와 저장 위치가 여기에 표시됩니다.</div></div>"#,
-            svg(Icon::Download, 22),
+            r#"<div class="dl-empty"><div class="dl-empty-ico">{}</div><div>최근 다운로드한 파일이 없습니다.</div><div class="dl-empty-sub">파일을 다운로드하면 상태와 저장 위치가 여기에 표시됩니다.</div></div>"#,
+            svg(Icon::Download, 18),
         );
     } else {
         let folder_ico = svg(Icon::Folder, 12);
@@ -1349,10 +1443,10 @@ pub fn render_downloads_popup_html(items: &[DownloadItem]) -> String {
 
 pub fn render_link_preview_html(url: &str) -> String {
     let secure = url.starts_with("https://");
-    let ico = if secure {
-        svg(Icon::Lock, 12)
+    let (ico_cls, ico) = if secure {
+        ("lp-ico secure", svg(Icon::Lock, 12))
     } else {
-        svg(Icon::ExternalLink, 12)
+        ("lp-ico", svg(Icon::ExternalLink, 12))
     };
     format!(
         r#"<!DOCTYPE html><html><head><meta charset="utf-8"><style>{THEME_CSS}
@@ -1360,13 +1454,15 @@ html, body {{ width: 100%; height: 100%; overflow: hidden; background: transpare
 .pill {{
   display: inline-flex; align-items: center; gap: 6px;
   height: 26px; max-width: 100%; padding: 0 11px;
-  border-radius: 8px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; background: var(--surface); border: 1px solid var(--border-strong);
   box-shadow: var(--shadow-sm); font-size: 11.5px; color: var(--text-2);
   white-space: nowrap; overflow: hidden;
 }}
+.lp-ico {{ display: inline-flex; flex-shrink: 0; color: var(--text-2); }}
+.lp-ico.secure {{ color: var(--green); }}
 .url {{ overflow: hidden; color: var(--text); }}
 .hint {{ color: var(--text-3); font-size: 10.5px; margin-left: 4px; flex-shrink: 0; }}
-</style></head><body><div class="pill">{ico}<span class="url">{u}</span><span class="hint">{hint}</span></div></body></html>"#,
+</style></head><body><div class="pill"><span class="{ico_cls}">{ico}</span><span class="url">{u}</span><span class="hint">{hint}</span></div></body></html>"#,
         u = html_escape(&truncate_chars(url, 72)),
         hint = if cfg!(target_os = "macos") {
             "⌘+클릭 새 탭"
@@ -1376,78 +1472,1143 @@ html, body {{ width: 100%; height: 100%; overflow: hidden; background: transpare
     )
 }
 
+// ── Docked AI Assistant Sidebar ──
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SidebarPicker {
+    #[default]
+    None,
+    Provider,
+    Model,
+}
+
+pub struct SidebarRenderState<'a> {
+    pub provider: crate::chat::ChatProvider,
+    pub avail: crate::chat::CliAvailability,
+    pub messages: &'a [crate::chat::ChatMessage],
+    pub is_loading: bool,
+    pub include_page: bool,
+    pub agent_control: bool,
+    pub agent_status: Option<&'a str>,
+    pub agent_log: &'a [String],
+    pub sidebar_wide: bool,
+    pub show_settings: bool,
+    pub picker_open: SidebarPicker,
+    pub active_title: &'a str,
+    pub active_url: &'a str,
+    pub active_model_id: &'a str,
+    pub active_model_label: &'a str,
+    pub control_model_id: &'a str,
+    pub custom_presets: &'a [crate::chat::AgentPreset],
+    pub model_options: &'a [crate::chat::ModelOption],
+    pub agy_models_loading: bool,
+    pub can_retry: bool,
+    pub api_endpoint: &'a str,
+    pub api_model: &'a str,
+    pub has_api_key: bool,
+    pub draft: &'a str,
+    pub dark_mode: bool,
+    /// Message text size in px.
+    pub font_size: u32,
+    /// `(message index, chars shown)` while a reply is typing out.
+    pub reveal: Option<(usize, usize)>,
+    pub show_history: bool,
+    pub history: &'a [crate::chat::ChatSession],
+    pub session_id: Option<u64>,
+    /// `(action description, host)` of an agent navigation awaiting the user's OK.
+    pub agent_confirm: Option<(&'a str, &'a str)>,
+}
+
+/// Pixel height of the chat textarea showing `lines` lines (line-height 20px + padding).
+pub fn chat_input_height(lines: usize) -> u32 {
+    8 + 20 * lines.clamp(1, 6) as u32
+}
+
+// Text selection: THEME_CSS sets `* { user-select: none }`, and Blitz starts a drag-selection only
+// when the pressed element computes `auto` AND its parent isn't `none`. So message text (and its
+// wrappers, for the parent check) opts back in; buttons inside replies stay `none`.
+const SIDEBAR_CSS: &str = r#"
+html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surface); user-select: none; }
+.msg-u-wrap, .msg-u, .msg-a, .msg-body, .msg-body *, .msg-a.err > div { user-select: auto; }
+.msg-body .chat-code-hdr, .msg-body .chat-code-hdr *, .msg-a-hdr, .msg-a-hdr *, .msg-a-ftr, .msg-a-ftr *,
+.msg-u-ctx, .msg-u-ctx *, .err-acts, .err-acts * { user-select: none; }
+.sb-shell {
+  display: flex; flex-direction: column; width: 100%; height: 100%;
+  border-left: 1px solid var(--border); background: var(--surface);
+}
+.sb-hdr {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 46px; padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--divider);
+  background: var(--surface); flex-shrink: 0;
+}
+.sb-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--text); letter-spacing: -0.015em; min-width: 0; }
+.sb-title-ico {
+  width: 24px; height: 24px; border-radius: 8px;
+  background: var(--ink); color: var(--ink-fg);
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.sb-title-txt { white-space: nowrap; overflow: hidden; }
+.sb-mode-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 20px; padding: 0 7px; border-radius: 999px;
+  background: var(--accent-bg); color: var(--accent-text);
+  font-size: 10px; font-weight: 600; flex-shrink: 0;
+}
+.sb-acts { display: flex; align-items: center; gap: 1px; flex-shrink: 0; }
+.sb-hbtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 9px;
+  color: var(--text-2);
+}
+.sb-hbtn:hover { background: var(--hover); color: var(--text); }
+.sb-hbtn:active { background: var(--press); }
+.sb-hbtn.on { background: var(--surface-3); color: var(--text); }
+
+/* ── Settings card ── */
+.sb-settings {
+  flex: 0 1 auto; min-height: 0; max-height: calc(100% - 150px); overflow-y: auto;
+  margin: 8px 10px 4px; padding: 4px 12px 12px; border-radius: 14px;
+  border: 1px solid var(--border-strong); background: var(--surface);
+  box-shadow: var(--shadow-md);
+  display: flex; flex-direction: column;
+}
+.set-sec { padding: 10px 0; border-bottom: 1px solid var(--divider); display: flex; flex-direction: column; gap: 6px; }
+.set-sec:last-child { border-bottom: none; padding-bottom: 2px; }
+.set-lbl { font-size: 10.5px; font-weight: 700; color: var(--text-2); letter-spacing: 0.01em; }
+.set-lbl-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.set-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.set-chip {
+  display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 10px;
+  border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2);
+  font-size: 11px; font-weight: 500; color: var(--text-2); white-space: nowrap;
+}
+.set-chip:hover { background: var(--hover); color: var(--text); border-color: var(--border-strong); }
+.set-chip.active { background: var(--ink); border-color: var(--ink); color: var(--ink-fg); font-weight: 600; }
+.set-chip.dim { opacity: 0.55; }
+.set-inp {
+  width: 100%; height: 32px; padding: 0 10px; border-radius: 9px;
+  border: 1px solid var(--border); background: var(--surface-2);
+  color: var(--text); font-size: 12px; outline: none;
+}
+.set-inp:focus { background: var(--surface); border-color: var(--accent); box-shadow: 0 0 0 2.5px var(--accent-ring); }
+.set-inp.secret { color: transparent; caret-color: var(--text); }
+.set-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.set-note { font-size: 10.5px; color: var(--text-3); line-height: 1.4; flex: 1; }
+.set-btns { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.font-row { display: flex; align-items: center; gap: 6px; }
+.font-step {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 30px; height: 28px; padding: 0 8px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface-2);
+  font-size: 13px; font-weight: 600; color: var(--text);
+}
+.font-step:hover { background: var(--hover); border-color: var(--border-strong); }
+.font-val { min-width: 44px; text-align: center; font-size: 12px; font-weight: 600; color: var(--text); }
+.font-prev { flex: 1; text-align: right; color: var(--text-2); white-space: nowrap; overflow: hidden; }
+.sbtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 28px; padding: 0 12px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface);
+  font-size: 11px; font-weight: 600; color: var(--text);
+}
+.sbtn:hover { background: var(--hover); }
+.sbtn.primary { background: var(--ink); border-color: var(--ink); color: var(--ink-fg); }
+.sbtn.primary:hover { opacity: 0.88; }
+.sbtn.danger { color: var(--danger); }
+
+/* ── Conversation ── */
+.sb-msgs {
+  flex: 1; min-height: 0; overflow-y: auto; padding: 16px 16px 18px;
+  background: var(--surface);
+  display: flex; flex-direction: column; gap: 20px;
+}
+.sb-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; padding: 18px 4px 8px; gap: 9px; margin: auto 0;
+}
+.sb-emblem {
+  width: 44px; height: 44px; border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--ink); color: var(--ink-fg);
+  box-shadow: var(--shadow-sm); margin-bottom: 2px;
+}
+.sb-empty-t { font-size: 17px; font-weight: 700; color: var(--text); letter-spacing: -0.025em; }
+.sb-empty-s { font-size: 12px; color: var(--text-2); line-height: 1.5; max-width: 268px; }
+.sb-page-pill {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface-2);
+  font-size: 11px; color: var(--text-2); white-space: nowrap; overflow: hidden;
+}
+.sb-page-dot { width: 6px; height: 6px; border-radius: 3px; background: var(--green); flex-shrink: 0; }
+.sb-quick-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
+  width: 100%; margin-top: 10px;
+}
+.qcard {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+  padding: 11px 12px; border-radius: 13px; text-align: left;
+  border: 1px solid var(--border); background: var(--surface);
+  box-shadow: var(--shadow-xs);
+}
+.qcard:hover { background: var(--surface-2); border-color: var(--border-strong); }
+.qcard:active { background: var(--press); }
+.qcard-top { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text); }
+.qcard-ico { color: var(--text-2); display: inline-flex; flex-shrink: 0; }
+.qcard:hover .qcard-ico { color: var(--accent); }
+.qcard-sub { font-size: 11px; color: var(--text-3); line-height: 1.35; }
+
+.msg-u-wrap { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.msg-u-ctx {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10.5px; color: var(--text-3); padding-right: 4px; max-width: 86%; white-space: nowrap; overflow: hidden;
+}
+.msg-u {
+  max-width: 86%; padding: 9px 13px;
+  border-radius: 16px 16px 5px 16px;
+  background: var(--accent-bg); color: var(--text);
+  font-size: var(--chat-fs); line-height: 1.55; white-space: pre-wrap;
+}
+.msg-a { align-self: stretch; padding: 2px 0; color: var(--text); }
+.msg-a-hdr { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.msg-a-ico {
+  width: 22px; height: 22px; border-radius: 7px;
+  background: var(--ink); color: var(--ink-fg);
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.msg-a-tag { font-size: 11.5px; font-weight: 600; color: var(--text-2); letter-spacing: -0.01em; }
+.msg-body {
+  padding-left: 30px;
+  font-size: var(--chat-fs); line-height: 1.68; color: var(--text);
+}
+.msg-body p { margin: 0 0 10px; }
+.msg-body p:last-child { margin-bottom: 0; }
+.msg-body h3 { font-size: 1.08em; font-weight: 700; letter-spacing: -0.015em; margin: 16px 0 6px; }
+.msg-body h4 { font-size: 1em; font-weight: 700; margin: 12px 0 4px; }
+.msg-body ul, .msg-body ol { margin: 4px 0 10px; padding-left: 20px; }
+.msg-body li { margin-bottom: 4px; }
+.msg-body blockquote {
+  margin: 10px 0; padding: 8px 12px; border-left: 3px solid var(--accent);
+  background: var(--surface-2); border-radius: 0 9px 9px 0; color: var(--text-2);
+}
+.msg-body blockquote p { margin: 0 0 4px; }
+.msg-body blockquote p:last-child { margin-bottom: 0; }
+.msg-body hr { border: none; border-top: 1px solid var(--divider); margin: 14px 0; }
+.msg-body a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.msg-body code {
+  padding: 1.5px 5px; border-radius: 5px; background: var(--surface-3);
+  font-family: "Cascadia Code", Consolas, monospace; font-size: 0.92em;
+}
+.type-caret {
+  display: inline-block; width: 7px; height: 1.05em; margin-left: 2px;
+  border-radius: 2px; background: var(--accent); vertical-align: text-bottom;
+}
+.chat-tbl {
+  margin: 10px 0; border-radius: 10px; border: 1px solid var(--border);
+  overflow-x: auto; background: var(--surface);
+}
+.chat-tbl table { width: 100%; border-collapse: collapse; font-size: 0.92em; }
+.chat-tbl th, .chat-tbl td {
+  padding: 7px 10px; border-bottom: 1px solid var(--divider);
+  border-right: 1px solid var(--divider); text-align: left;
+}
+.chat-tbl th:last-child, .chat-tbl td:last-child { border-right: none; }
+.chat-tbl tr:last-child td { border-bottom: none; }
+.chat-tbl th { font-weight: 600; color: var(--text-2); background: var(--surface-2); }
+.chat-code {
+  margin: 10px 0; border-radius: 11px; border: 1px solid var(--border);
+  background: var(--surface-2); overflow: hidden;
+}
+.chat-code-hdr {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 6px 4px 12px; border-bottom: 1px solid var(--divider);
+  background: var(--surface-3); font-size: 11px; font-weight: 600; color: var(--text-2);
+}
+.chat-code pre {
+  margin: 0; padding: 11px 13px; overflow-x: auto;
+  font-family: "Cascadia Code", Consolas, monospace; font-size: 0.92em; line-height: 1.55;
+}
+.chat-code pre code { padding: 0; background: transparent; font-size: 1em; }
+.msg-a-ftr { display: flex; align-items: center; gap: 2px; padding-left: 26px; margin-top: 6px; }
+.chat-copy {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; color: var(--text-3);
+}
+.chat-copy:hover { background: var(--hover); color: var(--text); }
+.sel-hint { font-size: 10.5px; color: var(--text-3); margin-left: auto; padding-right: 4px; }
+
+.msg-a.err {
+  padding: 11px 13px; border-radius: 12px;
+  background: var(--danger-bg); color: var(--danger);
+  font-size: 12.5px; line-height: 1.55;
+}
+.msg-a.err .msg-a-hdr { margin-bottom: 4px; }
+.msg-a.err .msg-a-tag { color: var(--danger); }
+.err-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.err-retry {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 10px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--border);
+  font-size: 11px; font-weight: 600; color: var(--text);
+}
+.err-retry:hover { border-color: var(--border-strong); background: var(--surface-2); }
+
+.sb-loading {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 0 4px 2px; font-size: 12.5px; font-weight: 500; color: var(--text-2);
+}
+.sb-loading-l { display: flex; align-items: center; gap: 8px; }
+.sb-agent-log {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 8px 11px; border-radius: 11px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  font-size: 11px; color: var(--text-2);
+}
+.sb-agent-step { white-space: nowrap; overflow: hidden; line-height: 1.4; }
+.sb-agent-step.err { color: var(--danger); }
+.agent-confirm {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 12px 13px; border-radius: 13px;
+  background: var(--amber-bg); border: 1px solid var(--amber);
+  font-size: 12px; color: var(--text); line-height: 1.5;
+}
+.ac-t { font-weight: 700; color: var(--amber-text); }
+.ac-d { font-size: 11px; color: var(--text-2); font-family: "Cascadia Code", Consolas, monospace; white-space: nowrap; overflow: hidden; }
+.ac-btns { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; }
+@keyframes tab-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.fav-spin {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; flex-shrink: 0;
+  animation: tab-spin 0.8s linear infinite;
+}
+
+/* ── Conversation history ── */
+.hist-hdr { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.hist-t { font-size: 13px; font-weight: 700; color: var(--text); }
+.hist-sub { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+.hist-list { display: flex; flex-direction: column; gap: 4px; }
+.hist-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 8px 9px 12px; border-radius: 11px;
+  border: 1px solid transparent;
+}
+.hist-row:hover { background: var(--hover); }
+.hist-row.active { background: var(--surface-2); border-color: var(--border); }
+.hist-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.hist-title { font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; }
+.hist-meta { font-size: 10.5px; color: var(--text-3); white-space: nowrap; }
+.hist-del {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 8px; color: var(--text-3); flex-shrink: 0;
+}
+.hist-del:hover { background: var(--danger-bg); color: var(--danger); }
+.hist-empty { padding: 36px 8px; text-align: center; font-size: 12px; color: var(--text-3); }
+
+/* ── Picker sheet (above the composer) ── */
+.sb-sheet {
+  display: flex; flex-direction: column;
+  margin: 0 12px 6px; border-radius: 14px;
+  border: 1px solid var(--border-strong); background: var(--surface);
+  box-shadow: var(--shadow-md); flex-shrink: 0; overflow: hidden;
+}
+.sheet-hdr {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 9px 12px 6px; font-size: 11px; font-weight: 600; color: var(--text-2);
+}
+.sheet-act {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 500; color: var(--accent);
+}
+.sheet-act:hover { background: var(--accent-bg); }
+.sheet-list { max-height: 220px; overflow-y: auto; padding: 2px 8px 8px; display: flex; flex-direction: column; gap: 2px; }
+.sheet-sec { padding: 6px 6px 2px; font-size: 10px; font-weight: 700; color: var(--text-3); letter-spacing: 0.03em; }
+.sheet-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  min-height: 32px; padding: 5px 9px; border-radius: 9px;
+  font-size: 12px; color: var(--text);
+}
+.sheet-row:hover { background: var(--hover); }
+.sheet-row.active { background: var(--surface-3); color: var(--text); font-weight: 600; }
+.sheet-row-l { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1; }
+.sheet-row-txt { display: flex; flex-direction: column; min-width: 0; }
+.sheet-name { white-space: nowrap; overflow: hidden; }
+.sheet-sub { font-size: 10px; color: var(--text-3); font-family: "Cascadia Code", Consolas, monospace; white-space: nowrap; overflow: hidden; }
+.sheet-chk { color: var(--accent); display: inline-flex; flex-shrink: 0; }
+.sheet-tag { font-size: 10px; color: var(--text-3); flex-shrink: 0; }
+.sheet-ftr {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; border-top: 1px solid var(--divider); background: var(--surface-2);
+  font-size: 11px; font-weight: 500; color: var(--text-2);
+}
+.sheet-ftr:hover { background: var(--hover); color: var(--text); }
+
+/* ── Composer ── */
+.sb-comp { padding: 6px 12px 10px; background: var(--surface); flex-shrink: 0; }
+.composer {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 10px 9px 14px; border-radius: 18px;
+  border: 1px solid var(--border-strong); background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+.composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring), var(--shadow-sm);
+}
+#chat-input {
+  width: 100%; padding: 4px 0; border: none; background: transparent; resize: none;
+  color: var(--text); font-size: 13px; line-height: 20px; outline: none;
+  font-family: inherit;
+}
+.comp-bar { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.comp-left { display: flex; align-items: center; gap: 4px; min-width: 0; flex: 1; overflow: hidden; }
+.cpill {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 9px; border-radius: 999px;
+  background: var(--surface-2);
+  font-size: 11px; font-weight: 600; color: var(--text-2);
+  white-space: nowrap; min-width: 0;
+}
+.cpill:hover { background: var(--hover); color: var(--text); }
+.cpill.on { background: var(--surface-3); color: var(--text); }
+.cpill.mod { flex: 0 1 auto; }
+.cpill.ctx.on { background: var(--green-bg); color: var(--green-text); }
+.cpill.ctrl.on { background: var(--accent-bg); color: var(--accent-text); }
+.cpill-txt { white-space: nowrap; overflow: hidden; }
+.cpill-chev { color: var(--text-3); display: inline-flex; flex-shrink: 0; }
+.cpill.on .cpill-chev { color: var(--text); }
+.pdot { width: 6px; height: 6px; border-radius: 3px; flex-shrink: 0; }
+.pdot.ok { background: var(--green); }
+.pdot.off { background: var(--text-3); opacity: 0.45; }
+.cpill-dot { width: 5px; height: 5px; border-radius: 3px; background: var(--text-3); opacity: 0.45; flex-shrink: 0; }
+.cpill.ctx.on .cpill-dot { background: var(--green); opacity: 1; }
+.cpill.ctrl.on .cpill-dot { background: var(--accent); opacity: 1; }
+.send-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 999px;
+  background: var(--ink); color: var(--ink-fg); flex-shrink: 0;
+}
+.send-btn:hover { opacity: 0.85; }
+.send-btn.stop { background: var(--danger); color: #ffffff; }
+.comp-hint { padding: 5px 6px 0; font-size: 10px; color: var(--text-3); text-align: center; }
+"#;
+
+/// Inserts the typing caret inside the last text block so it trails the words, not a new line.
+fn with_type_caret(mut body_html: String) -> String {
+    const CARET: &str = r#"<span class="type-caret"></span>"#;
+    for close in [
+        "</p>",
+        "</li>",
+        "</h3>",
+        "</h4>",
+        "</code></pre></div>",
+        "</td></tr></tbody></table></div>",
+    ] {
+        if body_html.ends_with(close) {
+            let at = body_html.len() - close.len();
+            body_html.insert_str(at, CARET);
+            return body_html;
+        }
+    }
+    body_html.push_str(CARET);
+    body_html
+}
+
+fn render_settings_card(h: &mut String, state: &SidebarRenderState<'_>) {
+    h.push_str(r#"<div id="chat-settings" class="sb-settings">"#);
+    h.push_str(r#"<div class="set-sec"><div class="set-lbl">AI 프로바이더</div><div class="set-chips">"#);
+    for &p in crate::chat::ChatProvider::ALL {
+        let is_act = p == state.provider;
+        let cli_missing = p.is_cli() && !state.avail.is_available(p);
+        let cls = match (is_act, cli_missing) {
+            (true, true) => "set-chip active dim",
+            (true, false) => "set-chip active",
+            (false, true) => "set-chip dim",
+            (false, false) => "set-chip",
+        };
+        let _ = write!(
+            h,
+            r#"<div class="{cls}" data-action="chat-provider:{pid}">{plbl}</div>"#,
+            pid = p.id(),
+            plbl = html_escape(p.short_label()),
+        );
+    }
+    h.push_str("</div></div>");
+
+    // Connection first: these inputs and the 저장 button used to sit below the card's fold.
+    if state.provider.is_cli() {
+        let _ = write!(
+            h,
+            r#"<div class="set-sec">
+  <div class="set-lbl">사용자 지정 모델 ID (비워두면 기본 모델)</div><input id="chat-api-model" class="set-inp" type="text" value="{model}" placeholder="예: gemini-4-neon-high / sonnet / o4-mini" />
+  <div class="set-row">
+    <span class="set-note">{hint}</span>
+    <div class="set-btns"><div class="sbtn" data-action="chat-open-login">터미널 로그인</div><div class="sbtn primary" data-action="chat-save-settings">적용</div></div>
+  </div>
+</div>"#,
+            model = html_escape(state.api_model),
+            hint = html_escape(state.provider.login_hint()),
+        );
+    } else {
+        let key_lbl = if state.has_api_key {
+            "API Key · 저장됨 (바꾸려면 새 키 입력, 입력값은 가려짐)"
+        } else {
+            "API Key (입력값은 가려짐 · 로컬 Ollama는 비워두기)"
+        };
+        let clear_key_btn = if state.has_api_key {
+            r#"<div class="sbtn danger" data-action="chat-clear-key">키 삭제</div>"#
+        } else {
+            ""
+        };
+        let _ = write!(
+            h,
+            r#"<div class="set-sec">
+  <div class="set-lbl">Endpoint URL (Ollama: http://localhost:11434/v1/chat/completions)</div><input id="chat-api-endpoint" class="set-inp" type="text" value="{ep}" />
+  <div class="set-lbl">Model</div><input id="chat-api-model" class="set-inp" type="text" value="{model}" />
+  <div class="set-lbl">{key_lbl}</div><input id="chat-api-key" class="set-inp secret" type="password" value="" />
+  <div class="set-row">
+    <span class="set-note">{hint}</span>
+    <div class="set-btns">{clear_key_btn}<div class="sbtn primary" data-action="chat-save-settings">저장</div></div>
+  </div>
+</div>"#,
+            ep = html_escape(state.api_endpoint),
+            model = html_escape(state.api_model),
+            hint = html_escape(state.provider.login_hint()),
+        );
+    }
+
+    let _ = write!(
+        h,
+        r#"<div class="set-sec"><div class="set-lbl">글자 크기</div><div class="font-row"><div class="font-step" data-action="chat-font:dec" title="작게">−</div><span class="font-val">{fs}px</span><div class="font-step" data-action="chat-font:inc" title="크게">+</div><div class="font-step" data-action="chat-font:reset" title="기본 크기">기본</div><span class="font-prev" style="font-size:{fs}px">가나다 Abc</span></div></div>"#,
+        fs = state.font_size,
+    );
+
+    let set_refresh = if state.provider == crate::chat::ChatProvider::Agy {
+        if state.agy_models_loading {
+            r#"<span class="sheet-tag">불러오는 중…</span>"#.to_string()
+        } else {
+            format!(
+                r#"<div class="sheet-act" data-action="chat-refresh-models">{}<span>새로고침</span></div>"#,
+                svg(Icon::Reload, 10)
+            )
+        }
+    } else {
+        String::new()
+    };
+    let _ = write!(
+        h,
+        r#"<div class="set-sec"><div class="set-lbl-row"><span class="set-lbl">모델 프리셋</span>{set_refresh}</div><div class="set-chips">"#,
+    );
+    for opt in state.model_options {
+        let cls = if opt.id == state.active_model_id {
+            "set-chip active"
+        } else {
+            "set-chip"
+        };
+        let _ = write!(
+            h,
+            r#"<div class="{cls}" data-action="chat-model:{id}">{lbl}</div>"#,
+            id = html_escape(&opt.id),
+            lbl = html_escape(&opt.label),
+        );
+    }
+    h.push_str("</div></div>");
+
+    h.push_str(r#"<div class="set-sec"><div class="set-lbl">브라우저 제어용 빠른 모델</div><div class="set-chips">"#);
+    let ctrl_same_cls = if state.control_model_id.is_empty() {
+        "set-chip active"
+    } else {
+        "set-chip"
+    };
+    let ctrl_auto_lbl = if state.provider == crate::chat::ChatProvider::Agy {
+        "자동 (Flash Low · 빠름)"
+    } else {
+        "대화 모델과 동일"
+    };
+    let _ = write!(
+        h,
+        r#"<div class="{ctrl_same_cls}" data-action="chat-ctrl-model:">{ctrl_auto_lbl}</div>"#
+    );
+    for opt in state.model_options.iter().filter(|o| !o.id.is_empty()) {
+        let cls = if opt.id == state.control_model_id {
+            "set-chip active"
+        } else {
+            "set-chip"
+        };
+        let _ = write!(
+            h,
+            r#"<div class="{cls}" data-action="chat-ctrl-model:{id}">{lbl}</div>"#,
+            id = html_escape(&opt.id),
+            lbl = html_escape(&opt.label),
+        );
+    }
+    h.push_str("</div></div>");
+
+    h.push_str(r#"<div class="set-sec"><div class="set-lbl">제어 프리셋 (원클릭 매크로)</div>"#);
+    if !state.custom_presets.is_empty() {
+        h.push_str(r#"<div class="set-chips">"#);
+        for (i, preset) in state.custom_presets.iter().enumerate() {
+            let _ = write!(
+                h,
+                r#"<div class="set-chip"><span>{title}</span><span style="margin-left:4px;opacity:0.7" data-action="chat-preset-del:{i}" title="삭제">×</span></div>"#,
+                title = html_escape(&preset.title),
+            );
+        }
+        h.push_str("</div>");
+    }
+    h.push_str(
+        r#"<div style="display:flex;gap:5px;align-items:center"><input id="chat-preset-title" class="set-inp" style="flex:0 0 110px" type="text" value="" placeholder="이름" /><input id="chat-preset-prompt" class="set-inp" style="flex:1" type="text" value="" placeholder="실행할 지시 내용" /><div class="sbtn" data-action="chat-preset-add">추가</div></div><div class="set-note">이름과 지시 내용을 입력하고 추가하면 빈 대화 화면에 실행 카드로 나타납니다.</div></div>"#,
+    );
+    h.push_str("</div>");
+}
+
+fn render_history_panel(h: &mut String, state: &SidebarRenderState<'_>) {
+    let del_all = if state.history.is_empty() {
+        String::new()
+    } else {
+        r#"<div class="sbtn danger" data-action="chat-del-all">전체 삭제</div>"#.to_string()
+    };
+    let _ = write!(
+        h,
+        r#"<div class="hist-hdr"><div><div class="hist-t">대화 기록</div><div class="hist-sub">이 PC에만 저장됩니다 · {n}개</div></div>{del_all}</div>"#,
+        n = state.history.len(),
+    );
+    if state.history.is_empty() {
+        h.push_str(r#"<div class="hist-empty">저장된 대화가 없습니다.<br/>대화를 시작하면 자동으로 저장됩니다.</div>"#);
+        return;
+    }
+    h.push_str(r#"<div class="hist-list">"#);
+    let trash = svg(Icon::Trash, 13);
+    for s in state.history {
+        let cls = if Some(s.id) == state.session_id {
+            "hist-row active"
+        } else {
+            "hist-row"
+        };
+        let _ = write!(
+            h,
+            r#"<div class="{cls}" data-action="chat-load:{id}"><div class="hist-main"><span class="hist-title">{title}</span><span class="hist-meta">{when} · 메시지 {n}개</span></div><span class="hist-del" data-action="chat-del:{id}" title="이 대화 삭제">{trash}</span></div>"#,
+            id = s.id,
+            title = html_escape(&s.title),
+            when = format_relative_time(s.updated),
+            n = s.messages.len(),
+        );
+    }
+    h.push_str("</div>");
+}
+
+fn render_quick_actions(state: &SidebarRenderState<'_>, is_internal: bool) -> String {
+    let cards: &[(&str, Icon, &str, &str)] = if state.agent_control {
+        &[
+            (
+                "chat-quick:extract-tables",
+                Icon::Sparkles,
+                "표 데이터 추출",
+                "테이블 전체를 표로 정리",
+            ),
+            (
+                "chat-quick:compare-tabs",
+                Icon::BookOpen,
+                "열린 탭 비교",
+                "탭 전환하며 핵심 비교",
+            ),
+            (
+                "chat-quick:extract-links",
+                Icon::ExternalLink,
+                "주요 링크 수집",
+                "페이지 링크 분류 정리",
+            ),
+            ("chat-quick:summary", Icon::Zap, "페이지 요약", "핵심 내용 한눈에"),
+        ]
+    } else if is_internal {
+        &[]
+    } else {
+        &[
+            ("chat-quick:summary", Icon::Sparkles, "페이지 요약", "핵심 내용 한눈에"),
+            ("chat-quick:bullets", Icon::BookOpen, "핵심 포인트", "3~5줄 불릿 정리"),
+            ("chat-quick:explain-ko", Icon::Zap, "쉽게 설명", "한국어 쉬운 해설"),
+            (
+                "chat-quick:translate",
+                Icon::ExternalLink,
+                "한국어 번역",
+                "자연스러운 번역",
+            ),
+        ]
+    };
+    if cards.is_empty() && state.custom_presets.is_empty() {
+        return String::new();
+    }
+    let mut qa = String::from(r#"<div class="sb-quick-grid">"#);
+    for (action, icon, title, sub) in cards {
+        let _ = write!(
+            qa,
+            r#"<div class="qcard" data-action="{action}"><div class="qcard-top"><span class="qcard-ico">{ico}</span><span>{title}</span></div><div class="qcard-sub">{sub}</div></div>"#,
+            ico = svg(*icon, 13),
+        );
+    }
+    for (i, preset) in state.custom_presets.iter().enumerate() {
+        let _ = write!(
+            qa,
+            r#"<div class="qcard" data-action="chat-preset-run:{i}"><div class="qcard-top"><span class="qcard-ico">{ico}</span><span>{title}</span></div><div class="qcard-sub">{sub}</div></div>"#,
+            ico = svg(Icon::Zap, 13),
+            title = html_escape(&truncate_chars(&preset.title, 18)),
+            sub = html_escape(&truncate_chars(&preset.prompt, 26)),
+        );
+    }
+    qa.push_str("</div>");
+    qa
+}
+
+pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<String>) {
+    let mut code_blocks = Vec::new();
+    let mut h = String::with_capacity(16 * 1024);
+    h.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>");
+    h.push_str(THEME_CSS);
+    h.push_str(SIDEBAR_CSS);
+    let _ = write!(h, ":root {{ --chat-fs: {}px; }}", state.font_size);
+    let on = |b: bool| if b { "sb-hbtn on" } else { "sb-hbtn" };
+    let mode_badge = if state.agent_control {
+        r#"<span class="sb-mode-pill"><span class="pdot ok"></span><span>제어</span></span>"#
+    } else {
+        ""
+    };
+    let _ = write!(
+        h,
+        r#"</style></head><body><div class="sb-shell">
+<div class="sb-hdr">
+  <div class="sb-title"><span class="sb-title-ico">{spark}</span><span class="sb-title-txt">AI Assistant</span>{mode_badge}</div>
+  <div class="sb-acts">
+    <div class="sb-hbtn" data-action="chat-clear" title="새 대화">{plus}</div>
+    <div class="{hist_cls}" data-action="chat-toggle-history" title="대화 기록">{hist}</div>
+    <div class="{width_cls}" data-action="chat-toggle-width" title="사이드바 폭 전환 (경계 드래그로도 조절)">{width_ico}</div>
+    <div class="{settings_cls}" data-action="chat-toggle-settings" title="모델 / API / 글자 크기 설정">{sliders}</div>
+    <div class="sb-hbtn" data-action="toggle-sidebar" title="닫기 (Ctrl+Shift+I)">{close}</div>
+  </div>
+</div>"#,
+        spark = svg(Icon::Sparkles, 13),
+        plus = svg(Icon::Plus, 14),
+        hist = svg(Icon::History, 14),
+        width_ico = svg(Icon::MoveHorizontal, 13),
+        sliders = svg(Icon::Sliders, 13),
+        close = svg(Icon::Close, 12),
+        hist_cls = on(state.show_history),
+        width_cls = on(state.sidebar_wide),
+        settings_cls = on(state.show_settings),
+    );
+
+    if state.show_settings {
+        render_settings_card(&mut h, state);
+    }
+
+    h.push_str(r#"<div id="chat-messages" class="sb-msgs">"#);
+    let is_internal = state.active_url.starts_with("rust://");
+    if state.show_history {
+        render_history_panel(&mut h, state);
+    } else if state.messages.is_empty() && !state.is_loading {
+        let page_pill = if is_internal {
+            String::new()
+        } else {
+            format!(
+                r#"<div class="sb-page-pill"><span class="sb-page-dot"></span><span>{}</span></div>"#,
+                html_escape(&truncate_chars(state.active_title, 34))
+            )
+        };
+        let _ = write!(
+            h,
+            r#"<div class="sb-empty">
+  <div class="sb-emblem">{emblem}</div>
+  <div class="sb-empty-t">무엇을 도와드릴까요?</div>
+  <div class="sb-empty-s">웹페이지를 읽고 요약·번역·코드 분석까지 바로 답해드립니다.</div>
+  {page_pill}
+  {quick}
+</div>"#,
+            emblem = svg(Icon::Sparkles, 20),
+            quick = render_quick_actions(state, is_internal),
+        );
+    } else {
+        let copy_svg = svg(Icon::Copy, 11);
+        let regen_svg = svg(Icon::Reload, 11);
+        let spark_mini = svg(Icon::Sparkles, 11);
+        let msg_count = state.messages.len();
+        let last_assistant = state
+            .messages
+            .iter()
+            .rposition(|m| m.role == crate::chat::ChatRole::Assistant);
+        for (idx, msg) in state.messages.iter().enumerate() {
+            match msg.role {
+                crate::chat::ChatRole::User => {
+                    let ctx_badge = msg
+                        .page_title
+                        .as_deref()
+                        .map(|t| {
+                            format!(
+                                r#"<div class="msg-u-ctx"><span class="sb-page-dot"></span>페이지 포함 · {}</div>"#,
+                                html_escape(&truncate_chars(t, 28))
+                            )
+                        })
+                        .unwrap_or_default();
+                    let _ = write!(
+                        h,
+                        r#"<div class="msg-u-wrap">{ctx_badge}<div class="msg-u">{}</div></div>"#,
+                        html_escape(&msg.text),
+                    );
+                }
+                crate::chat::ChatRole::Assistant => {
+                    let typing = state.reveal.filter(|(i, _)| *i == idx).map(|(_, n)| n);
+                    let body_html = match typing {
+                        Some(n) => {
+                            let partial: String = msg.text.chars().take(n).collect();
+                            with_type_caret(crate::chat::render_markdown_to_html(&partial, &mut code_blocks))
+                        }
+                        None => crate::chat::render_markdown_to_html(&msg.text, &mut code_blocks),
+                    };
+                    let footer = if typing.is_some() {
+                        String::new()
+                    } else {
+                        let regen = if Some(idx) == last_assistant && !state.is_loading {
+                            format!(
+                                r#"<span class="chat-copy" data-action="chat-regen" title="이 답변 다시 생성">{regen_svg}<span>다시 생성</span></span>"#
+                            )
+                        } else {
+                            String::new()
+                        };
+                        let hint = if Some(idx) == last_assistant {
+                            r#"<span class="sel-hint">드래그해서 일부만 선택 → Ctrl+C</span>"#
+                        } else {
+                            ""
+                        };
+                        format!(
+                            r#"<div class="msg-a-ftr"><span class="chat-copy" data-action="chat-copy-msg:{idx}" title="답변 전체 복사">{copy_svg}<span>복사</span></span>{regen}{hint}</div>"#
+                        )
+                    };
+                    let tag = msg.provider_label.as_deref().unwrap_or("AI");
+                    let _ = write!(
+                        h,
+                        r#"<div class="msg-a"><div class="msg-a-hdr"><span class="msg-a-ico">{spark_mini}</span><span class="msg-a-tag">{tag}</span></div><div class="msg-body">{body_html}</div>{footer}</div>"#,
+                        tag = html_escape(tag),
+                    );
+                }
+                crate::chat::ChatRole::Error => {
+                    let tag = msg.provider_label.as_deref().unwrap_or("안내");
+                    let show_retry = state.can_retry && idx + 1 == msg_count;
+                    let show_login = state.provider.is_cli();
+                    let mut acts_html = String::new();
+                    if show_retry || show_login {
+                        acts_html.push_str(r#"<div class="err-acts">"#);
+                        if show_retry {
+                            let _ = write!(
+                                acts_html,
+                                r#"<div class="err-retry" data-action="chat-retry">{}<span>다시 시도</span></div>"#,
+                                svg(Icon::Reload, 11)
+                            );
+                        }
+                        if show_login {
+                            acts_html.push_str(
+                                r#"<div class="err-retry" data-action="chat-open-login"><span>로그인 열기</span></div>"#,
+                            );
+                        }
+                        acts_html.push_str("</div>");
+                    }
+                    let _ = write!(
+                        h,
+                        r#"<div class="msg-a err"><div class="msg-a-hdr"><span class="msg-a-tag">{tag}</span></div><div>{}</div>{acts_html}</div>"#,
+                        html_escape(&msg.text),
+                    );
+                }
+            }
+        }
+    }
+
+    if state.is_loading && !state.show_history {
+        let loading_lbl = match state.agent_status {
+            Some(st) => st.to_string(),
+            None => format!("{} 응답 생성 중…", state.provider.short_label()),
+        };
+        let _ = write!(
+            h,
+            r#"<div class="sb-loading"><div class="sb-loading-l">{}<span>{}</span></div><span class="chat-copy" data-action="chat-stop">중지</span></div>"#,
+            spinner_html(state.dark_mode),
+            html_escape(&loading_lbl),
+        );
+        if let Some((desc, host)) = state.agent_confirm {
+            let _ = write!(
+                h,
+                r#"<div class="agent-confirm"><div class="ac-t">새 사이트로 이동 요청</div><div>AI가 <b>{host}</b>(으)로 이동하려고 합니다. 웹페이지에 숨겨진 지시일 수 있으니 요청한 작업이 맞는지 확인하세요.</div><div class="ac-d">{desc}</div><div class="ac-btns"><div class="sbtn" data-action="agent-confirm:deny">중단</div><div class="sbtn primary" data-action="agent-confirm:allow">허용</div></div></div>"#,
+                host = html_escape(host),
+                desc = html_escape(desc),
+            );
+        }
+        if !state.agent_log.is_empty() {
+            h.push_str(r#"<div class="sb-agent-log">"#);
+            let start = state.agent_log.len().saturating_sub(6);
+            for entry in &state.agent_log[start..] {
+                let is_err = entry.starts_with("ERR:");
+                let cls = if is_err { "sb-agent-step err" } else { "sb-agent-step" };
+                let marker = if is_err { "!" } else { "✓" };
+                let body = entry
+                    .strip_prefix("OK: ")
+                    .or_else(|| entry.strip_prefix("ERR: "))
+                    .unwrap_or(entry);
+                let _ = write!(
+                    h,
+                    r#"<div class="{cls}">{marker} {}</div>"#,
+                    html_escape(&truncate_chars(body, 56)),
+                );
+            }
+            h.push_str("</div>");
+        }
+    }
+    h.push_str("</div>");
+
+    match state.picker_open {
+        SidebarPicker::Provider => {
+            let chk = svg(Icon::Check, 13);
+            h.push_str(r#"<div class="sb-sheet"><div class="sheet-hdr"><span>에이전트 / API 선택</span></div><div class="sheet-list"><div class="sheet-sec">로컬 로그인 에이전트</div>"#);
+            for &prov in crate::chat::ChatProvider::ALL {
+                if prov == crate::chat::ChatProvider::OpenAiApi {
+                    h.push_str(r#"<div class="sheet-sec">직접 API / 로컬 LLM</div>"#);
+                }
+                let is_act = prov == state.provider;
+                let row_cls = if is_act { "sheet-row active" } else { "sheet-row" };
+                let dot = if prov.is_cli() {
+                    let dc = if state.avail.is_available(prov) {
+                        "pdot ok"
+                    } else {
+                        "pdot off"
+                    };
+                    format!(r#"<span class="{dc}"></span>"#)
+                } else {
+                    String::new()
+                };
+                let right = if is_act {
+                    format!(r#"<span class="sheet-chk">{chk}</span>"#)
+                } else if prov.is_cli() && !state.avail.is_available(prov) {
+                    r#"<span class="sheet-tag">미설치</span>"#.to_string()
+                } else {
+                    String::new()
+                };
+                let _ = write!(
+                    h,
+                    r#"<div class="{row_cls}" data-action="chat-provider:{id}"><div class="sheet-row-l">{dot}<span class="sheet-name">{lbl}</span></div>{right}</div>"#,
+                    id = prov.id(),
+                    lbl = html_escape(prov.label()),
+                );
+            }
+            h.push_str("</div></div>");
+        }
+        SidebarPicker::Model => {
+            let chk = svg(Icon::Check, 13);
+            let refresh_btn = if state.provider == crate::chat::ChatProvider::Agy {
+                if state.agy_models_loading {
+                    r#"<span class="sheet-tag">불러오는 중…</span>"#.to_string()
+                } else {
+                    format!(
+                        r#"<div class="sheet-act" data-action="chat-refresh-models">{}<span>새로고침</span></div>"#,
+                        svg(Icon::Reload, 11)
+                    )
+                }
+            } else {
+                String::new()
+            };
+            let _ = write!(
+                h,
+                r#"<div class="sb-sheet"><div class="sheet-hdr"><span>{} 모델 선택</span>{refresh_btn}</div><div class="sheet-list">"#,
+                html_escape(state.provider.short_label()),
+            );
+            for opt in state.model_options {
+                let is_act = opt.id == state.active_model_id;
+                let row_cls = if is_act { "sheet-row active" } else { "sheet-row" };
+                let sub = if !opt.id.is_empty() && opt.id != opt.label {
+                    format!(r#"<span class="sheet-sub">{}</span>"#, html_escape(&opt.id))
+                } else {
+                    String::new()
+                };
+                let right = if is_act {
+                    format!(r#"<span class="sheet-chk">{chk}</span>"#)
+                } else {
+                    String::new()
+                };
+                let _ = write!(
+                    h,
+                    r#"<div class="{row_cls}" data-action="chat-model:{id}"><div class="sheet-row-l"><div class="sheet-row-txt"><span class="sheet-name">{lbl}</span>{sub}</div></div>{right}</div>"#,
+                    id = html_escape(&opt.id),
+                    lbl = html_escape(&opt.label),
+                );
+            }
+            let _ = write!(
+                h,
+                r#"</div><div class="sheet-ftr" data-action="chat-toggle-settings"><span>직접 모델명 입력</span>{}</div></div>"#,
+                svg(Icon::ChevronRight, 12),
+            );
+        }
+        SidebarPicker::None => {}
+    }
+
+    let prov_pill_cls = if state.picker_open == SidebarPicker::Provider {
+        "cpill on"
+    } else {
+        "cpill"
+    };
+    let mod_pill_cls = if state.picker_open == SidebarPicker::Model {
+        "cpill mod on"
+    } else {
+        "cpill mod"
+    };
+    let prov_dot = if state.provider.is_cli() {
+        let cls = if state.avail.is_available(state.provider) {
+            "pdot ok"
+        } else {
+            "pdot off"
+        };
+        format!(r#"<span class="{cls}"></span>"#)
+    } else {
+        String::new()
+    };
+    let ctx_cls = if state.include_page && !is_internal {
+        "cpill ctx on"
+    } else {
+        "cpill ctx"
+    };
+    // No page title here: a title change (unread counters…) would rebuild the whole sidebar.
+    let ctx_tip = if is_internal {
+        "내부 페이지 (컨텍스트 없음)"
+    } else if state.include_page {
+        "현재 페이지 본문을 함께 보냄 (끄려면 클릭)"
+    } else {
+        "현재 페이지 본문 포함 켜기"
+    };
+    let ctrl_cls = if state.agent_control {
+        "cpill ctrl on"
+    } else {
+        "cpill ctrl"
+    };
+    let chev = svg(Icon::ChevronDown, 10);
+    let send_btn = if state.is_loading {
+        format!(
+            r#"<div class="send-btn stop" data-action="chat-stop" title="생성 중지">{}</div>"#,
+            svg(Icon::Stop, 12)
+        )
+    } else {
+        format!(
+            r#"<div class="send-btn" data-action="chat-send" title="전송 (Enter)">{}</div>"#,
+            svg(Icon::Send, 13)
+        )
+    };
+    let input_h = chat_input_height(state.draft.split('\n').count());
+    let _ = write!(
+        h,
+        r#"<div class="sb-comp">
+  <div class="composer">
+    <textarea id="chat-input" rows="1" style="height:{input_h}px" placeholder="무엇이든 물어보세요…">{draft}</textarea>
+    <div class="comp-bar">
+      <div class="comp-left">
+        <div class="{prov_pill_cls}" data-action="chat-picker:provider" title="에이전트 / API 전환">{prov_dot}<span class="cpill-txt">{prov_lbl}</span><span class="cpill-chev">{chev}</span></div>
+        <div class="{mod_pill_cls}" data-action="chat-picker:model" title="사용할 모델 변경"><span class="cpill-txt">{mod_lbl}</span><span class="cpill-chev">{chev}</span></div>
+        <div class="{ctx_cls}" data-action="chat-toggle-page" title="{ctx_tip}"><span class="cpill-dot"></span><span class="cpill-txt">페이지</span></div>
+        <div class="{ctrl_cls}" data-action="chat-toggle-control" title="AI 에이전트 브라우저 화면 제어 (클릭·입력·이동)"><span class="cpill-dot"></span><span class="cpill-txt">제어</span></div>
+      </div>
+      {send_btn}
+    </div>
+  </div>
+  <div class="comp-hint">Enter 전송 · Shift+Enter 줄바꿈</div>
+</div>
+</div></body></html>"#,
+        draft = html_escape(state.draft),
+        prov_lbl = html_escape(state.provider.short_label()),
+        mod_lbl = html_escape(&truncate_chars(state.active_model_label, 15)),
+    );
+
+    (h, code_blocks)
+}
+
 // ── Built-in Page: Home Bento Dashboard (`rust://home`) ──
 
 const HOME_CSS: &str = r#"
-body { background: var(--surface-2); padding: 48px 28px 64px; }
-.wrap { max-width: 920px; margin: 0 auto; }
-.hero { display: flex; flex-direction: column; align-items: center; margin-bottom: 26px; text-align: center; }
+body {
+  background: var(--surface-2);
+  padding: 56px 28px 48px;
+}
+.wrap { max-width: 820px; margin: 0 auto; }
+.hero { display: flex; flex-direction: column; align-items: center; margin-bottom: 24px; text-align: center; }
 .hero-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
-.brand-name { font-size: 26px; font-weight: 700; letter-spacing: -0.025em; }
-.brand-name span { color: var(--accent); }
-.subtitle { font-size: 13px; color: var(--text-2); }
+.brand-name { font-size: 24px; font-weight: 700; letter-spacing: -0.03em; color: var(--text); }
+.brand-name span { color: var(--text-2); font-weight: 500; }
+.hero-sub {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 500; color: var(--text-3);
+}
+.hero-dot { width: 6px; height: 6px; border-radius: 3px; background: var(--green); flex-shrink: 0; }
 .search-wrap {
-  display: flex; align-items: center; gap: 10px;
-  width: 100%; max-width: 660px; height: 50px; margin: 0 auto 10px; padding: 0 14px 0 18px;
-  border-radius: 25px; border: 1.5px solid var(--border);
+  display: flex; align-items: center; gap: 11px;
+  width: 100%; max-width: 580px; height: 50px; margin: 0 auto 10px; padding: 0 14px 0 20px;
+  border-radius: 999px; border: 1px solid var(--border);
   background: var(--surface); box-shadow: var(--shadow-sm);
 }
-.search-wrap:focus-within { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-ring); }
+.search-wrap:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring), var(--shadow-md); }
 .search-ico { color: var(--text-3); display: inline-flex; flex-shrink: 0; }
+.search-wrap:focus-within .search-ico { color: var(--accent); }
 #home-search {
   flex: 1; height: 100%; border: none; background: transparent;
-  color: var(--text); font-size: 15.5px; outline: none;
+  color: var(--text); font-size: 14.5px; outline: none;
 }
 .search-kbds { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
-.hint { text-align: center; font-size: 12px; color: var(--text-3); margin-bottom: 32px; }
+.hint { text-align: center; font-size: 11.5px; color: var(--text-3); margin-bottom: 34px; }
 
-.section-hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-.section-t { font-size: 12px; font-weight: 600; color: var(--text-2); letter-spacing: 0.02em; }
-.section-link { font-size: 12px; color: var(--accent); text-decoration: none; font-weight: 500; }
-.section-link:hover { text-decoration: underline; }
+.section-hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; padding: 0 4px; }
+.section-t { font-size: 11.5px; font-weight: 600; color: var(--text-2); letter-spacing: 0.02em; }
+.section-link { font-size: 12px; color: var(--text-2); text-decoration: none; font-weight: 500; }
+.section-link:hover { color: var(--text); text-decoration: underline; }
 
-.dial-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(156px, 1fr)); gap: 10px; margin-bottom: 24px; }
+.dial-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; margin-bottom: 28px; }
 .tile {
   display: flex; flex-direction: column; align-items: center; gap: 8px;
-  padding: 14px 8px 12px; border-radius: 14px;
-  background: var(--surface); border: 1px solid var(--divider);
-  text-decoration: none; color: var(--text); box-shadow: var(--shadow-sm);
+  padding: 12px 8px 10px; border-radius: 14px;
+  background: transparent; border: 1px solid transparent;
+  text-decoration: none; color: var(--text);
 }
-.tile:hover { border-color: var(--accent); background: var(--surface); }
+.tile:hover { background: var(--surface); border-color: var(--border); box-shadow: var(--shadow-xs); }
+.tile:active { background: var(--hover); }
 .tile-ic {
-  width: 42px; height: 42px; display: flex; align-items: center; justify-content: center;
-  border-radius: 14px; color: #fff; font-size: 17px; font-weight: 700;
+  width: 46px; height: 46px; display: flex; align-items: center; justify-content: center;
+  border-radius: 14px; color: #fff; font-size: 16px; font-weight: 700;
+  box-shadow: var(--shadow-xs);
 }
-.tile-ic.img { background: var(--surface-2); border: 1px solid var(--divider); }
-.tile-ic img { width: 22px; height: 22px; border-radius: 4px; }
-.tile-t { font-size: 12.5px; font-weight: 600; text-align: center; white-space: nowrap; overflow: hidden; max-width: 100%; }
-.tile-d { font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; max-width: 100%; }
+.tile-ic.img { background: var(--surface); border: 1px solid var(--border); }
+.tile-ic img { width: 22px; height: 22px; border-radius: 5px; }
+.tile-t { font-size: 12px; font-weight: 600; text-align: center; white-space: nowrap; overflow: hidden; max-width: 100%; }
+.tile-d { font-size: 10.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; max-width: 100%; }
 
-.bento { display: grid; grid-template-columns: 1.05fr 1fr; gap: 14px; margin-bottom: 24px; }
+.bento { display: grid; grid-template-columns: 1.05fr 1fr; gap: 14px; margin-bottom: 28px; }
 @media (max-width: 740px) {
   .bento { grid-template-columns: 1fr; }
 }
 .bcard {
   padding: 18px 20px; border-radius: 16px;
-  background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow-sm);
+  background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow-xs);
 }
 .bcard-hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-.bcard-title { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
-.bcard-ico { color: var(--accent); display: inline-flex; }
-.stat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
-.stat-box { padding: 11px 13px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--divider); }
-.stat-k { font-size: 11.5px; color: var(--text-2); margin-bottom: 3px; }
-.stat-v { font-size: 19px; font-weight: 700; letter-spacing: -0.02em; }
+.bcard-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
+.bcard-ico { color: var(--text-2); display: inline-flex; }
+.bcard-meta { display: flex; align-items: center; gap: 8px; }
+.status-tag {
+  font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+  background: var(--green-bg); color: var(--green-text);
+}
+.status-tag.warn { background: var(--amber-bg); color: var(--amber-text); }
+.stat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-bottom: 12px; }
+.stat-box { padding: 11px 13px; border-radius: 11px; background: var(--surface-2); border: 1px solid var(--divider); }
+.stat-k { font-size: 11px; color: var(--text-2); margin-bottom: 3px; }
+.stat-v { font-size: 18.5px; font-weight: 700; letter-spacing: -0.02em; }
 .stat-v.green { color: var(--green); }
-.mem-meter { padding: 10px 13px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--divider); }
-.mem-top { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--text-2); margin-bottom: 7px; }
-.mem-track { height: 7px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
-.mem-fill { height: 100%; border-radius: 4px; background: var(--green); }
+.mem-meter { padding: 10px 13px; border-radius: 11px; background: var(--surface-2); border: 1px solid var(--divider); }
+.mem-top { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-2); margin-bottom: 7px; }
+.mem-track { height: 4px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.mem-fill { height: 100%; border-radius: 999px; background: var(--ink); }
 
-.hist-list { display: flex; flex-direction: column; gap: 4px; }
+.hist-list { display: flex; flex-direction: column; gap: 3px; }
 .hrow {
   display: flex; align-items: center; gap: 9px; padding: 7px 9px;
-  border-radius: 10px; text-decoration: none; color: var(--text); font-size: 12.5px;
+  border-radius: 9px; text-decoration: none; color: var(--text); font-size: 12.5px;
 }
 .hrow:hover { background: var(--hover); }
 .hrow-t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; font-weight: 500; }
@@ -1455,9 +2616,9 @@ body { background: var(--surface-2); padding: 48px 28px 64px; }
 .hempty { padding: 28px 12px; text-align: center; font-size: 12.5px; color: var(--text-3); }
 
 .keys {
-  display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 16px;
-  padding: 12px 16px; border-radius: 14px; background: var(--surface); border: 1px solid var(--divider);
-  font-size: 12px; color: var(--text-2);
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 18px;
+  padding-top: 16px; border-top: 1px solid var(--divider);
+  font-size: 11.5px; color: var(--text-3);
 }
 .key-item { display: inline-flex; align-items: center; gap: 5px; }
 "#;
@@ -1546,6 +2707,11 @@ pub fn render_home_page(
     // Memory bar relative to a 450 MB conventional browser baseline.
     let mem_pct = ((working_set_mb / 450.0) * 100.0).clamp(4.0, 100.0);
     let cmd_k = if cfg!(target_os = "macos") { "⌘K" } else { "Ctrl+K" };
+    let health_tag = if degraded_count > 0 {
+        format!(r#"<span class="status-tag warn num">불완전 로드 {degraded_count}</span>"#)
+    } else {
+        r#"<span class="status-tag">정상</span>"#.to_string()
+    };
 
     let mut h = String::with_capacity(14 * 1024);
     h.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>새 탭</title><style>");
@@ -1555,8 +2721,8 @@ pub fn render_home_page(
         h,
         r#"</style></head><body><div class="wrap">
 <div class="hero">
-  <div class="hero-brand">{emblem}<div class="brand-name">Rust <span>Clean</span> Browser</div></div>
-  <div class="subtitle">순수 Rust Blitz 엔진 · 트래커 제로 · 비활성 탭 즉시 메모리 회수</div>
+  <div class="hero-brand">{emblem}<div class="brand-name">Rust <span>Clean</span></div></div>
+  <div class="hero-sub"><span class="hero-dot"></span><span class="num">Zero-JS · {working_set_mb:.0} MB 사용 중</span></div>
 </div>
 <div class="search-wrap">
   <span class="search-ico">{search_ico}</span>
@@ -1575,14 +2741,13 @@ pub fn render_home_page(
   <div class="bcard">
     <div class="bcard-hdr">
       <div class="bcard-title"><span class="bcard-ico">{cpu_ico}</span><span>메모리 및 프라이버시</span></div>
-      <span class="section-t num">북마크 {bm_count}</span>
+      <div class="bcard-meta">{health_tag}<span class="section-t num">북마크 {bm_count}</span></div>
     </div>
     <div class="stat-grid">
       <div class="stat-box"><div class="stat-k">현재 메모리</div><div class="stat-v green num">{working_set_mb:.0} MB</div></div>
       <div class="stat-box"><div class="stat-k">절전 / 전체 탭</div><div class="stat-v num">{unloaded_count} / {tab_count}</div></div>
       <div class="stat-box"><div class="stat-k">차단된 트래커</div><div class="stat-v num">{blocked_count}</div></div>
       <div class="stat-box"><div class="stat-k">방문 기록</div><div class="stat-v num">{hist_count}</div></div>
-      <div class="stat-box"><div class="stat-k">불완전 로드</div><div class="stat-v num">{degraded_count}</div></div>
     </div>
     <div class="mem-meter">
       <div class="mem-top"><span>일반 브라우저(450 MB) 대비</span><span class="num">{working_set_mb:.0} MB 사용 중</span></div>
@@ -1600,13 +2765,10 @@ pub fn render_home_page(
 
 <div class="keys">
   <span class="key-item"><kbd>Ctrl+T</kbd> 새 탭</span>
-  <span class="key-item"><kbd>Ctrl+W</kbd> 닫기</span>
-  <span class="key-item"><kbd>Ctrl+Shift+T</kbd> 복원</span>
   <span class="key-item"><kbd>Ctrl+K</kbd> 명령 팔레트</span>
   <span class="key-item"><kbd>Ctrl+F</kbd> 찾기</span>
   <span class="key-item"><kbd>Alt+R</kbd> 리더 모드</span>
-  <span class="key-item"><kbd>Ctrl+H</kbd> 기록</span>
-  <span class="key-item"><kbd>Ctrl+Shift+B</kbd> 북마크바</span>
+  <span class="key-item"><kbd>Ctrl+Shift+I</kbd> AI</span>
 </div>
 </div></body></html>"#,
         emblem = brand_emblem_svg(dark_mode),
@@ -1615,7 +2777,6 @@ pub fn render_home_page(
         hist_ico = svg(Icon::History, 16),
         bm_count = bookmarks.total_count(),
         hist_count = history.len(),
-        degraded_count = degraded_count,
     );
     if cfg!(target_os = "macos") {
         h.replace("Ctrl+", "⌘")
@@ -1632,49 +2793,52 @@ const BOOKMARKS_CSS: &str = r#"
 body { background: var(--surface-2); }
 .top {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
-  padding: 12px 24px; background: var(--surface); border-bottom: 1px solid var(--border);
+  padding: 13px 24px; background: var(--surface); border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-xs);
 }
-.brand { display: flex; align-items: center; gap: 9px; font-size: 16px; font-weight: 700; }
+.brand { display: flex; align-items: center; gap: 9px; font-size: 15px; font-weight: 700; letter-spacing: -0.015em; }
 .brand-ico { color: var(--accent); display: inline-flex; }
 .search { display: flex; align-items: center; gap: 8px; flex: 1; max-width: 560px; }
 #bm-search {
-  flex: 1; height: 36px; padding: 0 16px; border-radius: 18px;
-  border: 1.5px solid var(--border); background: var(--omni);
+  flex: 1; height: 36px; padding: 0 14px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--omni);
   color: var(--text); font-size: 13px; outline: none;
 }
 #bm-search:focus { background: var(--surface); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
 .btn {
-  display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px;
-  border-radius: 17px; border: 1px solid var(--border); background: var(--surface);
+  display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 13px;
+  border-radius: 999px; border: 1px solid var(--border); background: var(--surface);
   color: var(--text-2); font-size: 12.5px; font-weight: 500; text-decoration: none; white-space: nowrap;
 }
-.btn:hover { background: var(--hover); color: var(--text); }
+.btn:hover { background: var(--hover); color: var(--text); border-color: var(--border-strong); }
 .layout { display: flex; min-height: 600px; max-width: 1240px; margin: 0 auto; }
-.side { width: 256px; flex-shrink: 0; padding: 14px 10px; }
+.side { width: 256px; flex-shrink: 0; padding: 16px 12px; border-right: 1px solid var(--divider); }
 .sb {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 8px 12px; border-radius: 10px; text-decoration: none;
+  padding: 8px 12px; border-radius: 9px; text-decoration: none;
   color: var(--text); font-size: 13px; margin-bottom: 2px;
 }
 .sb:hover { background: var(--hover); }
-.sb.active, .sb.drop { background: var(--accent-bg); color: var(--accent-text); font-weight: 600; }
+.sb.active, .sb.drop {
+  background: var(--surface-3); color: var(--text); font-weight: 600;
+}
 .sb-l { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; }
-.sb-n { font-size: 11px; color: var(--text-3); padding: 1px 7px; border-radius: 999px; background: var(--surface-3); }
+.sb-n { font-size: 11px; color: var(--text-3); padding: 1px 6px; border-radius: 6px; background: var(--surface-3); }
 .sb.active .sb-n { background: var(--surface); color: var(--accent-text); }
-.main { flex: 1; padding: 20px 28px 56px; min-width: 0; }
-.ptitle { margin: 0 0 14px; font-size: 18px; font-weight: 700; }
+.main { flex: 1; padding: 22px 28px 56px; min-width: 0; }
+.ptitle { margin: 0 0 14px; font-size: 18px; font-weight: 700; letter-spacing: -0.02em; }
 .folders { display: flex; flex-wrap: wrap; gap: 9px; margin-bottom: 16px; }
 .fcard {
-  display: flex; align-items: center; gap: 8px; padding: 10px 14px;
-  border-radius: 12px; background: var(--surface); border: 1px solid var(--border);
+  display: flex; align-items: center; gap: 8px; padding: 9px 13px;
+  border-radius: 11px; background: var(--surface); border: 1px solid var(--border);
   text-decoration: none; color: var(--text); font-size: 13px; font-weight: 500;
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-xs);
 }
 .fcard:hover { border-color: var(--accent); background: var(--hover); }
 .fcard.drop { background: var(--accent-bg); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
 .fcnt { color: var(--text-3); font-size: 11px; }
-.ico-f { color: var(--text-2); display: inline-flex; flex-shrink: 0; }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow-sm); }
+.ico-f { color: var(--amber); opacity: 0.85; display: inline-flex; flex-shrink: 0; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 13px; overflow: hidden; box-shadow: var(--shadow-xs); }
 .row-wrap {
   display: flex; align-items: center; border-bottom: 1px solid var(--divider);
 }
@@ -1685,15 +2849,15 @@ body { background: var(--surface-2); }
   padding: 11px 16px; text-decoration: none; color: var(--text); font-size: 13px;
 }
 .rtitle { font-weight: 500; white-space: nowrap; overflow: hidden; }
-.rdom { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--surface-3); color: var(--text-2); flex-shrink: 0; }
+.rdom { font-size: 11px; padding: 2px 7px; border-radius: 6px; background: var(--surface-3); color: var(--text-2); flex-shrink: 0; }
 .rurl { color: var(--text-3); font-size: 11.5px; margin-left: auto; white-space: nowrap; overflow: hidden; max-width: 320px; }
 .rdel {
   display: flex; align-items: center; justify-content: center;
-  width: 34px; height: 34px; margin-right: 8px; border-radius: 9px;
+  width: 30px; height: 30px; margin-right: 10px; border-radius: 7px;
   color: var(--text-3); text-decoration: none; flex-shrink: 0;
 }
 .rdel:hover { background: var(--danger-bg); color: var(--danger); }
-.empty { padding: 36px; text-align: center; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; color: var(--text-3); font-size: 13px; }
+.empty { padding: 36px; text-align: center; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; color: var(--text-3); font-size: 13px; }
 "#;
 
 /// Chrome-style 2-column Bookmark Manager (`rust://bookmarks`, `?folder=...`, `?q=...`).
@@ -1882,38 +3046,39 @@ const HISTORY_CSS: &str = r#"
 body { background: var(--surface-2); }
 .top {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
-  padding: 12px 24px; background: var(--surface); border-bottom: 1px solid var(--border);
+  padding: 13px 24px; background: var(--surface); border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-xs);
 }
-.brand { display: flex; align-items: center; gap: 9px; font-size: 16px; font-weight: 700; }
+.brand { display: flex; align-items: center; gap: 9px; font-size: 15px; font-weight: 700; letter-spacing: -0.015em; }
 .brand-ico { color: var(--accent); display: inline-flex; }
 .search { display: flex; align-items: center; gap: 8px; flex: 1; max-width: 560px; }
 #hist-search {
-  flex: 1; height: 36px; padding: 0 16px; border-radius: 18px;
-  border: 1.5px solid var(--border); background: var(--omni);
+  flex: 1; height: 36px; padding: 0 14px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--omni);
   color: var(--text); font-size: 13px; outline: none;
 }
 #hist-search:focus { background: var(--surface); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
 .btn {
-  display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px;
-  border-radius: 17px; border: 1px solid var(--border); background: var(--surface);
+  display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 13px;
+  border-radius: 999px; border: 1px solid var(--border); background: var(--surface);
   color: var(--text-2); font-size: 12.5px; font-weight: 500; text-decoration: none; white-space: nowrap;
 }
-.btn:hover { background: var(--hover); color: var(--text); }
+.btn:hover { background: var(--hover); color: var(--text); border-color: var(--border-strong); }
 .btn.danger:hover { background: var(--danger-bg); color: var(--danger); border-color: transparent; }
 .wrap { max-width: 920px; margin: 0 auto; padding: 24px 24px 64px; }
 .group-t { font-size: 12.5px; font-weight: 700; color: var(--text-2); margin: 18px 0 8px 4px; }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow-sm); margin-bottom: 12px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 13px; overflow: hidden; box-shadow: var(--shadow-xs); margin-bottom: 12px; }
 .row-wrap { display: flex; align-items: center; border-bottom: 1px solid var(--divider); }
 .row-wrap:last-child { border-bottom: none; }
 .row-wrap:hover { background: var(--hover); }
 .row { display: flex; align-items: center; gap: 11px; flex: 1; min-width: 0; padding: 10px 16px; text-decoration: none; color: var(--text); font-size: 13px; }
 .htitle { font-weight: 500; white-space: nowrap; overflow: hidden; max-width: 360px; }
 .hurl { flex: 1; min-width: 0; font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; }
-.hcnt { font-size: 11px; padding: 2px 7px; border-radius: 999px; background: var(--surface-3); color: var(--text-2); flex-shrink: 0; }
+.hcnt { font-size: 11px; padding: 2px 6px; border-radius: 6px; background: var(--surface-3); color: var(--text-2); flex-shrink: 0; }
 .htime { font-size: 11.5px; color: var(--text-3); flex-shrink: 0; }
-.rdel { display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; margin-right: 8px; border-radius: 9px; color: var(--text-3); text-decoration: none; flex-shrink: 0; }
+.rdel { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; margin-right: 10px; border-radius: 7px; color: var(--text-3); text-decoration: none; flex-shrink: 0; }
 .rdel:hover { background: var(--danger-bg); color: var(--danger); }
-.empty { padding: 48px; text-align: center; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; color: var(--text-3); font-size: 13px; }
+.empty { padding: 48px; text-align: center; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; color: var(--text-3); font-size: 13px; }
 "#;
 
 pub fn render_history_page(history: &History, current_url: &str) -> String {
@@ -2032,6 +3197,20 @@ pub(crate) fn is_suspicious_host(url: &str) -> bool {
     has_latin && has_lookalike
 }
 
+pub(crate) fn is_loopback_http(url: &str) -> bool {
+    let Some(after_scheme) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority.rsplit('@').next().unwrap_or("");
+    let host = if let Some(rest) = host_port.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        host_port.split(':').next().unwrap_or("")
+    };
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+}
+
 pub fn parse_query_param(url: &str, key: &str) -> Option<String> {
     let (_, query) = url.split_once('?')?;
     let query = query.split('#').next().unwrap_or(query);
@@ -2050,26 +3229,28 @@ pub fn render_error_page(url: &str, message: &str, dark_mode: bool) -> String {
         r#"body { background: var(--surface-2); padding: 80px 24px; }
 .card {
   max-width: 600px; margin: 0 auto; padding: 34px 32px;
-  border-radius: 18px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 16px; background: var(--surface); border: 1px solid var(--border);
+  border-top: 3px solid var(--danger);
   box-shadow: var(--shadow-md);
 }
 .ic { margin-bottom: 18px; }
-h1 { font-size: 21px; font-weight: 700; margin-bottom: 10px; letter-spacing: -0.02em; }
+h1 { font-size: 21px; font-weight: 700; margin-bottom: 10px; letter-spacing: -0.025em; }
 p { color: var(--text-2); font-size: 14px; line-height: 1.6; margin-bottom: 12px; }
 .url-chip {
-  padding: 9px 12px; border-radius: 10px; background: var(--surface-2);
+  padding: 9px 12px; border-radius: 9px; background: var(--surface-2);
   border: 1px solid var(--divider); color: var(--text-2);
-  font-size: 12.5px; word-break: break-all; margin-bottom: 22px;
+  font-family: "Cascadia Code", Consolas, "JetBrains Mono", monospace;
+  font-size: 12px; word-break: break-all; margin-bottom: 22px;
 }
 .actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .btn {
-  display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 18px;
-  border-radius: 18px; font-size: 13px; font-weight: 600; text-decoration: none;
+  display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 17px;
+  border-radius: 999px; font-size: 13px; font-weight: 600; text-decoration: none;
   border: 1px solid var(--border); color: var(--text); background: var(--surface);
 }
-.btn:hover { background: var(--hover); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #ffffff; }
-.btn.primary:hover { opacity: 0.92; }
+.btn:hover { background: var(--hover); border-color: var(--border-strong); }
+.btn.primary { background: var(--ink); border-color: var(--ink); color: var(--ink-fg); box-shadow: var(--shadow-xs); }
+.btn.primary:hover { opacity: 0.88; }
 "#,
     );
     let open_js_q: String = url::form_urlencoded::byte_serialize(url.as_bytes()).collect();
@@ -2205,9 +3386,9 @@ pub(crate) fn short_host(url: &str) -> String {
 }
 
 fn monogram_badge(title: &str, url: &str) -> (char, &'static str) {
-    // Brand-cohesive badge hues: browser blue, shield teal/green, warm amber, slate.
+    // Cohesive muted jewel palette: cobalt, emerald, sky, indigo, teal, rust, slate, navy.
     const PALETTE: &[&str] = &[
-        "#1b6ef3", "#0f8a5f", "#0891b2", "#1d4ed8", "#0d9488", "#b45309", "#475569", "#0369a1",
+        "#2563eb", "#0d9468", "#0284c7", "#4f46e5", "#0f766e", "#c2410c", "#475569", "#1d4ed8",
     ];
     let host = short_host(url);
     let source = if !host.is_empty() { host.as_str() } else { title };
@@ -2246,6 +3427,17 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_loopback_http_hosts() {
+        assert!(is_loopback_http("http://localhost:8080/SASStudio/"));
+        assert!(is_loopback_http("http://LocalHost/"));
+        assert!(is_loopback_http("http://127.0.0.1:3000/"));
+        assert!(is_loopback_http("http://[::1]:8080/"));
+        assert!(!is_loopback_http("http://localhost.evil.com/"));
+        assert!(!is_loopback_http("http://example.com/"));
+        assert!(!is_loopback_http("https://localhost:8080/"));
+    }
+
+    #[test]
     fn chrome_html_reflects_state_and_escapes() {
         let mut tab = Tab::new(1, "https://a.test/?x=<b>".into());
         tab.title = "T&T".into();
@@ -2270,6 +3462,7 @@ mod tests {
             detaching_tab_id: None,
             downloads_in_progress: 0,
             downloads_unseen: 0,
+            sidebar_open: false,
         });
         assert!(html.contains(r#"value="typed""#));
         assert!(html.contains("T&amp;T"));
@@ -2304,6 +3497,7 @@ mod tests {
             detaching_tab_id: None,
             downloads_in_progress: 0,
             downloads_unseen: 0,
+            sidebar_open: false,
         });
         assert!(html.contains(r#"class="fav-spin""#));
         assert!(html.contains("@keyframes tab-spin"));
@@ -2441,6 +3635,7 @@ mod tests {
             detaching_tab_id: None,
             downloads_in_progress: 0,
             downloads_unseen: 1,
+            sidebar_open: false,
         });
         assert!(chrome_html.contains("open-downloads"));
         let dl_html = render_downloads_popup_html(&[DownloadItem {
@@ -2503,5 +3698,138 @@ mod tests {
         // Equal-byte-length net delta from `İ` (+1) and `ẞ` (-1) must not panic on non-char-boundaries.
         let hl = highlight_escaped("İẞ Rust test", "rust");
         assert!(hl.contains(r#"<span class="hl">Rust</span>"#), "{hl}");
+    }
+
+    #[test]
+    fn sidebar_renders_and_resolves_in_blitz() {
+        let messages = vec![
+            crate::chat::ChatMessage {
+                role: crate::chat::ChatRole::User,
+                text: "이 페이지 요약해 줘".into(),
+                page_title: Some("Rust".into()),
+                provider_label: None,
+            },
+            crate::chat::ChatMessage {
+                role: crate::chat::ChatRole::Assistant,
+                text: "## 요약\n- **빠른** 브라우저\n\n```rust\nprintln!(\"hi\");\n```".into(),
+                page_title: None,
+                provider_label: Some("Claude · Claude Sonnet".into()),
+            },
+            crate::chat::ChatMessage {
+                role: crate::chat::ChatRole::Error,
+                text: "로그아웃되었습니다.".into(),
+                page_title: None,
+                provider_label: Some("Claude".into()),
+            },
+        ];
+        let model_options = crate::chat::preset_models(crate::chat::ChatProvider::Claude, &[]);
+        let (html, blocks) = render_sidebar_html(&SidebarRenderState {
+            provider: crate::chat::ChatProvider::Claude,
+            avail: crate::chat::CliAvailability {
+                claude: true,
+                ..Default::default()
+            },
+            picker_open: SidebarPicker::Model,
+            active_model_id: "sonnet",
+            active_model_label: "Claude Sonnet",
+            control_model_id: "haiku",
+            custom_presets: &[crate::chat::AgentPreset {
+                title: "표 수집".into(),
+                prompt: "표 추출".into(),
+            }],
+            model_options: &model_options,
+            agy_models_loading: false,
+            messages: &messages,
+            is_loading: false,
+            can_retry: true,
+            include_page: true,
+            agent_control: true,
+            agent_status: None,
+            agent_log: &[],
+            sidebar_wide: false,
+            show_settings: true,
+            active_title: "Rust",
+            active_url: "https://www.rust-lang.org/",
+            api_endpoint: "",
+            api_model: "sonnet",
+            has_api_key: true,
+            draft: "질문",
+            dark_mode: true,
+            font_size: 13,
+            reveal: None,
+            show_history: false,
+            history: &[],
+            session_id: None,
+            agent_confirm: None,
+        });
+        assert!(html.contains("id=\"chat-input\""));
+        assert!(html.contains("id=\"chat-messages\""));
+        assert!(html.contains("class=\"composer\""));
+        assert!(html.contains("chat-picker:provider"));
+        assert!(html.contains("chat-picker:model"));
+        assert!(html.contains("chat-toggle-width"));
+        assert!(html.contains("chat-toggle-control"));
+        assert!(html.contains("chat-model:sonnet"));
+        assert!(html.contains("chat-ctrl-model:haiku"));
+        assert!(html.contains("chat-preset-add"));
+        assert!(html.contains("chat-open-login"));
+        assert!(html.contains("chat-copy-code:0"));
+        assert_eq!(blocks, vec!["println!(\"hi\");"]);
+
+        let mut doc = blitz_html::HtmlDocument::from_html(
+            &html,
+            blitz_dom::DocumentConfig {
+                viewport: Some(blitz_traits::shell::Viewport::new(
+                    380,
+                    720,
+                    1.0,
+                    blitz_traits::shell::ColorScheme::Dark,
+                )),
+                style_threading: blitz_dom::StyleThreading::Sequential,
+                ..Default::default()
+            },
+        );
+        doc.resolve(0.0);
+        let inp = doc.get_element_by_id("chat-input").expect("chat-input");
+        let sz = doc.get_node(inp).unwrap().final_layout().size;
+        assert!(sz.width > 120.0 && sz.height >= 24.0, "chat-input={sz:?}");
+
+        let (loading_html, _) = render_sidebar_html(&SidebarRenderState {
+            provider: crate::chat::ChatProvider::Claude,
+            avail: crate::chat::CliAvailability::default(),
+            picker_open: SidebarPicker::None,
+            active_model_id: "sonnet",
+            active_model_label: "Claude Sonnet",
+            control_model_id: "haiku",
+            custom_presets: &[],
+            model_options: &model_options,
+            agy_models_loading: false,
+            messages: &messages,
+            is_loading: true,
+            can_retry: false,
+            include_page: true,
+            agent_control: true,
+            agent_status: Some("2/10단계 · 요소 [1] 클릭"),
+            agent_log: &["OK: 이동 완료".into(), "ERR: 요소 없음".into()],
+            sidebar_wide: false,
+            show_settings: false,
+            active_title: "Rust",
+            active_url: "https://www.rust-lang.org/",
+            api_endpoint: "",
+            api_model: "sonnet",
+            has_api_key: false,
+            draft: "",
+            dark_mode: false,
+            font_size: 13,
+            reveal: None,
+            show_history: false,
+            history: &[],
+            session_id: None,
+            agent_confirm: Some(("새 탭 열기 → https://evil.test/?d=x", "evil.test")),
+        });
+        assert!(loading_html.contains("sb-agent-log"));
+        assert!(loading_html.contains("이동 완료"));
+        assert!(loading_html.contains("sb-agent-step err"));
+        assert!(loading_html.contains("agent-confirm:allow") && loading_html.contains("evil.test"));
     }
 }

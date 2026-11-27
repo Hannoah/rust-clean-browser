@@ -156,6 +156,8 @@ impl BrowserApp {
                 "open-downloads" => self.toggle_downloads_popup(event_loop),
                 "cycle-theme" => self.cycle_theme(),
                 "toggle-bm-bar" => self.toggle_bookmarks_bar(),
+                "toggle-sidebar" => self.toggle_sidebar(),
+                "chat-summarize-page" => self.open_sidebar_and_summarize(),
                 "trim-memory" => {
                     crate::memory::trim_process_working_set();
                     let mb = crate::memory::working_set_mb();
@@ -269,6 +271,12 @@ impl BrowserApp {
                         self.chrome_doc.poll(None);
                         self.request_redraw();
                     }
+                    if let Some(sdoc) = &mut self.sidebar_doc
+                        && sdoc.id() == doc_id
+                    {
+                        sdoc.poll(None);
+                        self.request_redraw();
+                    }
                     if let Some(popup) = &mut self.popup
                         && popup.doc.id() == doc_id
                     {
@@ -337,6 +345,7 @@ impl BrowserApp {
                     self.net_provider.cookies.save();
                 }
                 AppEvent::PageLoadFailed {
+                    retry_in_js,
                     tab_id,
                     load_seq,
                     url,
@@ -372,6 +381,16 @@ impl BrowserApp {
                         self.tabs[idx].revalidating = false;
                         self.tabs[idx].is_loading = false;
                         self.set_status_note("오프라인 캐시 표시 중");
+                    } else if retry_in_js
+                        && !self.tabs[idx].js_mode
+                        && !self.tabs[idx].force_blitz
+                        && (url.starts_with("http://") || url.starts_with("https://"))
+                    {
+                        self.tabs[idx].url = url;
+                        self.tabs[idx].is_loading = false;
+                        self.set_status_note("JS 모드로 자동 전환");
+                        self.mount_or_navigate_webview(idx);
+                        self.sync_find_bar_after_doc_change();
                     } else {
                         self.show_error(idx, &url, &error, Some("Load Error"));
                     }
@@ -459,6 +478,18 @@ impl BrowserApp {
                         focus_main_window(&**win, true);
                     }
                 }
+                AppEvent::WebViewMedia { tab_id, active } => {
+                    if let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id)
+                        && self.tabs[idx].media_active != active
+                    {
+                        self.tabs[idx].media_active = active;
+                        // A parked tab whose call just ended can now be frozen like any other.
+                        if !active && let Some((_, wv)) = self.parked_webviews.iter().find(|(id, _)| *id == tab_id) {
+                            super::helpers::suspend_webview(wv);
+                        }
+                        self.rebuild_chrome();
+                    }
+                }
                 AppEvent::WebViewTitleChanged { tab_id, title } => {
                     if let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id)
                         && !title.trim().is_empty()
@@ -468,6 +499,7 @@ impl BrowserApp {
                         self.tabs[idx].title = title;
                         if idx == self.active_tab {
                             self.query_webview_icons();
+                            self.rebuild_sidebar(false);
                         }
                         self.rebuild_chrome();
                     }
@@ -490,7 +522,9 @@ impl BrowserApp {
                             self.history.record(&self.tabs[idx].url, &self.tabs[idx].title);
                             if idx == self.active_tab {
                                 self.query_webview_icons();
+                                self.rebuild_sidebar(false);
                             }
+                            self.on_agent_webview_loaded(tab_id);
                         }
                         self.rebuild_chrome();
                     }
@@ -572,6 +606,37 @@ impl BrowserApp {
                     self.open_downloads_popup(event_loop, false);
                 }
                 AppEvent::ChromeAction(action) => self.handle_chrome_action(&action, event_loop),
+                AppEvent::SidebarAction(action) => self.handle_sidebar_action(&action),
+                AppEvent::ChatPageContext { req_id, prompt, page } => self.start_chat_task(req_id, prompt, page),
+                AppEvent::ChatFinished {
+                    req_id,
+                    provider_label,
+                    result,
+                } => self.on_chat_finished(req_id, provider_label, result),
+                AppEvent::AgentStepReady { req_id } => self.on_agent_step_ready(req_id),
+                AppEvent::AgentLoadSettled { req_id, wait_gen } => self.on_agent_load_settled(req_id, wait_gen),
+                AppEvent::AgentWaitCheck {
+                    req_id,
+                    wait_gen,
+                    found,
+                } => {
+                    self.on_agent_wait_check(req_id, wait_gen, found);
+                }
+                AppEvent::AgentActionDone {
+                    req_id,
+                    ok,
+                    summary,
+                    need_delay_ms,
+                } => self.on_agent_action_done(req_id, ok, summary, need_delay_ms),
+                AppEvent::AgentExtractDone {
+                    req_id,
+                    ok,
+                    summary,
+                    extracted,
+                    copy,
+                } => self.on_agent_extract_done(req_id, ok, summary, extracted, copy),
+                AppEvent::AgyModelsLoaded(models) => self.on_agy_models_loaded(models),
+                AppEvent::ChatRevealTick => self.on_chat_reveal_tick(),
                 AppEvent::OpenBookmarkPopup {
                     key,
                     root,

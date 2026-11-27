@@ -341,8 +341,10 @@ pub const PDF_RESPONSE_ERR: &str = "PDF 문서입니다.";
 /// Error for image/archive responses; the app hands those to WebView2's built-in viewers.
 pub const NOT_HTML_ERR: &str = "HTML 문서가 아닌 바이너리/이미지/PDF 파일입니다.";
 
-/// Pages embedding a social or enterprise SSO sign-in SDK (Google/Apple/Kakao/Naver/Okta/Auth0)
-/// only work with scripts running, so they must open in JS mode.
+/// Pages embedding a social or enterprise SSO sign-in SDK (Google/Apple/Kakao/Naver/Okta/Auth0),
+/// Keycloak/SAML sign-in forms, or Cloudflare-style JS gates only work with scripts and WebView2 cookies.
+/// Deliberately specific: a generic `type="password"` or "enable JavaScript" `<noscript>` notice
+/// appears on a large share of ordinary pages (header login boxes) and would turn Clean mode off.
 pub fn uses_social_login_sdk(raw_html: &str) -> bool {
     const MARKERS: &[&str] = &[
         "accounts.google.com/gsi/client",
@@ -356,8 +358,22 @@ pub fn uses_social_login_sdk(raw_html: &str) -> bool {
         "id=\"okta-login-container\"",
         "cdn.auth0.com/js/",
     ];
+    const INTERACTIVE_JS_MARKERS: &[&str] = &[
+        "id=\"kc-form-login\"",
+        "class=\"login-pf\"",
+        "name=\"samlrequest\"",
+        "name=\"samlresponse\"",
+        "cf-browser-verification",
+        "/cdn-cgi/challenge-platform",
+        "enable javascript and cookies",
+        "data-sap-theme=",
+        "id=\"__nuxt\"",
+    ];
     let lower = raw_html.to_ascii_lowercase();
-    MARKERS.iter().any(|m| lower.contains(m))
+    if MARKERS.iter().any(|m| lower.contains(m)) {
+        return true;
+    }
+    lower.contains("<script") && INTERACTIVE_JS_MARKERS.iter().any(|m| lower.contains(m))
 }
 
 /// A local `.html` you opened yourself (resume builder, dashboard, tool) that runs scripts or has
@@ -494,7 +510,7 @@ fn find_matching_close_tag(lower: &str, lb: &[u8], tag: &str, from: usize) -> us
 }
 
 /// Removes `<tag ...>...</tag>` blocks for every tag in `tags` in a single pass.
-fn strip_tag_blocks(input: &str, tags: &[&str]) -> String {
+pub(crate) fn strip_tag_blocks(input: &str, tags: &[&str]) -> String {
     let lower = input.to_ascii_lowercase();
     let lb = lower.as_bytes();
     let mut out = String::with_capacity(input.len());
@@ -566,7 +582,7 @@ pub fn is_js_spa_shell(raw_html: &str) -> bool {
     }
 
     let body_fragment = extract_primary_fragment(&lower);
-    let cleaned = strip_tag_blocks(body_fragment, &["script", "style", "noscript", "svg"]);
+    let cleaned = strip_tag_blocks(body_fragment, &["script", "style", "noscript", "svg", "title"]);
 
     let visible_len = count_visible_text_chars(&cleaned);
     let has_empty_spa_mount = lower.contains("id=\"root\"></div>")
@@ -576,6 +592,21 @@ pub fn is_js_spa_shell(raw_html: &str) -> bool {
         || lower.contains("id=\"__next\"></div>");
 
     if has_empty_spa_mount && visible_len < 600 {
+        return true;
+    }
+
+    if visible_len == 0
+        && !body_fragment.contains("<svg")
+        && !cleaned.contains("<img")
+        && !cleaned.contains("<video")
+        && !cleaned.contains("<audio")
+        && !cleaned.contains("<iframe")
+        && !cleaned.contains("<canvas")
+        && !cleaned.contains("<object")
+        && !cleaned.contains("<embed")
+        && !cleaned.contains("<input")
+        && !cleaned.contains("<form")
+    {
         return true;
     }
 
@@ -717,13 +748,29 @@ pub fn build_reader_html_with_options(raw_html: &str, url: &str, opts: ReaderOpt
     };
     let (bg, bar_bg, text, muted, link, border, code_bg, active_bg, active_fg) = match eff_theme {
         ReaderTheme::Sepia => (
-            "#f6eedb", "#ece0c6", "#3b2f26", "#746251", "#9a4d16", "#dfd1b4", "#ebe0c7", "#9a4d16", "#fcf8ef",
+            "#f6eedb", "#ede4d0", "#382c22", "#756352", "#9a4d16", "#dfd2b7", "#ede4d0", "#9a4d16", "#fcf8ef",
         ),
         ReaderTheme::Dark => (
-            "#16181c", "#1e2127", "#dcdfe6", "#8d96a6", "#8ab4f8", "#2c313b", "#22262e", "#1b3863", "#d6e6ff",
+            "#12141a",
+            "#171a21",
+            "#e6e8ee",
+            "#9299a8",
+            "#7c8cff",
+            "#252a36",
+            "#1b1f28",
+            "rgba(124, 140, 255, 0.16)",
+            "#cdd5ff",
         ),
         ReaderTheme::Light | ReaderTheme::Auto => (
-            "#fcfcfd", "#f2f4f8", "#1c2026", "#5a6372", "#0b57d0", "#e2e6ee", "#f1f4f8", "#dbeafe", "#0f3a8a",
+            "#f8f9fb",
+            "#ffffff",
+            "#16181d",
+            "#5c6370",
+            "#4f63f6",
+            "#e4e7ee",
+            "#eef0f4",
+            "rgba(79, 99, 246, 0.11)",
+            "#3444c2",
         ),
     };
     let font_stack = match opts.font {
@@ -751,11 +798,11 @@ pub fn build_reader_html_with_options(raw_html: &str, url: &str, opts: ReaderOpt
   * {{ box-sizing: border-box; }}
   body {{
     margin: 0;
-    padding: 20px 24px 88px;
+    padding: 24px 24px 88px;
     background: {bg};
     color: {text};
     font-family: {font_stack};
-    line-height: 1.72;
+    line-height: 1.78;
     font-size: {font_size}px;
   }}
   .reader-shell {{
@@ -768,22 +815,23 @@ pub fn build_reader_html_with_options(raw_html: &str, url: &str, opts: ReaderOpt
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    padding: 8px 12px;
-    margin-bottom: 28px;
-    border-radius: 14px;
+    padding: 7px 11px;
+    margin-bottom: 32px;
+    border-radius: 12px;
     background: {bar_bg};
     border: 1px solid {border};
+    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
     font-family: "Pretendard Variable", "Pretendard", "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic", sans-serif;
     font-size: 12px;
   }}
-  .rgroup {{ display: flex; align-items: center; gap: 4px; }}
-  .rsep {{ width: 1px; height: 16px; background: {border}; margin: 0 4px; }}
+  .rgroup {{ display: flex; align-items: center; gap: 3px; }}
+  .rsep {{ width: 1px; height: 15px; background: {border}; margin: 0 4px; }}
   .rpill {{
     display: inline-flex;
     align-items: center;
     height: 26px;
-    padding: 0 10px;
-    border-radius: 13px;
+    padding: 0 9px;
+    border-radius: 7px;
     color: {muted};
     text-decoration: none;
     font-weight: 500;
@@ -803,7 +851,7 @@ pub fn build_reader_html_with_options(raw_html: &str, url: &str, opts: ReaderOpt
   }}
   .rmeta-chip {{
     padding: 2px 9px;
-    border-radius: 999px;
+    border-radius: 6px;
     background: {bar_bg};
     border: 1px solid {border};
     color: {text};
@@ -813,7 +861,7 @@ pub fn build_reader_html_with_options(raw_html: &str, url: &str, opts: ReaderOpt
     font-size: 1.75em;
     line-height: 1.28;
     font-weight: 700;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.025em;
     margin: 0 0 22px 0;
     padding-bottom: 18px;
     border-bottom: 1px solid {border};
@@ -824,8 +872,8 @@ pub fn build_reader_html_with_options(raw_html: &str, url: &str, opts: ReaderOpt
     margin: 1.6em 0 0.6em;
     font-weight: 700;
   }}
-  .reader-content p {{ margin: 0 0 1.2em; }}
-  .reader-content ul, .reader-content ol {{ margin: 0 0 1.2em; padding-left: 1.5em; }}
+  .reader-content p {{ margin: 0 0 1.25em; }}
+  .reader-content ul, .reader-content ol {{ margin: 0 0 1.25em; padding-left: 1.5em; }}
   .reader-content li {{ margin-bottom: 0.45em; }}
   .reader-content img {{ max-width: 100%; height: auto; border-radius: 10px; margin: 16px 0; }}
   .reader-content pre, .reader-content code {{
@@ -842,8 +890,8 @@ pub fn build_reader_html_with_options(raw_html: &str, url: &str, opts: ReaderOpt
     border-left: 3px solid {link};
     background: {bar_bg};
     margin: 20px 0;
-    padding: 10px 18px;
-    border-radius: 0 8px 8px 0;
+    padding: 12px 18px;
+    border-radius: 8px;
     color: {muted};
   }}
   .reader-content hr {{ border: none; border-top: 1px solid {border}; margin: 28px 0; }}
@@ -1091,6 +1139,22 @@ mod tests {
 
         let okta_like = r#"<!doctype html><html><head><script src="https://ok6static2.oktacdn.com/assets/js/sdk/okta-signin-widget/7.51.0/js/okta-sign-in.min.js"></script></head><body><div id="okta-login-container"></div><div class="hidden">Cookies are required. Cookies are disabled on your browser. Please enable Cookies and refresh this page to continue signing in.</div></body></html>"#;
         assert!(uses_social_login_sdk(okta_like));
+
+        let keycloak_like = r#"<!doctype html><html><head><script src="/auth/main.js"></script></head><body><form id="kc-form-login" method="post"><input type="text" name="username"><input type="password" name="password"></form><p>Long legal notice text...</p></body></html>"#;
+        assert!(uses_social_login_sdk(keycloak_like));
+
+        let cf_gate = r#"<!doctype html><html><head><script src="/cdn-cgi/challenge-platform/h/b/orchestrate"></script></head><body><p>Enable JavaScript and cookies to continue</p></body></html>"#;
+        assert!(uses_social_login_sdk(cf_gate));
+        assert!(!uses_social_login_sdk(article_like));
+
+        let header_login_article = r#"<!doctype html><html><head><script src="/app.js"></script></head><body><form class="login"><input type="password" name="pw"></form><noscript>Please enable JavaScript for comments.</noscript><article><h1>News</h1><p>Plenty of readable article text here.</p></article></body></html>"#;
+        assert!(!uses_social_login_sdk(header_login_article));
+
+        let small_redirect_shell = r#"<html><head><title>Studio</title><script>window.location = 'signin?locale=en_US';</script></head><body></body></html>"#;
+        assert!(is_js_spa_shell(small_redirect_shell));
+
+        let image_only_with_script = r#"<html><body><img src="photo.png"><script>init()</script></body></html>"#;
+        assert!(!is_js_spa_shell(image_only_with_script));
     }
 
     #[test]

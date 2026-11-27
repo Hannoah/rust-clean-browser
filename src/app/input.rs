@@ -5,7 +5,7 @@ use super::helpers::{
     RESIZE_EDGE, focus_main_window, is_primary_mouse_button_down, main_window_has_keyboard_focus, mouse_button,
     normalize_url_input, pointer_event, primary_modifier, resize_cursor, wheel_delta,
 };
-use super::{BookmarkDrag, BrowserApp, TabDrag};
+use super::{BookmarkDrag, BrowserApp, TabDrag, UiRegion};
 use crate::chrome_ui::TITLEBAR_HEIGHT;
 use crate::events::{
     button_source_to_blitz, pointer_kind_to_blitz, pointer_source_to_blitz, pointer_source_to_blitz_details,
@@ -37,11 +37,22 @@ impl BrowserApp {
                 {
                     need_chrome = true;
                 }
+                if self.sidebar_drag {
+                    self.sidebar_drag = false;
+                    super::helpers::release_mouse_capture();
+                    self.prefs.save();
+                }
                 self.url_bar_select_all_on_click = None;
                 self.url_bar_just_selected_all = None;
-                if self.chrome_focused {
-                    self.chrome_focused = false;
+                if self.focus_region == UiRegion::Chrome {
+                    self.focus_region = UiRegion::Content;
                     self.chrome_doc.clear_focus();
+                    self.request_redraw();
+                } else if self.focus_region == UiRegion::Sidebar {
+                    self.focus_region = UiRegion::Content;
+                    if let Some(sdoc) = &mut self.sidebar_doc {
+                        sdoc.clear_focus();
+                    }
                     self.request_redraw();
                 }
                 if let Some(drag) = self.bm_drag.take()
@@ -86,7 +97,9 @@ impl BrowserApp {
             WindowEvent::Ime(ime_ev) => {
                 let ev = UiEvent::Ime(winit_ime_to_blitz(ime_ev));
                 self.dispatch_focused(ev);
-                self.update_suggestions(event_loop);
+                if self.focus_region == UiRegion::Chrome {
+                    self.update_suggestions(event_loop);
+                }
                 self.request_redraw();
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -103,7 +116,11 @@ impl BrowserApp {
                     UiEvent::KeyUp(key_data)
                 });
                 self.process_app_events(event_loop);
-                self.update_suggestions(event_loop);
+                if self.focus_region == UiRegion::Chrome {
+                    self.update_suggestions(event_loop);
+                } else if self.focus_region == UiRegion::Sidebar {
+                    self.sync_chat_input_height();
+                }
                 self.request_redraw();
             }
             WindowEvent::PointerLeft {
@@ -114,9 +131,10 @@ impl BrowserApp {
             } => {
                 let id = pointer_kind_to_blitz(&kind);
                 let pos = position.unwrap_or(self.pointer_pos);
-                self.send_pointer_leave(id, primary, pos, true);
-                self.send_pointer_leave(id, primary, pos, false);
-                self.pointer_in_chrome = None;
+                self.send_pointer_leave(id, primary, pos, UiRegion::Chrome);
+                self.send_pointer_leave(id, primary, pos, UiRegion::Content);
+                self.send_pointer_leave(id, primary, pos, UiRegion::Sidebar);
+                self.pointer_region = None;
                 self.set_hover_link(None);
                 self.request_redraw();
             }
@@ -127,7 +145,9 @@ impl BrowserApp {
                 ..
             } => {
                 self.pointer_pos = position;
-                if (self.tab_drag.is_some() || self.bm_drag.is_some()) && !is_primary_mouse_button_down() {
+                if (self.tab_drag.is_some() || self.bm_drag.is_some() || self.sidebar_drag)
+                    && !is_primary_mouse_button_down()
+                {
                     self.buttons &= !MouseEventButtons::from(MouseEventButton::Main);
                     let mut need_chrome = false;
                     if let Some(tdrag) = self.tab_drag.take()
@@ -140,6 +160,11 @@ impl BrowserApp {
                     {
                         need_chrome = true;
                     }
+                    if self.sidebar_drag {
+                        self.sidebar_drag = false;
+                        super::helpers::release_mouse_capture();
+                        self.prefs.save();
+                    }
                     if need_chrome {
                         if let Some(win) = &self.window {
                             win.set_cursor(Cursor::Icon(CursorIcon::Default));
@@ -147,15 +172,20 @@ impl BrowserApp {
                         self.rebuild_chrome();
                     }
                 }
+                if self.sidebar_drag && self.update_sidebar_drag(position) {
+                    return;
+                }
                 if self.tab_drag.is_none() && self.bm_drag.is_none() {
                     let resize = self.resize_direction_at(position);
-                    if resize != self.resize_hover {
-                        self.resize_hover = resize;
+                    let sb_edge = resize.is_none() && self.is_sidebar_resize_edge(position);
+                    let target_dir = if sb_edge { Some(ResizeDirection::West) } else { resize };
+                    if target_dir != self.resize_hover {
+                        self.resize_hover = target_dir;
                         if let Some(win) = &self.window {
-                            win.set_cursor(Cursor::Icon(resize.map_or(CursorIcon::Default, resize_cursor)));
+                            win.set_cursor(Cursor::Icon(target_dir.map_or(CursorIcon::Default, resize_cursor)));
                         }
                     }
-                    if resize.is_some() {
+                    if resize.is_some() || sb_edge {
                         return;
                     }
                 } else if self.resize_hover.take().is_some()
@@ -181,26 +211,25 @@ impl BrowserApp {
                     self.url_bar_select_all_on_click = None;
                 }
                 let id = pointer_source_to_blitz(&source);
-                let now_in_chrome = self.is_in_chrome(position);
-                // Crossing the chrome/content boundary: the side we left gets a PointerLeave.
-                if let Some(was_in_chrome) = self.pointer_in_chrome
-                    && was_in_chrome != now_in_chrome
+                let now_region = self.region_at(position);
+                if let Some(was_region) = self.pointer_region
+                    && was_region != now_region
                 {
-                    self.send_pointer_leave(id, primary, position, was_in_chrome);
+                    self.send_pointer_leave(id, primary, position, was_region);
                 }
-                self.pointer_in_chrome = Some(now_in_chrome);
+                self.pointer_region = Some(now_region);
                 let ev = pointer_event(
                     id,
                     primary,
-                    self.coords_for(position, now_in_chrome),
+                    self.coords_for_region(position, now_region),
                     Default::default(),
                     self.buttons,
                     self.mods(),
                     pointer_source_to_blitz_details(&source),
                 );
                 // No unconditional redraw: Blitz requests one when hover/selection changes.
-                self.dispatch_to(now_in_chrome, UiEvent::PointerMove(ev));
-                self.update_link_hover(now_in_chrome);
+                self.dispatch_to_region(now_region, UiEvent::PointerMove(ev));
+                self.update_link_hover(now_region != UiRegion::Content);
             }
             WindowEvent::PointerButton {
                 button,
@@ -225,9 +254,19 @@ impl BrowserApp {
                 }
                 let btn = mouse_button(&button);
 
-                // Frameless window: edge resize and title-bar drag / double-click maximize.
-                if state == ElementState::Pressed && btn == MouseEventButton::Main && self.frame_press(position) {
-                    return;
+                // Frameless window: edge resize, sidebar sash resize, and title-bar drag / maximize.
+                if state == ElementState::Pressed && btn == MouseEventButton::Main {
+                    if self.is_sidebar_resize_edge(position) {
+                        self.sidebar_drag = true;
+                        if let Some(win) = &self.window {
+                            super::helpers::capture_mouse(&**win);
+                        }
+                        self.buttons |= btn.into();
+                        return;
+                    }
+                    if self.frame_press(position) {
+                        return;
+                    }
                 }
 
                 match state {
@@ -235,7 +274,18 @@ impl BrowserApp {
                     ElementState::Released => self.buttons &= !MouseEventButtons::from(btn),
                 }
 
-                let in_chrome = self.is_in_chrome(position);
+                if state == ElementState::Released && btn == MouseEventButton::Main && self.sidebar_drag {
+                    self.sidebar_drag = false;
+                    super::helpers::release_mouse_capture();
+                    self.prefs.save();
+                    if let Some(win) = &self.window {
+                        win.set_cursor(Cursor::Icon(CursorIcon::Default));
+                    }
+                    return;
+                }
+
+                let region = self.region_at(position);
+                let in_chrome = region == UiRegion::Chrome;
                 let mut force_url_caret_at_pos = false;
                 if state == ElementState::Pressed {
                     let win_had_kbd_focus = self.window.as_deref().is_none_or(main_window_has_keyboard_focus);
@@ -250,15 +300,28 @@ impl BrowserApp {
                         self.url_bar_select_all_on_click = None;
                         self.url_bar_just_selected_all = None;
                     }
-                    if in_chrome && let Some(doc) = &mut self.tabs[self.active_tab].doc {
+                    if region != UiRegion::Content
+                        && let Some(doc) = &mut self.tabs[self.active_tab].doc
+                    {
                         doc.clear_focus();
                     }
-                    self.chrome_focused = hit_url_bar;
+                    if region != UiRegion::Sidebar
+                        && let Some(sdoc) = &mut self.sidebar_doc
+                    {
+                        sdoc.clear_focus();
+                    }
+                    self.focus_region = if hit_url_bar {
+                        UiRegion::Chrome
+                    } else if region == UiRegion::Sidebar {
+                        UiRegion::Sidebar
+                    } else {
+                        UiRegion::Content
+                    };
                     if in_chrome {
                         self.last_chrome_click_x_logical = (position.x / (self.hidpi_scale.max(1.0) as f64)) as f32;
                     }
                     if let Some(win) = &self.window {
-                        focus_main_window(&**win, in_chrome);
+                        focus_main_window(&**win, region != UiRegion::Content || self.active_webview.is_none());
                         super::bus::enable_window_ime(&**win);
                     }
                     if btn == MouseEventButton::Main {
@@ -308,7 +371,7 @@ impl BrowserApp {
                                 win.set_cursor(Cursor::Icon(CursorIcon::Default));
                             }
                             self.detach_tab_to_new_window(tdrag.tab_id, position);
-                            self.send_pointer_leave(button_source_to_blitz(&button), primary, position, in_chrome);
+                            self.send_pointer_leave(button_source_to_blitz(&button), primary, position, region);
                             return;
                         }
                         let dropping_on_bm =
@@ -327,7 +390,7 @@ impl BrowserApp {
                         && drag.active
                     {
                         self.finish_bm_drag(drag, position);
-                        self.send_pointer_leave(button_source_to_blitz(&button), primary, position, in_chrome);
+                        self.send_pointer_leave(button_source_to_blitz(&button), primary, position, region);
                         return;
                     }
                 }
@@ -335,14 +398,14 @@ impl BrowserApp {
                 let pev = pointer_event(
                     button_source_to_blitz(&button),
                     primary,
-                    self.coords_for(position, in_chrome),
+                    self.coords_for_region(position, region),
                     btn,
                     self.buttons,
                     self.mods(),
                     PointerDetails::default(),
                 );
-                self.dispatch_to(
-                    in_chrome,
+                self.dispatch_to_region(
+                    region,
                     match state {
                         ElementState::Pressed => UiEvent::PointerDown(pev),
                         ElementState::Released => UiEvent::PointerUp(pev),
@@ -361,9 +424,9 @@ impl BrowserApp {
                 self.process_app_events(event_loop);
                 self.request_redraw();
             }
-            WindowEvent::MouseWheel { delta, .. } if !self.is_in_chrome(self.pointer_pos) => {
-                // Ctrl/Cmd + wheel zooms the page (like every browser) instead of scrolling it.
-                if primary_modifier(self.keyboard_modifiers.state()) {
+            WindowEvent::MouseWheel { delta, .. } if self.region_at(self.pointer_pos) != UiRegion::Chrome => {
+                let region = self.region_at(self.pointer_pos);
+                if region == UiRegion::Content && primary_modifier(self.keyboard_modifiers.state()) {
                     let notches = match wheel_delta(delta) {
                         BlitzWheelDelta::Lines(_, y) => y as f32,
                         BlitzWheelDelta::Pixels(_, y) => y as f32 / 120.0, // ~one notch; smooth wheels/pinch accumulate
@@ -373,12 +436,13 @@ impl BrowserApp {
                 }
                 let ev = UiEvent::Wheel(BlitzWheelEvent {
                     delta: wheel_delta(delta),
-                    coords: self.content_coords(self.pointer_pos),
+                    coords: self.coords_for_region(self.pointer_pos, region),
                     buttons: self.buttons,
                     mods: self.mods(),
                     element: Default::default(),
                 });
-                self.dispatch_to(false, ev);
+                self.dispatch_to_region(region, ev);
+                self.request_redraw();
             }
             _ => {}
         }
@@ -423,6 +487,11 @@ impl BrowserApp {
             KeyCode::KeyJ => self.toggle_downloads_popup(event_loop),
             KeyCode::KeyH => self.navigate_current("rust://history"),
             KeyCode::KeyB if shift => self.toggle_bookmarks_bar(),
+            KeyCode::KeyI if shift => self.toggle_sidebar(),
+            // Text dragged out of an AI reply: copy just that part.
+            KeyCode::KeyC if !shift && self.focus_region == UiRegion::Sidebar && self.sidebar_has_selection() => {
+                self.copy_sidebar_selection();
+            }
             KeyCode::KeyQ if cfg!(target_os = "macos") => self.exit_app(event_loop),
             KeyCode::BracketLeft => self.history_step(false),
             KeyCode::BracketRight => self.history_step(true),
@@ -497,11 +566,25 @@ impl BrowserApp {
                 self.rebuild_chrome();
                 return true;
             }
-            if self.chrome_focused {
-                self.chrome_focused = false;
+            if self.focus_region == UiRegion::Chrome {
+                self.focus_region = UiRegion::Content;
                 self.chrome_doc.clear_focus();
                 self.last_chrome_html.clear();
                 self.rebuild_chrome();
+                return true;
+            }
+            if self.focus_region == UiRegion::Sidebar {
+                self.focus_region = UiRegion::Content;
+                if let Some(sdoc) = &mut self.sidebar_doc {
+                    sdoc.clear_focus();
+                }
+                if self.chat_show_settings || self.sidebar_picker != crate::chrome_ui::SidebarPicker::None {
+                    self.chat_show_settings = false;
+                    self.sidebar_picker = crate::chrome_ui::SidebarPicker::None;
+                    self.last_sidebar_html.clear();
+                    self.rebuild_sidebar(false);
+                }
+                self.request_redraw();
                 return true;
             }
         }
@@ -511,7 +594,28 @@ impl BrowserApp {
         if !matches!(code, KeyCode::Enter | KeyCode::NumpadEnter) {
             return false;
         }
-        if self.chrome_focused {
+        if self.focus_region == UiRegion::Sidebar {
+            if self.sidebar_input_composing() {
+                return false;
+            }
+            if self.is_sidebar_input_focused("chat-input") {
+                // Shift+Enter: newline in the textarea (Blitz inserts it).
+                if shift {
+                    return false;
+                }
+                self.submit_from_sidebar_input();
+                return true;
+            }
+            if self.is_sidebar_input_focused("chat-api-endpoint")
+                || self.is_sidebar_input_focused("chat-api-model")
+                || self.is_sidebar_input_focused("chat-api-key")
+            {
+                self.save_sidebar_settings();
+                return true;
+            }
+            return false;
+        }
+        if self.focus_region == UiRegion::Chrome {
             if !self.url_bar_focused() || self.url_bar_composing() {
                 return false;
             }
@@ -555,7 +659,7 @@ impl BrowserApp {
 
     /// Keyboard scrolling for the content document (Blitz has no built-in key scrolling).
     fn keyboard_scroll(&mut self, code: KeyCode, shift: bool) -> bool {
-        if self.chrome_focused {
+        if self.focus_region != UiRegion::Content {
             return false;
         }
         let page_h = {
@@ -669,16 +773,37 @@ impl BrowserApp {
         false
     }
 
-    fn is_in_chrome(&self, pos: PhysicalPosition<f64>) -> bool {
-        pos.y / (self.hidpi_scale as f64) < self.chrome_height() as f64
+    fn region_at(&self, pos: PhysicalPosition<f64>) -> UiRegion {
+        let l: LogicalPosition<f32> = pos.to_logical(self.hidpi_scale as f64);
+        if l.y < self.chrome_height() as f32 {
+            UiRegion::Chrome
+        } else if self.sidebar_open && l.x >= self.sidebar_left_logical() {
+            UiRegion::Sidebar
+        } else {
+            UiRegion::Content
+        }
     }
 
-    fn coords_for(&self, pos: PhysicalPosition<f64>, in_chrome: bool) -> PointerCoords {
-        if in_chrome {
-            let l: LogicalPosition<f32> = pos.to_logical(self.hidpi_scale as f64);
-            super::helpers::plain_coords(l.x, l.y, 0.0, 0.0)
-        } else {
-            self.content_coords(pos)
+    fn coords_for_region(&self, pos: PhysicalPosition<f64>, region: UiRegion) -> PointerCoords {
+        match region {
+            UiRegion::Chrome => {
+                let l: LogicalPosition<f32> = pos.to_logical(self.hidpi_scale as f64);
+                super::helpers::plain_coords(l.x, l.y, 0.0, 0.0)
+            }
+            UiRegion::Content => self.content_coords(pos),
+            UiRegion::Sidebar => {
+                let l: LogicalPosition<f32> = pos.to_logical(self.hidpi_scale as f64);
+                let scroll = self
+                    .sidebar_doc
+                    .as_ref()
+                    .map_or(blitz_dom::Point { x: 0.0, y: 0.0 }, |d| d.viewport_scroll());
+                super::helpers::plain_coords(
+                    l.x - self.sidebar_left_logical(),
+                    l.y - self.chrome_height() as f32,
+                    scroll.x as f32,
+                    scroll.y as f32,
+                )
+            }
         }
     }
 
@@ -699,33 +824,37 @@ impl BrowserApp {
         }
     }
 
-    /// Sends `ev` to the browser UI (`to_chrome`) or the active page.
-    fn dispatch_to(&mut self, to_chrome: bool, ev: UiEvent) {
-        if to_chrome {
-            self.dispatch_chrome_ui(ev);
-        } else if self.active_tab < self.tabs.len()
-            && let Some(doc) = &mut self.tabs[self.active_tab].doc
-        {
-            doc.handle_ui_event(ev);
+    /// Sends `ev` to the chrome UI, docked sidebar, or active page.
+    fn dispatch_to_region(&mut self, region: UiRegion, ev: UiEvent) {
+        match region {
+            UiRegion::Chrome => self.dispatch_chrome_ui(ev),
+            UiRegion::Sidebar => self.dispatch_sidebar_ui(ev),
+            UiRegion::Content => {
+                if self.active_tab < self.tabs.len()
+                    && let Some(doc) = &mut self.tabs[self.active_tab].doc
+                {
+                    doc.handle_ui_event(ev);
+                }
+            }
         }
     }
 
-    /// Keyboard / IME events go to whichever side has focus.
+    /// Keyboard / IME events go to whichever region has focus.
     fn dispatch_focused(&mut self, ev: UiEvent) {
-        self.dispatch_to(self.chrome_focused, ev);
+        self.dispatch_to_region(self.focus_region, ev);
     }
 
-    fn send_pointer_leave(&mut self, id: BlitzPointerId, primary: bool, pos: PhysicalPosition<f64>, chrome: bool) {
+    fn send_pointer_leave(&mut self, id: BlitzPointerId, primary: bool, pos: PhysicalPosition<f64>, region: UiRegion) {
         let ev = pointer_event(
             id,
             primary,
-            self.coords_for(pos, chrome),
+            self.coords_for_region(pos, region),
             Default::default(),
             self.buttons,
             self.mods(),
             PointerDetails::default(),
         );
-        self.dispatch_to(chrome, UiEvent::PointerLeave(ev));
+        self.dispatch_to_region(region, UiEvent::PointerLeave(ev));
     }
 
     /// True when `pos` is over `#url-bar` (or its leading area inside `.omni`, excluding inline action buttons).
@@ -926,44 +1055,48 @@ impl BrowserApp {
 
     /// Finds a draggable bookmark/tab (`data-bm-src`) under `pos`.
     fn bm_source_at(&self, pos: PhysicalPosition<f64>) -> Option<(String, String)> {
-        if self.is_in_chrome(pos) {
-            let l: LogicalPosition<f32> = pos.to_logical(self.hidpi_scale as f64);
-            let mut node_id = self.chrome_doc.element_from_point(l.x, l.y);
-            while let Some(id) = node_id {
-                let node = self.chrome_doc.get_node(id)?;
-                if let Some(el) = node.element_data() {
-                    if el
-                        .attr(LocalName::from("data-action"))
-                        .is_some_and(|a| a.starts_with("close-tab:"))
-                    {
-                        return None;
+        match self.region_at(pos) {
+            UiRegion::Chrome => {
+                let l: LogicalPosition<f32> = pos.to_logical(self.hidpi_scale as f64);
+                let mut node_id = self.chrome_doc.element_from_point(l.x, l.y);
+                while let Some(id) = node_id {
+                    let node = self.chrome_doc.get_node(id)?;
+                    if let Some(el) = node.element_data() {
+                        if el
+                            .attr(LocalName::from("data-action"))
+                            .is_some_and(|a| a.starts_with("close-tab:"))
+                        {
+                            return None;
+                        }
+                        if let Some(src) = el.attr(LocalName::from("data-bm-src")) {
+                            let title = el.attr(LocalName::from("data-bm-title")).unwrap_or(src).to_string();
+                            return Some((src.to_string(), title));
+                        }
                     }
-                    if let Some(src) = el.attr(LocalName::from("data-bm-src")) {
+                    node_id = node.parent;
+                }
+                None
+            }
+            UiRegion::Content => {
+                if self.active_webview.is_some() {
+                    return None;
+                }
+                let doc = self.tabs[self.active_tab].doc.as_ref()?;
+                let c = self.content_coords(pos);
+                let mut node_id = doc.element_from_point(c.client_x, c.client_y);
+                while let Some(id) = node_id {
+                    let node = doc.get_node(id)?;
+                    if let Some(el) = node.element_data()
+                        && let Some(src) = el.attr(LocalName::from("data-bm-src"))
+                    {
                         let title = el.attr(LocalName::from("data-bm-title")).unwrap_or(src).to_string();
                         return Some((src.to_string(), title));
                     }
+                    node_id = node.parent;
                 }
-                node_id = node.parent;
+                None
             }
-            None
-        } else {
-            if self.active_webview.is_some() {
-                return None;
-            }
-            let doc = self.tabs[self.active_tab].doc.as_ref()?;
-            let c = self.content_coords(pos);
-            let mut node_id = doc.element_from_point(c.client_x, c.client_y);
-            while let Some(id) = node_id {
-                let node = doc.get_node(id)?;
-                if let Some(el) = node.element_data()
-                    && let Some(src) = el.attr(LocalName::from("data-bm-src"))
-                {
-                    let title = el.attr(LocalName::from("data-bm-title")).unwrap_or(src).to_string();
-                    return Some((src.to_string(), title));
-                }
-                node_id = node.parent;
-            }
-            None
+            UiRegion::Sidebar => None,
         }
     }
 
@@ -972,36 +1105,40 @@ impl BrowserApp {
         if pos.x < 0.0 || pos.y < 0.0 || pos.x >= self.win_size.width as f64 || pos.y >= self.win_size.height as f64 {
             return None;
         }
-        if self.is_in_chrome(pos) {
-            let l: LogicalPosition<f32> = pos.to_logical(self.hidpi_scale as f64);
-            let mut node_id = self.chrome_doc.element_from_point(l.x, l.y);
-            while let Some(id) = node_id {
-                let node = self.chrome_doc.get_node(id)?;
-                if let Some(el) = node.element_data()
-                    && let Some(folder) = el.attr(LocalName::from("data-bm-folder"))
-                {
-                    return Some(folder.to_string());
+        match self.region_at(pos) {
+            UiRegion::Chrome => {
+                let l: LogicalPosition<f32> = pos.to_logical(self.hidpi_scale as f64);
+                let mut node_id = self.chrome_doc.element_from_point(l.x, l.y);
+                while let Some(id) = node_id {
+                    let node = self.chrome_doc.get_node(id)?;
+                    if let Some(el) = node.element_data()
+                        && let Some(folder) = el.attr(LocalName::from("data-bm-folder"))
+                    {
+                        return Some(folder.to_string());
+                    }
+                    node_id = node.parent;
                 }
-                node_id = node.parent;
+                None
             }
-            None
-        } else {
-            if self.active_webview.is_some() {
-                return None;
-            }
-            let doc = self.tabs[self.active_tab].doc.as_ref()?;
-            let c = self.content_coords(pos);
-            let mut node_id = doc.element_from_point(c.client_x, c.client_y);
-            while let Some(id) = node_id {
-                let node = doc.get_node(id)?;
-                if let Some(el) = node.element_data()
-                    && let Some(folder) = el.attr(LocalName::from("data-bm-folder"))
-                {
-                    return Some(folder.to_string());
+            UiRegion::Content => {
+                if self.active_webview.is_some() {
+                    return None;
                 }
-                node_id = node.parent;
+                let doc = self.tabs[self.active_tab].doc.as_ref()?;
+                let c = self.content_coords(pos);
+                let mut node_id = doc.element_from_point(c.client_x, c.client_y);
+                while let Some(id) = node_id {
+                    let node = doc.get_node(id)?;
+                    if let Some(el) = node.element_data()
+                        && let Some(folder) = el.attr(LocalName::from("data-bm-folder"))
+                    {
+                        return Some(folder.to_string());
+                    }
+                    node_id = node.parent;
+                }
+                None
             }
-            None
+            UiRegion::Sidebar => None,
         }
     }
 

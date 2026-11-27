@@ -19,6 +19,80 @@ use wry::{NewWindowResponse, PageLoadEvent, Rect as WryRect, WebContext, WebView
 /// Maximum number of background JS-mode WebViews kept alive (hidden + suspended) in LRU order.
 const MAX_PARKED_WEBVIEWS: usize = 5;
 
+/// Reports (via IPC `media:1` / `media:0`) whether the page holds a live camera/mic/screen track
+/// or is playing audible media, so a video call or music keeps running when its tab is left.
+/// Polled every 3 s as well: `track.stop()` fires no event.
+const MEDIA_SCRIPT: &str = r#"(function () {
+  if (window.__rbMedia) return;
+  window.__rbMedia = true;
+  var tracks = [], last = -1;
+  function audible() {
+    var els = document.querySelectorAll('video, audio');
+    for (var i = 0; i < els.length; i++) {
+      var e = els[i];
+      if (!e.paused && !e.ended && !e.muted && e.volume > 0 && e.readyState > 2) return true;
+    }
+    return false;
+  }
+  function report() {
+    tracks = tracks.filter(function (t) { return t.readyState === 'live'; });
+    var on = tracks.length > 0 || audible() ? 1 : 0;
+    if (on !== last) {
+      last = on;
+      try { window.ipc.postMessage('media:' + on); } catch (e) {}
+    }
+  }
+  function wrap(obj, name) {
+    var orig = obj && obj[name];
+    if (typeof orig !== 'function') return;
+    obj[name] = function () {
+      return orig.apply(this, arguments).then(function (stream) {
+        try {
+          stream.getTracks().forEach(function (t) {
+            tracks.push(t);
+            t.addEventListener('ended', report);
+          });
+        } catch (e) {}
+        report();
+        return stream;
+      });
+    };
+  }
+  if (navigator.mediaDevices) {
+    wrap(navigator.mediaDevices, 'getUserMedia');
+    wrap(navigator.mediaDevices, 'getDisplayMedia');
+  }
+  ['play', 'playing', 'pause', 'ended', 'volumechange', 'emptied'].forEach(function (ev) {
+    document.addEventListener(ev, report, true);
+  });
+  setInterval(report, 3000);
+})();"#;
+
+/// Maps a WebView IPC message to an app event (anything else a page posts is ignored).
+fn ipc_event(tab_id: u64, body: &str) -> Option<AppEvent> {
+    match body.split_once(':') {
+        Some(("zoomwheel", dy)) => dy
+            .parse::<f32>()
+            .ok()
+            .filter(|d| d.is_finite())
+            .map(|d| AppEvent::ZoomWheelPx(d.clamp(-400.0, 400.0))),
+        Some(("zoomkey", "in")) => Some(AppEvent::ZoomBy(1.0)),
+        Some(("zoomkey", "out")) => Some(AppEvent::ZoomBy(-1.0)),
+        Some(("zoomkey", "reset")) => Some(AppEvent::ZoomReset),
+        Some(("media", v @ ("0" | "1"))) => Some(AppEvent::WebViewMedia {
+            tab_id,
+            active: v == "1",
+        }),
+        _ => None,
+    }
+}
+
+/// Which parked WebView to free when the park is full: the oldest one that isn't in a call /
+/// playing media; only if every one is, the oldest overall.
+fn eviction_index(media_active: impl Iterator<Item = bool> + Clone) -> usize {
+    media_active.clone().position(|m| !m).unwrap_or(0)
+}
+
 /// Ctrl/Cmd + wheel (also trackpad pinch) and Ctrl +/-/0 inside a JS-mode page. WebView2's own zoom hotkeys
 /// are off, so these are forwarded to the app, which owns the per-tab zoom (address-bar label, restore on tab
 /// switch). The PDF annotator (pdf.js) has its own zoom and is left alone.
@@ -43,7 +117,9 @@ const ZOOM_SCRIPT: &str = r#"(function () {
 impl BrowserApp {
     pub(super) fn webview_bounds(&self) -> WryRect {
         let scale = self.hidpi_scale as f64;
-        let logical_w = ((self.win_size.width as f64) / scale).round().max(1.0) as u32;
+        let logical_w = (((self.win_size.width as f64) / scale) - self.sidebar_logical_width() as f64)
+            .round()
+            .max(1.0) as u32;
         let logical_h = ((self.win_size.height as f64) / scale).round().max(1.0) as u32;
         let chrome_h = self.chrome_height();
         // Leave a thin frame around the child WebView so window edges stay resizable.
@@ -52,15 +128,19 @@ impl BrowserApp {
         } else {
             RESIZE_EDGE
         };
+        let sash = if self.sidebar_open { 4 } else { 0 };
         let content_h = logical_h.saturating_sub(chrome_h + inset).max(1);
         WryRect {
             position: dpi::LogicalPosition::new(inset as i32, chrome_h as i32).into(),
-            size: dpi::LogicalSize::new(logical_w.saturating_sub(inset * 2).max(1), content_h).into(),
+            size: dpi::LogicalSize::new(logical_w.saturating_sub(inset + sash.max(inset)).max(1), content_h).into(),
         }
     }
 
     pub(super) fn destroy_active_webview(&mut self) {
         if let Some(wv) = self.active_webview.take() {
+            if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                tab.media_active = false;
+            }
             self.discard_webview(wv);
         }
     }
@@ -85,13 +165,23 @@ impl BrowserApp {
         let tab_id = self.tabs[self.active_tab].id;
         // Session cookies survive while the WebView stays parked; persist only on eviction/close/exit.
         let _ = wv.set_visible(false);
-        super::helpers::suspend_webview(&wv);
+        // `TrySuspend` pauses all script (Edge sleeping tabs): a video call's signaling stops and
+        // the server drops it, and music stops. Such tabs stay hidden but running.
+        if !self.tabs[self.active_tab].media_active {
+            super::helpers::suspend_webview(&wv);
+        }
         if let Some(win) = &self.window {
             super::helpers::focus_main_window(&**win, false);
         }
         self.parked_webviews.retain(|(id, _)| *id != tab_id);
         while self.parked_webviews.len() >= MAX_PARKED_WEBVIEWS {
-            if let Some((_, old)) = self.parked_webviews.pop_front() {
+            let tabs = &self.tabs;
+            let in_media = self
+                .parked_webviews
+                .iter()
+                .map(|(id, _)| tabs.iter().any(|t| t.id == *id && t.media_active));
+            let victim = eviction_index(in_media);
+            if let Some((_, old)) = self.parked_webviews.remove(victim) {
                 self.discard_webview(old);
             }
         }
@@ -104,6 +194,9 @@ impl BrowserApp {
         if let Some(pos) = self.parked_webviews.iter().position(|(id, _)| *id == tab_id)
             && let Some((_, wv)) = self.parked_webviews.remove(pos)
         {
+            if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                tab.media_active = false;
+            }
             self.discard_webview(wv);
         }
     }
@@ -183,20 +276,9 @@ impl BrowserApp {
             .with_url(&load)
             .with_initialization_script(crate::pdfjs::INIT_SCRIPT)
             .with_initialization_script(ZOOM_SCRIPT)
+            .with_initialization_script(MEDIA_SCRIPT)
             .with_ipc_handler(move |req| {
-                // Only the zoom messages of ZOOM_SCRIPT are understood; anything else a page posts is ignored.
-                let ev = match req.body().split_once(':') {
-                    Some(("zoomwheel", dy)) => dy
-                        .parse::<f32>()
-                        .ok()
-                        .filter(|d| d.is_finite())
-                        .map(|d| AppEvent::ZoomWheelPx(d.clamp(-400.0, 400.0))),
-                    Some(("zoomkey", "in")) => Some(AppEvent::ZoomBy(1.0)),
-                    Some(("zoomkey", "out")) => Some(AppEvent::ZoomBy(-1.0)),
-                    Some(("zoomkey", "reset")) => Some(AppEvent::ZoomReset),
-                    _ => None,
-                };
-                if let Some(ev) = ev {
+                if let Some(ev) = ipc_event(tab_id, req.body()) {
                     bus_zoom.send(ev);
                 }
             })
@@ -386,16 +468,18 @@ impl BrowserApp {
             tab.is_loading = false;
             self.sync_find_bar_after_doc_change();
             self.rebuild_chrome();
+            self.rebuild_sidebar(false);
             return;
         }
 
-        if !self.tabs[idx].force_blitz && requires_js_engine(&url) {
+        if !self.tabs[idx].force_blitz && (requires_js_engine(&url) || self.prefs.host_prefers_js(&url)) {
             self.tabs[idx].js_mode = true;
         }
         if self.tabs[idx].js_mode && !self.tabs[idx].force_blitz {
             self.mount_or_navigate_webview(idx);
             self.sync_find_bar_after_doc_change();
             self.rebuild_chrome();
+            self.rebuild_sidebar(false);
             return;
         }
 
@@ -473,6 +557,7 @@ impl BrowserApp {
                 Err(reason) => {
                     let target_url = if final_url.is_empty() { fail_url_2 } else { final_url };
                     bus_ok.send(AppEvent::PageLoadFailed {
+                        retry_in_js: cacheable,
                         tab_id,
                         load_seq,
                         url: target_url,
@@ -482,6 +567,7 @@ impl BrowserApp {
             },
             move |err| {
                 bus_fail.send(AppEvent::PageLoadFailed {
+                    retry_in_js: cacheable,
                     tab_id,
                     load_seq,
                     url: fail_url,
@@ -514,6 +600,7 @@ impl BrowserApp {
                     || orig.starts_with("https://")
                     || (self.tabs[idx].is_error_page && orig == self.tabs[idx].url && orig.starts_with("file://"));
                 if allowed {
+                    self.prefs.remember_js_host(&orig);
                     self.tabs[idx].url = orig;
                     self.tabs[idx].force_blitz = false;
                     self.tabs[idx].js_mode = true;
@@ -556,7 +643,7 @@ impl BrowserApp {
                 self.tabs[idx].history_forward.clear();
             }
             self.tabs[idx].url = target;
-            self.chrome_focused = false;
+            self.focus_region = super::UiRegion::Content;
             self.rebuild_chrome();
             return;
         }
@@ -584,7 +671,7 @@ impl BrowserApp {
         self.tabs[idx].scroll_y = 0.0;
         self.tabs[idx].force_blitz = false;
         self.tabs[idx].pending_request = request;
-        self.chrome_focused = false;
+        self.focus_region = super::UiRegion::Content;
         self.chrome_doc.clear_focus();
         // Same-URL address-bar navigation must revalidate, not serve memory cache instantly.
         self.load_active_tab(same_url, None);
@@ -610,7 +697,7 @@ impl BrowserApp {
         if target_idx >= self.tabs.len() || target_idx == self.active_tab {
             return;
         }
-        self.chrome_focused = false;
+        self.focus_region = super::UiRegion::Content;
         self.chrome_doc.clear_focus();
         self.unload_active();
         self.active_tab = target_idx;
@@ -629,8 +716,8 @@ impl BrowserApp {
         self.open_new_tab_with_js(url, inherit_js);
     }
 
-    fn open_new_tab_with_js(&mut self, url: &str, js_mode: bool) {
-        self.chrome_focused = false;
+    pub(super) fn open_new_tab_with_js(&mut self, url: &str, js_mode: bool) {
+        self.focus_region = super::UiRegion::Content;
         self.chrome_doc.clear_focus();
         self.unload_active();
         let id = self.next_tab_id;
@@ -686,7 +773,7 @@ impl BrowserApp {
         }
         if idx == self.active_tab {
             self.destroy_active_webview();
-            self.chrome_focused = false;
+            self.focus_region = super::UiRegion::Content;
             self.chrome_doc.clear_focus();
         }
         self.drop_parked_webview(self.tabs[idx].id);
@@ -812,7 +899,7 @@ impl BrowserApp {
     /// Back (`forward == false`) or forward one history entry, restoring its scroll position.
     pub(super) fn history_step(&mut self, forward: bool) {
         self.ensure_active_valid();
-        self.chrome_focused = false;
+        self.focus_region = super::UiRegion::Content;
         self.chrome_doc.clear_focus();
         let idx = self.active_tab;
         if self.tabs[idx].js_mode
@@ -865,7 +952,7 @@ impl BrowserApp {
     }
 
     pub(super) fn reload_active_tab(&mut self) {
-        self.chrome_focused = false;
+        self.focus_region = super::UiRegion::Content;
         self.chrome_doc.clear_focus();
         let idx = self.active_tab;
         if self.tabs[idx].js_mode {
@@ -884,19 +971,22 @@ impl BrowserApp {
 
     pub(super) fn toggle_js_mode(&mut self) {
         let idx = self.active_tab;
-        if self.tabs[idx].url.starts_with("rust://") {
+        let url = self.tabs[idx].url.clone();
+        if url.starts_with("rust://") {
             return;
         }
         let next = !self.tabs[idx].js_mode;
         self.tabs[idx].js_mode = next;
         self.tabs[idx].force_blitz = !next;
         if next {
+            self.prefs.remember_js_host(&url);
             self.tabs[idx].reader_mode = false;
             self.set_status_note("JS Mode (WebView2)");
             self.mount_or_navigate_webview(idx);
             self.sync_find_bar_after_doc_change();
             self.rebuild_chrome();
         } else {
+            self.prefs.forget_js_host(&url);
             self.destroy_active_webview();
             self.set_status_note("Pure Rust Mode (Blitz)");
             self.load_active_tab(false, None);
@@ -1008,5 +1098,38 @@ impl BrowserApp {
         }
         self.rebuild_chrome();
         self.request_redraw();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn media_ipc_messages_map_to_events() {
+        assert!(matches!(
+            ipc_event(7, "media:1"),
+            Some(AppEvent::WebViewMedia {
+                tab_id: 7,
+                active: true
+            })
+        ));
+        assert!(matches!(
+            ipc_event(7, "media:0"),
+            Some(AppEvent::WebViewMedia {
+                tab_id: 7,
+                active: false
+            })
+        ));
+        assert!(ipc_event(7, "media:yes").is_none());
+        assert!(matches!(ipc_event(1, "zoomkey:in"), Some(AppEvent::ZoomBy(_))));
+        assert!(ipc_event(1, "rust://evil").is_none());
+    }
+
+    #[test]
+    fn eviction_spares_tabs_in_a_call() {
+        assert_eq!(eviction_index([true, true, false, false].into_iter()), 2);
+        assert_eq!(eviction_index([false, true].into_iter()), 0);
+        assert_eq!(eviction_index([true, true].into_iter()), 0, "all live: oldest goes");
     }
 }

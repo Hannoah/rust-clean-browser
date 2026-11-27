@@ -16,6 +16,7 @@ mod input;
 mod navigation;
 mod palette;
 mod popup;
+mod sidebar;
 mod suggest;
 
 use crate::bookmarks::{BookmarkNode, BookmarkRootKind, BookmarkStore};
@@ -75,6 +76,8 @@ pub enum AppEvent {
         restore_scroll_y: Option<f64>,
     },
     PageLoadFailed {
+        /// Plain GET (not a form POST): safe to retry the same URL in the JS engine.
+        retry_in_js: bool,
         tab_id: u64,
         load_seq: u64,
         url: String,
@@ -133,7 +136,51 @@ pub enum AppEvent {
         page_url: String,
         links: Vec<favicon::Link>,
     },
+    /// A JS-mode page started/stopped using camera, mic or audible media (`MEDIA_SCRIPT`).
+    WebViewMedia {
+        tab_id: u64,
+        active: bool,
+    },
     ChromeAction(String),
+    SidebarAction(String),
+    ChatPageContext {
+        req_id: u64,
+        prompt: String,
+        page: Option<crate::chat::PageContext>,
+    },
+    ChatFinished {
+        req_id: u64,
+        provider_label: String,
+        result: Result<String, String>,
+    },
+    AgentStepReady {
+        req_id: u64,
+    },
+    AgentLoadSettled {
+        req_id: u64,
+        wait_gen: u64,
+    },
+    AgentWaitCheck {
+        req_id: u64,
+        wait_gen: u64,
+        found: bool,
+    },
+    AgentActionDone {
+        req_id: u64,
+        ok: bool,
+        summary: String,
+        need_delay_ms: u64,
+    },
+    AgentExtractDone {
+        req_id: u64,
+        ok: bool,
+        summary: String,
+        extracted: String,
+        copy: bool,
+    },
+    AgyModelsLoaded(Vec<crate::chat::ModelOption>),
+    /// Typing-effect frame for the newest assistant reply.
+    ChatRevealTick,
     OpenBookmarkPopup {
         key: String,
         root: BookmarkRootKind,
@@ -274,6 +321,13 @@ pub(super) struct ClosedTab {
     pub js_mode: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum UiRegion {
+    Chrome,
+    Content,
+    Sidebar,
+}
+
 pub struct BrowserApp {
     window: Option<Arc<dyn Window>>,
     renderer: VelloCpuWindowRenderer,
@@ -306,12 +360,12 @@ pub struct BrowserApp {
     color_scheme: ColorScheme,
     prefs: UiPrefs,
     pointer_pos: PhysicalPosition<f64>,
-    pointer_in_chrome: Option<bool>,
+    pointer_region: Option<UiRegion>,
     buttons: MouseEventButtons,
     keyboard_modifiers: Modifiers,
     /// Fractional zoom from Ctrl+wheel not yet applied (set_zoom snaps to 0.1).
     zoom_wheel_acc: f32,
-    chrome_focused: bool,
+    focus_region: UiRegion,
     start_instant: Instant,
     status_note: Option<String>,
     status_note_until: Option<Instant>,
@@ -353,6 +407,33 @@ pub struct BrowserApp {
     initial_position: Option<PhysicalPosition<i32>>,
     /// Requested initial surface size (logical px) when launched via tab tear-off (`--size`).
     initial_size: Option<LogicalSize<f64>>,
+
+    sidebar_open: bool,
+    sidebar_doc: Option<HtmlDocument>,
+    last_sidebar_html: String,
+    sidebar_drag: bool,
+    sidebar_code_blocks: Vec<String>,
+    sidebar_picker: crate::chrome_ui::SidebarPicker,
+    agy_models: Vec<crate::chat::ModelOption>,
+    agy_models_loading: bool,
+    agy_models_fetched: bool,
+    chat_config: crate::chat::ChatConfig,
+    chat_cli_avail: crate::chat::CliAvailability,
+    chat_messages: Vec<crate::chat::ChatMessage>,
+    chat_show_settings: bool,
+    chat_req_seq: u64,
+    chat_inflight: Option<(u64, Arc<std::sync::atomic::AtomicBool>, tokio::task::AbortHandle)>,
+    agent_run: Option<sidebar::AgentRun>,
+    /// Saved conversations, loaded the first time the sidebar opens.
+    chat_history: Option<crate::chat::ChatHistory>,
+    /// History id of the conversation on screen (`None` until its first message is saved).
+    chat_session_id: Option<u64>,
+    chat_show_history: bool,
+    /// `(message index, chars shown)` while a reply is typing out.
+    chat_reveal: Option<(usize, usize)>,
+    /// Next sidebar rebuild ignores the settings inputs' drafts (a chip changed the value).
+    sidebar_reset_drafts: bool,
+    chat_input_lines: usize,
 }
 
 impl BrowserApp {
@@ -400,6 +481,8 @@ impl BrowserApp {
         );
 
         let prefs = UiPrefs::load();
+        let chat_cli_avail = crate::chat::CliAvailability::detect();
+        let chat_config = crate::chat::ChatConfig::load_with_avail(chat_cli_avail);
         let initial_scheme = match prefs.theme {
             ThemePreference::Dark => ColorScheme::Dark,
             _ => ColorScheme::Light,
@@ -432,11 +515,11 @@ impl BrowserApp {
             color_scheme: initial_scheme,
             prefs,
             pointer_pos: PhysicalPosition::new(0.0, 0.0),
-            pointer_in_chrome: None,
+            pointer_region: None,
             buttons: MouseEventButtons::None,
             keyboard_modifiers: Modifiers::default(),
             zoom_wheel_acc: 0.0,
-            chrome_focused: false,
+            focus_region: UiRegion::Content,
             start_instant: Instant::now(),
             status_note: None,
             status_note_until: None,
@@ -463,6 +546,28 @@ impl BrowserApp {
             unseen_downloads: 0,
             initial_position: launch.position.map(|(x, y)| PhysicalPosition::new(x, y)),
             initial_size: launch.size.map(|(w, h)| LogicalSize::new(w as f64, h as f64)),
+            sidebar_open: false,
+            sidebar_doc: None,
+            last_sidebar_html: String::new(),
+            sidebar_drag: false,
+            sidebar_code_blocks: Vec::new(),
+            sidebar_picker: crate::chrome_ui::SidebarPicker::None,
+            agy_models: Vec::new(),
+            agy_models_loading: false,
+            agy_models_fetched: false,
+            chat_config,
+            chat_cli_avail,
+            chat_messages: Vec::new(),
+            chat_show_settings: false,
+            chat_req_seq: 0,
+            chat_inflight: None,
+            agent_run: None,
+            chat_history: None,
+            chat_session_id: None,
+            chat_show_history: false,
+            chat_reveal: None,
+            sidebar_reset_drafts: false,
+            chat_input_lines: 1,
         };
 
         app.load_active_tab(false, None);
@@ -519,6 +624,8 @@ impl BrowserApp {
         }
         self.sync_viewports();
         self.rebuild_chrome();
+        self.last_sidebar_html.clear();
+        self.rebuild_sidebar(false);
         self.refresh_popup();
     }
 
@@ -568,8 +675,9 @@ impl BrowserApp {
 
     fn content_phys_size(&self) -> (u32, u32) {
         let ch = self.chrome_phys_height();
+        let sw = self.sidebar_phys_width();
         (
-            self.win_size.width.max(1),
+            self.win_size.width.saturating_sub(sw).max(1),
             self.win_size.height.saturating_sub(ch).max(1),
         )
     }
@@ -600,6 +708,10 @@ impl BrowserApp {
         if let Some(doc) = &mut self.tabs[self.active_tab].doc {
             doc.set_viewport(content_vp);
         }
+        let sb_vp = self.sidebar_viewport();
+        if let Some(sdoc) = &mut self.sidebar_doc {
+            sdoc.set_viewport(sb_vp);
+        }
         if let Some(wv) = &self.active_webview {
             let _ = wv.set_bounds(self.webview_bounds());
         }
@@ -620,7 +732,7 @@ impl BrowserApp {
     }
 
     fn url_bar_focused(&self) -> bool {
-        self.chrome_focused
+        self.focus_region == UiRegion::Chrome
             && self
                 .chrome_doc
                 .get_element_by_id("url-bar")
@@ -801,6 +913,7 @@ impl BrowserApp {
             detaching_tab_id,
             downloads_in_progress,
             downloads_unseen: self.unseen_downloads,
+            sidebar_open: self.sidebar_open,
         });
         self.update_window_title();
         if html == self.last_chrome_html {
@@ -842,7 +955,7 @@ impl BrowserApp {
         zoom: f32,
     ) -> HtmlDocument {
         let mut cfg = self.doc_config(self.content_viewport(zoom), self.shell_provider.clone());
-        cfg.base_url = Some(base_url.to_string());
+        cfg.base_url = Some(safe_blitz_base_url(base_url));
         cfg.navigation_provider = Some(self.nav_provider.clone());
         cfg.abort_signal = abort_ctrl.map(|c| c.signal.clone());
         HtmlDocument::from_html(html, cfg)
@@ -903,6 +1016,7 @@ impl BrowserApp {
             self.sync_find_bar_after_doc_change();
         }
         self.rebuild_chrome();
+        self.rebuild_sidebar(false);
     }
 
     pub(super) fn exit_app(&mut self, event_loop: &dyn ActiveEventLoop) {
@@ -917,16 +1031,25 @@ impl BrowserApp {
         }
         self.net_provider.cookies.save();
         self.history.save();
+        // Stop any in-flight turn first so the worker lock frees, then kill the CLI processes.
+        if let Some((_, cancel, abort)) = self.chat_inflight.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Release);
+            abort.abort();
+        }
+        crate::chat::shutdown_cli_workers();
         self.renderer.suspend();
         self.window = None;
         event_loop.exit();
     }
 
     fn focus_url_bar(&mut self) {
-        self.chrome_focused = true;
+        self.focus_region = UiRegion::Chrome;
         self.sync_suggest_query_to_url_bar();
         if let Some(doc) = &mut self.tabs[self.active_tab].doc {
             doc.clear_focus();
+        }
+        if let Some(sdoc) = &mut self.sidebar_doc {
+            sdoc.clear_focus();
         }
         if let Some(win) = &self.window {
             helpers::focus_main_window(&**win, true);
@@ -1096,6 +1219,8 @@ impl BrowserApp {
         let win_h = self.win_size.height.max(1);
         let chrome_h_phys = self.chrome_phys_height().min(win_h);
         let content_h_phys = win_h.saturating_sub(chrome_h_phys);
+        let sidebar_w_phys = self.sidebar_phys_width().min(win_w.saturating_sub(1));
+        let content_w_phys = win_w.saturating_sub(sidebar_w_phys).max(1);
 
         self.chrome_doc.poll(None);
         self.chrome_doc.resolve(anim_time);
@@ -1114,13 +1239,23 @@ impl BrowserApp {
             let doc_scale = doc.viewport().scale_f64();
             (doc, doc_scale)
         });
+        let sidebar = if self.sidebar_open {
+            self.sidebar_doc.as_mut().map(|sdoc| {
+                needs_more_frames |= sdoc.poll(None);
+                sdoc.resolve(anim_time);
+                needs_more_frames |= sdoc.is_animating();
+                &mut **sdoc
+            })
+        } else {
+            None
+        };
         let chrome_inner = &mut *self.chrome_doc;
         let preview = if self.active_webview.is_none() {
             self.link_preview_doc.as_mut().map(|(doc, w_logical)| {
                 doc.resolve(anim_time);
-                let pw = (((*w_logical as f32) * self.hidpi_scale).round().max(1.0) as u32).min(win_w);
+                let pw = (((*w_logical as f32) * self.hidpi_scale).round().max(1.0) as u32).min(content_w_phys);
                 let ph = ((36.0 * self.hidpi_scale).round().max(1.0) as u32).min(win_h);
-                let px = ((6.0 * self.hidpi_scale).round() as u32).min(win_w.saturating_sub(pw));
+                let px = ((6.0 * self.hidpi_scale).round() as u32).min(content_w_phys.saturating_sub(pw));
                 let py = win_h.saturating_sub(ph + (6.0 * self.hidpi_scale).round() as u32);
                 (&mut **doc, pw, ph, px, py)
             })
@@ -1132,13 +1267,13 @@ impl BrowserApp {
             if let Some((content_doc, content_scale)) = content
                 && content_h_phys > 0
             {
-                let clip = Rect::new(0.0, chrome_h_phys as f64, win_w as f64, win_h as f64);
+                let clip = Rect::new(0.0, chrome_h_phys as f64, content_w_phys as f64, win_h as f64);
                 scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &clip);
                 paint_scene(
                     scene,
                     content_doc,
                     content_scale,
-                    win_w,
+                    content_w_phys,
                     content_h_phys,
                     0,
                     chrome_h_phys,
@@ -1149,6 +1284,23 @@ impl BrowserApp {
                 && content_h_phys > ph
             {
                 paint_scene(scene, pdoc, scale, pw, ph, px, py);
+            }
+            if let Some(sdoc) = sidebar
+                && sidebar_w_phys > 0
+                && content_h_phys > 0
+            {
+                let sclip = Rect::new(content_w_phys as f64, chrome_h_phys as f64, win_w as f64, win_h as f64);
+                scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &sclip);
+                paint_scene(
+                    scene,
+                    sdoc,
+                    scale,
+                    sidebar_w_phys,
+                    content_h_phys,
+                    content_w_phys,
+                    chrome_h_phys,
+                );
+                scene.pop_layer();
             }
             paint_scene(scene, chrome_inner, scale, win_w, chrome_h_phys, 0, 0);
         });
@@ -1274,6 +1426,17 @@ impl ApplicationHandler for BrowserApp {
     }
 }
 
+/// Ensures `blitz-dom`'s `DocumentConfig::base_url` parses cleanly as a hierarchical URL;
+/// a `cannot_be_a_base` URL (like `data:...`) or unparseable string makes `DocumentUrl::from_str`
+/// fall back to `data:text/css;charset=utf-8;base64,` and panic on relative `<link>`/`<img>` URLs.
+fn safe_blitz_base_url(base_url: &str) -> String {
+    if Url::parse(base_url).is_ok_and(|u| !u.cannot_be_a_base()) {
+        base_url.to_string()
+    } else {
+        "https://invalid.local/".to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1349,5 +1512,25 @@ mod tests {
             .raw_selection()
             .text_range();
         assert_eq!(end_range, 44..44);
+    }
+
+    #[test]
+    fn safe_base_url_prevents_blitz_relative_stylesheet_panic() {
+        assert_eq!(safe_blitz_base_url("https://example.com/a"), "https://example.com/a");
+        assert_eq!(safe_blitz_base_url("rust://home"), "rust://home");
+        assert_eq!(safe_blitz_base_url("<!DOCTYPE html>"), "https://invalid.local/");
+        assert_eq!(safe_blitz_base_url("data:text/html,hi"), "https://invalid.local/");
+
+        let html = r#"<!DOCTYPE html><html><head><link rel="stylesheet" href="/a/b.css"></head><body>hi</body></html>"#;
+        let doc = HtmlDocument::from_html(
+            html,
+            DocumentConfig {
+                viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+                base_url: Some(safe_blitz_base_url("<!DOCTYPE html>")),
+                style_threading: StyleThreading::Sequential,
+                ..Default::default()
+            },
+        );
+        assert!(doc.base_url().as_str().starts_with("https://invalid.local/"));
     }
 }

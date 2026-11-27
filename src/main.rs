@@ -2,6 +2,7 @@
 
 mod app;
 mod bookmarks;
+mod chat;
 mod chrome_ui;
 mod cite;
 mod cleaner;
