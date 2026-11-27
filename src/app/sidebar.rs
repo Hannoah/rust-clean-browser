@@ -26,9 +26,9 @@ pub(super) const MIN_SIDEBAR_WIDTH: u32 = 280;
 pub(super) const MAX_SIDEBAR_WIDTH: u32 = 960;
 pub(super) const MIN_CHAT_FONT: u32 = 11;
 pub(super) const MAX_CHAT_FONT: u32 = 20;
-/// Typing-effect frame interval and frame budget (a reply finishes revealing in ~0.7 s).
+/// Typing-effect frame interval and frame budget (a reply finishes revealing in ~0.45 s).
 const REVEAL_TICK_MS: u64 = 30;
-const REVEAL_FRAMES: usize = 22;
+const REVEAL_FRAMES: usize = 15;
 const MAX_INPUT_LINES: usize = 6;
 
 /// An agent navigation to a site the user hasn't opened or named, waiting for 허용 / 거부.
