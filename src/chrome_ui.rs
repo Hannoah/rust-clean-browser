@@ -149,10 +149,69 @@ a:focus-visible, .ib:focus-visible, .ai-btn:focus-visible, .tile:focus-visible, 
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+/* ── Motion: short, decelerating, consistent (fast 90ms · base 140–200ms) ── */
+:root { --ease-out: cubic-bezier(0.22, 1, 0.36, 1); }
+@keyframes rb-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes rb-drop { from { opacity: 0; transform: translateY(-6px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes rb-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes rb-slide-l { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes rb-tab-in { from { opacity: 0; transform: translateY(8px) scale(0.94); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes rb-pulse { 0%, 100% { opacity: 0.42; } 50% { opacity: 1; } }
+.rb-in { animation: rb-rise 180ms var(--ease-out) both; }
+/* Popup windows: content drops in once when the popup opens (not on every refresh). */
+body.rb-enter > * { animation: rb-drop 140ms var(--ease-out) both; }
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
 "#;
+
+/// Entrance-animation hooks for an element that appeared `elapsed_ms` ago. The UI is rebuilt from
+/// HTML on every state change, so a negative `animation-delay` resumes the animation where it was
+/// instead of restarting it; past `window_ms` the element renders plain.
+pub fn enter_attrs(elapsed_ms: Option<u64>, window_ms: u64) -> (&'static str, String) {
+    match elapsed_ms {
+        Some(ms) if ms < window_ms => (" rb-in", format!(r#" style="animation-delay:-{ms}ms""#)),
+        _ => ("", String::new()),
+    }
+}
+
+/// Neutral page placeholder painted while a Clean-mode page loads into an empty content area
+/// (new tab, waking a sleeping tab, leaving JS mode). Fades in after 140 ms so fast loads never
+/// flash it.
+pub fn render_page_skeleton_html() -> String {
+    let mut h = String::with_capacity(4096);
+    h.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>");
+    h.push_str(THEME_CSS);
+    h.push_str(
+        r#"
+html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surface); }
+.sk-page {
+  max-width: 760px; margin: 0 auto; padding: 44px 32px;
+  display: flex; flex-direction: column; gap: 14px;
+  animation: rb-fade 220ms ease-out 140ms both;
+}
+.b { border-radius: 8px; background: var(--surface-3); animation: rb-pulse 1.2s ease-in-out infinite; }
+.t { height: 30px; width: 62%; }
+.m { height: 12px; width: 34%; margin-bottom: 12px; }
+.img { height: 200px; width: 100%; border-radius: 14px; margin: 4px 0 10px; animation-delay: 80ms; }
+.l { height: 13px; animation-delay: 160ms; }
+.gap { height: 10px; }
+</style></head><body><div class="sk-page"><div class="b t"></div><div class="b m"></div><div class="b img"></div>"#,
+    );
+    for (i, w) in [100, 97, 92, 95, 71, 0, 98, 94, 86, 62].iter().enumerate() {
+        if *w == 0 {
+            h.push_str(r#"<div class="gap"></div>"#);
+        } else {
+            let _ = write!(
+                h,
+                r#"<div class="b l" style="width:{w}%;animation-delay:{}ms"></div>"#,
+                120 + i * 40
+            );
+        }
+    }
+    h.push_str("</div></body></html>");
+    h
+}
 
 const CHROME_CSS: &str = r#"
 html, body { width: 100%; height: 100%; overflow: hidden; background: var(--frame); user-select: none; }
@@ -381,8 +440,26 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--fram
 .progress-bar {
   width: 45%; height: 100%; border-radius: 2px;
   background: linear-gradient(90deg, transparent, var(--accent), transparent);
-  animation: progress-slide 1.15s ease-in-out infinite;
+  animation: progress-slide 0.8s cubic-bezier(0.45, 0, 0.25, 1) infinite;
 }
+/* Load finished: the bar sweeps to full width, then fades — a clear "done" beat. */
+@keyframes rb-progress-done {
+  0% { width: 45%; opacity: 1; }
+  55% { width: 100%; opacity: 1; }
+  100% { width: 100%; opacity: 0; }
+}
+.progress-bar.done { background: var(--accent); animation: rb-progress-done 320ms var(--ease-out) both; }
+
+/* ── Press feedback: everything clickable gives under the finger, then snaps back ── */
+.tab, .newtab, .tchip, .ib, .omni-btn, .seg, .ai-btn, .pill, .chip, .tab-close, .wbtn {
+  transition: background 90ms ease, color 90ms ease, border-color 90ms ease, opacity 90ms ease,
+    transform 120ms var(--ease-out);
+}
+.newtab:active, .tchip:active, .ib:active, .omni-btn:active, .seg:active, .ai-btn:active,
+.pill:active, .chip:active, .tab-close:active { transform: scale(0.9); }
+.tab:active { transform: scale(0.97); }
+.ib.off:active { transform: none; }
+.tab.rb-in { animation: rb-tab-in 200ms var(--ease-out) both; }
 
 /* ── Bookmark Bar ── */
 .bmbar {
@@ -443,6 +520,16 @@ pub struct ChromeRenderState<'a> {
     pub downloads_unseen: usize,
     /// Whether the AI assistant sidebar is currently open.
     pub sidebar_open: bool,
+    pub motion: ChromeMotion,
+}
+
+/// Time-based animation state for the chrome (see `enter_attrs`).
+#[derive(Debug, Clone, Default)]
+pub struct ChromeMotion {
+    /// `(tab id, ms since it appeared)` for recently opened tabs.
+    pub fresh_tabs: Vec<(u64, u64)>,
+    /// Ms since the active tab finished loading, while the progress bar's finish sweep plays.
+    pub progress_done_ms: Option<u64>,
 }
 
 fn spinner_html(dark_mode: bool) -> String {
@@ -499,6 +586,13 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
         let next_active = idx + 1 == state.active_idx;
         let is_sleeping = !is_active && !tab.is_loaded() && !tab.js_mode;
         let is_detaching = state.detaching_tab_id == Some(tab.id);
+        let fresh_ms = state
+            .motion
+            .fresh_tabs
+            .iter()
+            .find(|(id, _)| *id == tab.id)
+            .map(|(_, ms)| *ms);
+        let (enter_cls, enter_style) = enter_attrs(fresh_ms, 200);
         let cls = match (is_active, is_sleeping, is_detaching) {
             (true, _, true) => "tab active detaching",
             (true, _, false) => "tab active",
@@ -534,7 +628,7 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
         };
         let _ = write!(
             h,
-            r#"<div class="{cls}" data-action="tab:{idx}"{bm_attr}>{fav}<span class="tab-title">{title}</span>{mode_badge}<span class="tab-close" data-action="close-tab:{idx}">{close_svg}</span></div>"#,
+            r#"<div class="{cls}{enter_cls}"{enter_style} data-action="tab:{idx}"{bm_attr}>{fav}<span class="tab-title">{title}</span>{mode_badge}<span class="tab-close" data-action="close-tab:{idx}">{close_svg}</span></div>"#,
             title = html_escape(&truncate_chars(&tab.title, 26)),
         );
         if !is_active && !next_active && idx + 1 < state.tabs.len() {
@@ -750,6 +844,11 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
 
     if active.is_loading {
         h.push_str(r#"<div class="progress-track"><div class="progress-bar"></div></div>"#);
+    } else if let Some(ms) = state.motion.progress_done_ms {
+        let _ = write!(
+            h,
+            r#"<div class="progress-track"><div class="progress-bar done" style="animation-delay:-{ms}ms"></div></div>"#
+        );
     }
     h.push_str("</div>");
 
@@ -1507,7 +1606,6 @@ pub struct SidebarRenderState<'a> {
     pub api_model: &'a str,
     pub has_api_key: bool,
     pub draft: &'a str,
-    pub dark_mode: bool,
     /// Message text size in px.
     pub font_size: u32,
     /// `(message index, chars shown)` while a reply is typing out.
@@ -1517,7 +1615,21 @@ pub struct SidebarRenderState<'a> {
     pub session_id: Option<u64>,
     /// `(action description, host)` of an agent navigation awaiting the user's OK.
     pub agent_confirm: Option<(&'a str, &'a str)>,
+    pub motion: SidebarMotion,
 }
+
+/// Time-based entrance animations for the sidebar (see `enter_attrs`), in ms since appearing.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SidebarMotion {
+    /// `(message index, ms)` for the newest message.
+    pub msg: Option<(usize, u64)>,
+    /// Settings card / history list / picker sheet that was just opened.
+    pub panel_ms: Option<u64>,
+    /// The sidebar itself, just opened.
+    pub shell_ms: Option<u64>,
+}
+
+const ENTER_WINDOW_MS: u64 = 260;
 
 /// Pixel height of the chat textarea showing `lines` lines (line-height 20px + padding).
 pub fn chat_input_height(lines: usize) -> u32 {
@@ -1891,6 +2003,28 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surf
 .send-btn:hover { opacity: 0.85; }
 .send-btn.stop { background: var(--danger); color: #ffffff; }
 .comp-hint { padding: 5px 6px 0; font-size: 10px; color: var(--text-3); text-align: center; }
+
+/* ── Motion ── */
+.sb-shell.rb-in { animation: rb-slide-l 170ms var(--ease-out) both; }
+.sb-settings.rb-in, .sb-sheet.rb-in { animation: rb-drop 150ms var(--ease-out) both; }
+.sb-hbtn, .set-chip, .sbtn, .cpill, .send-btn, .qcard, .chat-copy, .font-step, .hist-row,
+.hist-del, .err-retry, .sheet-row, .sheet-ftr {
+  transition: background 90ms ease, color 90ms ease, border-color 90ms ease, opacity 90ms ease,
+    transform 120ms var(--ease-out);
+}
+.sb-hbtn:active, .set-chip:active, .sbtn:active, .cpill:active, .chat-copy:active, .font-step:active,
+.hist-del:active, .err-retry:active { transform: scale(0.92); }
+.send-btn:active { transform: scale(0.86); }
+.qcard:active, .hist-row:active, .sheet-row:active { transform: scale(0.98); }
+.qcard:hover { transform: translateY(-1px); }
+
+/* ── Answer skeleton (replaces the spinner while the model thinks) ── */
+.sk-msg { display: flex; flex-direction: column; gap: 8px; padding-left: 30px; padding-top: 2px; }
+.sk-line { height: 10px; border-radius: 6px; background: var(--surface-3); animation: rb-pulse 1.1s ease-in-out infinite; }
+.sk-line.w1 { width: 92%; }
+.sk-line.w2 { width: 76%; animation-delay: 140ms; }
+.sk-line.w3 { width: 52%; animation-delay: 280ms; }
+.msg-a-hdr .sk-stop { margin-left: auto; }
 "#;
 
 /// Inserts the typing caret inside the last text block so it trails the words, not a new line.
@@ -1915,7 +2049,11 @@ fn with_type_caret(mut body_html: String) -> String {
 }
 
 fn render_settings_card(h: &mut String, state: &SidebarRenderState<'_>) {
-    h.push_str(r#"<div id="chat-settings" class="sb-settings">"#);
+    let (enter_cls, enter_style) = enter_attrs(state.motion.panel_ms, ENTER_WINDOW_MS);
+    let _ = write!(
+        h,
+        r#"<div id="chat-settings" class="sb-settings{enter_cls}"{enter_style}>"#
+    );
     h.push_str(r#"<div class="set-sec"><div class="set-lbl">AI 프로바이더</div><div class="set-chips">"#);
     for &p in crate::chat::ChatProvider::ALL {
         let is_act = p == state.provider;
@@ -2077,7 +2215,8 @@ fn render_history_panel(h: &mut String, state: &SidebarRenderState<'_>) {
         h.push_str(r#"<div class="hist-empty">저장된 대화가 없습니다.<br/>대화를 시작하면 자동으로 저장됩니다.</div>"#);
         return;
     }
-    h.push_str(r#"<div class="hist-list">"#);
+    let (enter_cls, enter_style) = enter_attrs(state.motion.panel_ms, ENTER_WINDOW_MS);
+    let _ = write!(h, r#"<div class="hist-list{enter_cls}"{enter_style}>"#);
     let trash = svg(Icon::Trash, 13);
     for s in state.history {
         let cls = if Some(s.id) == state.session_id {
@@ -2174,7 +2313,7 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
     };
     let _ = write!(
         h,
-        r#"</style></head><body><div class="sb-shell">
+        r#"</style></head><body><div class="sb-shell{shell_cls}"{shell_style}>
 <div class="sb-hdr">
   <div class="sb-title"><span class="sb-title-ico">{spark}</span><span class="sb-title-txt">AI Assistant</span>{mode_badge}</div>
   <div class="sb-acts">
@@ -2194,6 +2333,8 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
         hist_cls = on(state.show_history),
         width_cls = on(state.sidebar_wide),
         settings_cls = on(state.show_settings),
+        shell_cls = enter_attrs(state.motion.shell_ms, ENTER_WINDOW_MS).0,
+        shell_style = enter_attrs(state.motion.shell_ms, ENTER_WINDOW_MS).1,
     );
 
     if state.show_settings {
@@ -2235,6 +2376,8 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
             .iter()
             .rposition(|m| m.role == crate::chat::ChatRole::Assistant);
         for (idx, msg) in state.messages.iter().enumerate() {
+            let enter_ms = state.motion.msg.filter(|(i, _)| *i == idx).map(|(_, ms)| ms);
+            let (enter_cls, enter_style) = enter_attrs(enter_ms, ENTER_WINDOW_MS);
             match msg.role {
                 crate::chat::ChatRole::User => {
                     let ctx_badge = msg
@@ -2249,7 +2392,7 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
                         .unwrap_or_default();
                     let _ = write!(
                         h,
-                        r#"<div class="msg-u-wrap">{ctx_badge}<div class="msg-u">{}</div></div>"#,
+                        r#"<div class="msg-u-wrap{enter_cls}"{enter_style}>{ctx_badge}<div class="msg-u">{}</div></div>"#,
                         html_escape(&msg.text),
                     );
                 }
@@ -2282,9 +2425,15 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
                         )
                     };
                     let tag = msg.provider_label.as_deref().unwrap_or("AI");
+                    // A typing reply is its own entrance; don't stack a slide on top of it.
+                    let (enter_cls, enter_style) = if typing.is_some() {
+                        ("", String::new())
+                    } else {
+                        (enter_cls, enter_style)
+                    };
                     let _ = write!(
                         h,
-                        r#"<div class="msg-a"><div class="msg-a-hdr"><span class="msg-a-ico">{spark_mini}</span><span class="msg-a-tag">{tag}</span></div><div class="msg-body">{body_html}</div>{footer}</div>"#,
+                        r#"<div class="msg-a{enter_cls}"{enter_style}><div class="msg-a-hdr"><span class="msg-a-ico">{spark_mini}</span><span class="msg-a-tag">{tag}</span></div><div class="msg-body">{body_html}</div>{footer}</div>"#,
                         tag = html_escape(tag),
                     );
                 }
@@ -2311,7 +2460,7 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
                     }
                     let _ = write!(
                         h,
-                        r#"<div class="msg-a err"><div class="msg-a-hdr"><span class="msg-a-tag">{tag}</span></div><div>{}</div>{acts_html}</div>"#,
+                        r#"<div class="msg-a err{enter_cls}"{enter_style}><div class="msg-a-hdr"><span class="msg-a-tag">{tag}</span></div><div>{}</div>{acts_html}</div>"#,
                         html_escape(&msg.text),
                     );
                 }
@@ -2322,13 +2471,14 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
     if state.is_loading && !state.show_history {
         let loading_lbl = match state.agent_status {
             Some(st) => st.to_string(),
-            None => format!("{} 응답 생성 중…", state.provider.short_label()),
+            None => format!("{} 생각 중…", state.provider.short_label()),
         };
+        // Skeleton answer instead of a spinner: the reply's shape is already on screen.
         let _ = write!(
             h,
-            r#"<div class="sb-loading"><div class="sb-loading-l">{}<span>{}</span></div><span class="chat-copy" data-action="chat-stop">중지</span></div>"#,
-            spinner_html(state.dark_mode),
-            html_escape(&loading_lbl),
+            r#"<div class="msg-a rb-in"><div class="msg-a-hdr"><span class="msg-a-ico">{spark}</span><span class="msg-a-tag">{lbl}</span><span class="chat-copy sk-stop" data-action="chat-stop">중지</span></div><div class="sk-msg"><div class="sk-line w1"></div><div class="sk-line w2"></div><div class="sk-line w3"></div></div></div>"#,
+            spark = svg(Icon::Sparkles, 11),
+            lbl = html_escape(&loading_lbl),
         );
         if let Some((desc, host)) = state.agent_confirm {
             let _ = write!(
@@ -2363,7 +2513,11 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
     match state.picker_open {
         SidebarPicker::Provider => {
             let chk = svg(Icon::Check, 13);
-            h.push_str(r#"<div class="sb-sheet"><div class="sheet-hdr"><span>에이전트 / API 선택</span></div><div class="sheet-list"><div class="sheet-sec">로컬 로그인 에이전트</div>"#);
+            let (enter_cls, enter_style) = enter_attrs(state.motion.panel_ms, ENTER_WINDOW_MS);
+            let _ = write!(
+                h,
+                r#"<div class="sb-sheet{enter_cls}"{enter_style}><div class="sheet-hdr"><span>에이전트 / API 선택</span></div><div class="sheet-list"><div class="sheet-sec">로컬 로그인 에이전트</div>"#
+            );
             for &prov in crate::chat::ChatProvider::ALL {
                 if prov == crate::chat::ChatProvider::OpenAiApi {
                     h.push_str(r#"<div class="sheet-sec">직접 API / 로컬 LLM</div>"#);
@@ -2410,9 +2564,10 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
             } else {
                 String::new()
             };
+            let (enter_cls, enter_style) = enter_attrs(state.motion.panel_ms, ENTER_WINDOW_MS);
             let _ = write!(
                 h,
-                r#"<div class="sb-sheet"><div class="sheet-hdr"><span>{} 모델 선택</span>{refresh_btn}</div><div class="sheet-list">"#,
+                r#"<div class="sb-sheet{enter_cls}"{enter_style}><div class="sheet-hdr"><span>{} 모델 선택</span>{refresh_btn}</div><div class="sheet-list">"#,
                 html_escape(state.provider.short_label()),
             );
             for opt in state.model_options {
@@ -2529,6 +2684,14 @@ body {
   padding: 56px 28px 48px;
 }
 .wrap { max-width: 820px; margin: 0 auto; }
+.wrap > * { animation: rb-rise 220ms var(--ease-out) both; }
+.wrap > *:nth-child(2) { animation-delay: 30ms; }
+.wrap > *:nth-child(3) { animation-delay: 60ms; }
+.wrap > *:nth-child(4) { animation-delay: 90ms; }
+.wrap > *:nth-child(5) { animation-delay: 120ms; }
+.wrap > *:nth-child(6) { animation-delay: 150ms; }
+.tile, .bcard { transition: background 90ms ease, border-color 90ms ease, transform 120ms var(--ease-out); }
+.tile:active, .bcard:active { transform: scale(0.97); }
 .hero { display: flex; flex-direction: column; align-items: center; margin-bottom: 24px; text-align: center; }
 .hero-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
 .brand-name { font-size: 24px; font-weight: 700; letter-spacing: -0.03em; color: var(--text); }
@@ -3463,6 +3626,7 @@ mod tests {
             downloads_in_progress: 0,
             downloads_unseen: 0,
             sidebar_open: false,
+            motion: Default::default(),
         });
         assert!(html.contains(r#"value="typed""#));
         assert!(html.contains("T&amp;T"));
@@ -3498,6 +3662,7 @@ mod tests {
             downloads_in_progress: 0,
             downloads_unseen: 0,
             sidebar_open: false,
+            motion: Default::default(),
         });
         assert!(html.contains(r#"class="fav-spin""#));
         assert!(html.contains("@keyframes tab-spin"));
@@ -3636,6 +3801,7 @@ mod tests {
             downloads_in_progress: 0,
             downloads_unseen: 1,
             sidebar_open: false,
+            motion: Default::default(),
         });
         assert!(chrome_html.contains("open-downloads"));
         let dl_html = render_downloads_popup_html(&[DownloadItem {
@@ -3754,13 +3920,13 @@ mod tests {
             api_model: "sonnet",
             has_api_key: true,
             draft: "질문",
-            dark_mode: true,
             font_size: 13,
             reveal: None,
             show_history: false,
             history: &[],
             session_id: None,
             agent_confirm: None,
+            motion: Default::default(),
         });
         assert!(html.contains("id=\"chat-input\""));
         assert!(html.contains("id=\"chat-messages\""));
@@ -3819,17 +3985,104 @@ mod tests {
             api_model: "sonnet",
             has_api_key: false,
             draft: "",
-            dark_mode: false,
             font_size: 13,
             reveal: None,
             show_history: false,
             history: &[],
             session_id: None,
             agent_confirm: Some(("새 탭 열기 → https://evil.test/?d=x", "evil.test")),
+            motion: Default::default(),
         });
         assert!(loading_html.contains("sb-agent-log"));
         assert!(loading_html.contains("이동 완료"));
         assert!(loading_html.contains("sb-agent-step err"));
         assert!(loading_html.contains("agent-confirm:allow") && loading_html.contains("evil.test"));
+    }
+}
+
+#[cfg(test)]
+mod motion_tests {
+    use super::*;
+    use blitz_dom::DocumentConfig;
+    use blitz_traits::shell::{ColorScheme, Viewport};
+
+    fn layout(html: &str) -> blitz_html::HtmlDocument {
+        let mut doc = blitz_html::HtmlDocument::from_html(
+            html,
+            DocumentConfig {
+                viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+                style_threading: blitz_dom::StyleThreading::Sequential,
+                ..Default::default()
+            },
+        );
+        doc.resolve(0.0);
+        doc
+    }
+
+    #[test]
+    fn entrance_resumes_across_rebuilds_then_stops() {
+        assert_eq!(
+            enter_attrs(Some(60), 200),
+            (" rb-in", r#" style="animation-delay:-60ms""#.to_string())
+        );
+        assert_eq!(enter_attrs(Some(200), 200), ("", String::new()));
+        assert_eq!(enter_attrs(None, 200), ("", String::new()));
+    }
+
+    /// The motion CSS must actually animate in Blitz (an invalid rule would silently do nothing).
+    #[test]
+    fn blitz_runs_entrance_and_skeleton_animations() {
+        let sk = layout(&render_page_skeleton_html());
+        assert!(sk.is_animating(), "page skeleton pulses");
+
+        let msg = format!(
+            "<!DOCTYPE html><html><head><style>{THEME_CSS}</style></head><body><div class=\"rb-in\">hi</div></body></html>"
+        );
+        assert!(layout(&msg).is_animating(), "rb-in entrance animates");
+        let popup = format!(
+            "<!DOCTYPE html><html><head><style>{THEME_CSS}</style></head><body class=\"rb-enter\"><div>menu</div></body></html>"
+        );
+        assert!(layout(&popup).is_animating(), "popup drop-in animates");
+    }
+
+    #[test]
+    fn chrome_marks_fresh_tabs_and_finished_progress() {
+        let tabs = vec![
+            Tab::new(1, "https://a.test/".into()),
+            Tab::new(2, "https://b.test/".into()),
+        ];
+        let bm = BookmarkStore::default();
+        let html = render_chrome_html(&ChromeRenderState {
+            tabs: &tabs,
+            active_idx: 0,
+            bookmarks: &bm,
+            can_back: false,
+            can_forward: false,
+            working_set_mb: 1.0,
+            blocked_count: 0,
+            filter_enabled: true,
+            maximized: false,
+            dark_mode: false,
+            show_bookmarks_bar: false,
+            theme_pref: ThemePreference::System,
+            status_note: None,
+            url_override: None,
+            drop_target_folder: None,
+            detaching_tab_id: None,
+            downloads_in_progress: 0,
+            downloads_unseen: 0,
+            sidebar_open: false,
+            motion: ChromeMotion {
+                fresh_tabs: vec![(2, 40)],
+                progress_done_ms: Some(100),
+            },
+        });
+        assert_eq!(html.matches(" rb-in\"").count(), 1, "only the new tab animates in");
+        assert!(
+            html.contains(r#"rb-in" style="animation-delay:-40ms" data-action="tab:1""#),
+            "{html}"
+        );
+        assert!(html.contains(r#"progress-bar done" style="animation-delay:-100ms""#));
+        assert!(layout(&html).is_animating());
     }
 }

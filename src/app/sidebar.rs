@@ -26,9 +26,9 @@ pub(super) const MIN_SIDEBAR_WIDTH: u32 = 280;
 pub(super) const MAX_SIDEBAR_WIDTH: u32 = 960;
 pub(super) const MIN_CHAT_FONT: u32 = 11;
 pub(super) const MAX_CHAT_FONT: u32 = 20;
-/// Typing-effect frame interval and frame budget (a reply finishes revealing in ~1.4 s).
+/// Typing-effect frame interval and frame budget (a reply finishes revealing in ~0.7 s).
 const REVEAL_TICK_MS: u64 = 30;
-const REVEAL_FRAMES: usize = 45;
+const REVEAL_FRAMES: usize = 22;
 const MAX_INPUT_LINES: usize = 6;
 
 /// An agent navigation to a site the user hasn't opened or named, waiting for 허용 / 거부.
@@ -241,6 +241,7 @@ impl BrowserApp {
     pub(super) fn toggle_sidebar(&mut self) {
         self.sidebar_open = !self.sidebar_open;
         if self.sidebar_open {
+            self.sidebar_opened_at = Some(Instant::now());
             self.chat_cli_avail = crate::chat::CliAvailability::detect();
             if self.chat_history.is_none() {
                 self.chat_history = Some(ChatHistory::load());
@@ -288,6 +289,7 @@ impl BrowserApp {
             return;
         }
         self.ensure_active_valid();
+        let motion = self.sidebar_motion();
         let was_chat_focused = self.is_sidebar_input_focused("chat-input");
         let draft = self.read_sidebar_input("chat-input").unwrap_or_default();
         // After a provider/model chip click the inputs must show the new choice, not the old draft
@@ -332,7 +334,6 @@ impl BrowserApp {
             api_model,
             has_api_key: !self.chat_config.api_key.trim().is_empty(),
             draft: &draft,
-            dark_mode: self.color_scheme == blitz_traits::shell::ColorScheme::Dark,
             font_size: self.prefs.chat_font_size.clamp(MIN_CHAT_FONT, MAX_CHAT_FONT),
             reveal: self.chat_reveal,
             show_history: self.chat_show_history,
@@ -343,6 +344,7 @@ impl BrowserApp {
                 .as_ref()
                 .and_then(|r| r.awaiting_confirm.as_ref())
                 .map(|c| (c.desc.as_str(), c.host.as_str())),
+            motion,
         });
 
         self.sidebar_code_blocks = code_blocks;
@@ -391,6 +393,34 @@ impl BrowserApp {
             }
         }
         self.request_redraw();
+    }
+
+    /// Notices newly added messages / newly opened panels and returns their animation ages.
+    fn sidebar_motion(&mut self) -> crate::chrome_ui::SidebarMotion {
+        let now = Instant::now();
+        let len = self.chat_messages.len();
+        if len > self.chat_seen_len {
+            self.chat_msg_added = Some((len - 1, now));
+        } else if len < self.chat_seen_len {
+            self.chat_msg_added = None;
+        }
+        self.chat_seen_len = len;
+        let picker = match self.sidebar_picker {
+            SidebarPicker::None => 0,
+            SidebarPicker::Provider => 4,
+            SidebarPicker::Model => 8,
+        };
+        let panel_key = u8::from(self.chat_show_settings) | (u8::from(self.chat_show_history) << 1) | picker;
+        if panel_key != self.sidebar_panel_key {
+            self.sidebar_panel_key = panel_key;
+            self.sidebar_panel_at = (panel_key != 0).then_some(now);
+        }
+        let age = |t: Instant| now.saturating_duration_since(t).as_millis() as u64;
+        crate::chrome_ui::SidebarMotion {
+            msg: self.chat_msg_added.map(|(i, t)| (i, age(t))),
+            panel_ms: self.sidebar_panel_at.map(age),
+            shell_ms: self.sidebar_opened_at.map(age),
+        }
     }
 
     fn scroll_sidebar_to_bottom(&mut self) {
@@ -2143,13 +2173,13 @@ mod tests {
             api_model: "gpt-4o-mini",
             has_api_key: false,
             draft: "",
-            dark_mode: false,
             font_size: 13,
             reveal: None,
             show_history: false,
             history: &[],
             session_id: None,
             agent_confirm: None,
+            motion: Default::default(),
         });
         let mut doc = HtmlDocument::from_html(
             &html,
@@ -2289,13 +2319,13 @@ mod tests {
             api_model: "",
             has_api_key: false,
             draft: "줄1\n줄2",
-            dark_mode: false,
             font_size: 16,
             reveal,
             show_history: false,
             history: &[],
             session_id: None,
             agent_confirm: None,
+            motion: Default::default(),
         };
         let (typing, _) = render_sidebar_html(&state(Some((0, 8))));
         assert!(

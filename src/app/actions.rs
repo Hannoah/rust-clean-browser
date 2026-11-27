@@ -637,6 +637,7 @@ impl BrowserApp {
                 } => self.on_agent_extract_done(req_id, ok, summary, extracted, copy),
                 AppEvent::AgyModelsLoaded(models) => self.on_agy_models_loaded(models),
                 AppEvent::ChatRevealTick => self.on_chat_reveal_tick(),
+                AppEvent::RefreshChrome => self.rebuild_chrome(),
                 AppEvent::OpenBookmarkPopup {
                     key,
                     root,
