@@ -446,6 +446,10 @@ pub struct BrowserApp {
     progress_done_at: Option<Instant>,
     /// Placeholder painted while a Clean-mode page loads into an empty content area.
     skeleton_doc: Option<HtmlDocument>,
+    /// Static skeleton painted under a WebView about to appear (see `paint_under_webview`).
+    skeleton_static: Option<HtmlDocument>,
+    /// Set only while `paint_under_webview` renders its one frame.
+    prepaint_skeleton: bool,
     sidebar_opened_at: Option<Instant>,
     chat_seen_len: usize,
     chat_msg_added: Option<(usize, Instant)>,
@@ -453,8 +457,8 @@ pub struct BrowserApp {
     sidebar_panel_at: Option<Instant>,
 }
 
-const FRESH_TAB_MS: u64 = 200;
-const PROGRESS_DONE_MS: u64 = 320;
+const FRESH_TAB_MS: u64 = 130;
+const PROGRESS_DONE_MS: u64 = 220;
 
 impl BrowserApp {
     pub fn new(
@@ -593,6 +597,8 @@ impl BrowserApp {
             loading_tab_seen: None,
             progress_done_at: None,
             skeleton_doc: None,
+            skeleton_static: None,
+            prepaint_skeleton: false,
             sidebar_opened_at: None,
             chat_seen_len: 0,
             chat_msg_added: None,
@@ -653,6 +659,7 @@ impl BrowserApp {
             self.apply_html_to_tab(self.active_tab, url, raw, Some(scroll));
         }
         self.skeleton_doc = None;
+        self.skeleton_static = None;
         self.sync_viewports();
         self.rebuild_chrome();
         self.last_sidebar_html.clear();
@@ -790,8 +797,11 @@ impl BrowserApp {
             sdoc.set_viewport(sb_vp);
         }
         let sk_vp = self.content_viewport(1.0);
-        if let Some(sk) = &mut self.skeleton_doc {
-            sk.set_viewport(sk_vp);
+        for sk in [&mut self.skeleton_doc, &mut self.skeleton_static]
+            .into_iter()
+            .flatten()
+        {
+            sk.set_viewport(sk_vp.clone());
         }
         if let Some(wv) = &self.active_webview {
             let _ = wv.set_bounds(self.webview_bounds());
@@ -1309,22 +1319,39 @@ impl BrowserApp {
         self.chrome_doc.resolve(anim_time);
 
         let mut needs_more_frames = self.chrome_doc.is_animating();
-        // Empty content area while a Clean-mode page loads: show the page skeleton.
-        let show_skeleton = self.active_webview.is_none()
-            && self.tabs[self.active_tab].doc.is_none()
-            && self.tabs[self.active_tab].is_loading;
-        if show_skeleton && self.skeleton_doc.is_none() {
+        // Empty content area while a Clean-mode page loads: show the page skeleton. Under a WebView
+        // about to appear, paint the static one (`paint_under_webview`).
+        let show_skeleton = self.prepaint_skeleton
+            || (self.active_webview.is_none()
+                && self.tabs[self.active_tab].doc.is_none()
+                && self.tabs[self.active_tab].is_loading);
+        let animated = !self.prepaint_skeleton;
+        let slot_empty = if animated {
+            self.skeleton_doc.is_none()
+        } else {
+            self.skeleton_static.is_none()
+        };
+        if show_skeleton && slot_empty {
             let mut sk = HtmlDocument::from_html(
-                &crate::chrome_ui::render_page_skeleton_html(),
+                &crate::chrome_ui::render_page_skeleton_html(animated),
                 self.doc_config(self.content_viewport(1.0), self.shell_provider.clone()),
             );
             sk.resolve(anim_time);
-            self.skeleton_doc = Some(sk);
+            if animated {
+                self.skeleton_doc = Some(sk);
+            } else {
+                self.skeleton_static = Some(sk);
+            }
         }
+        let skeleton_slot = if animated {
+            &mut self.skeleton_doc
+        } else {
+            &mut self.skeleton_static
+        };
         let skeleton = if show_skeleton {
-            self.skeleton_doc.as_mut().map(|sk| {
+            skeleton_slot.as_mut().map(|sk| {
                 sk.resolve(anim_time);
-                needs_more_frames |= sk.is_animating();
+                needs_more_frames |= animated && sk.is_animating();
                 &mut **sk
             })
         } else {

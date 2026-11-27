@@ -142,7 +142,24 @@ impl BrowserApp {
                 tab.media_active = false;
             }
             self.discard_webview(wv);
+            self.repaint_uncovered_content();
         }
+    }
+
+    /// A WebView child window clips our surface: while one is shown we never repaint the content
+    /// area underneath, so it keeps whatever Blitz last drew there (usually the home page). That
+    /// stale frame flashed whenever a WebView went away or a new one hadn't drawn yet. Paint the
+    /// uncovered area right now instead of waiting for the next redraw.
+    fn repaint_uncovered_content(&mut self) {
+        self.redraw();
+    }
+
+    /// Paints a static page skeleton where a WebView is about to appear, so until the page draws
+    /// its first frame the user sees "loading", not a stale page.
+    fn paint_under_webview(&mut self) {
+        self.prepaint_skeleton = true;
+        self.redraw();
+        self.prepaint_skeleton = false;
     }
 
     fn discard_webview(&mut self, wv: WebView) {
@@ -165,6 +182,7 @@ impl BrowserApp {
         let tab_id = self.tabs[self.active_tab].id;
         // Session cookies survive while the WebView stays parked; persist only on eviction/close/exit.
         let _ = wv.set_visible(false);
+        self.repaint_uncovered_content();
         // `TrySuspend` pauses all script (Edge sleeping tabs): a video call's signaling stops and
         // the server drops it, and music stops. Such tabs stay hidden but running.
         if !self.tabs[self.active_tab].media_active {
@@ -217,6 +235,9 @@ impl BrowserApp {
         self.tabs[tab_idx].unload();
         self.tabs[tab_idx].js_mode = true;
 
+        if self.active_webview.is_none() {
+            self.paint_under_webview();
+        }
         // Returning to a parked tab: wake and show its live WebView as-is.
         if self.active_webview.is_none()
             && let Some(pos) = self.parked_webviews.iter().position(|(id, _)| *id == tab_id)

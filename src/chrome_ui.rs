@@ -149,7 +149,7 @@ a:focus-visible, .ib:focus-visible, .ai-btn:focus-visible, .tile:focus-visible, 
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-/* ── Motion: short, decelerating, consistent (fast 90ms · base 140–200ms) ── */
+/* ── Motion: short, decelerating, consistent (fast 60ms · base 100–140ms) ── */
 :root { --ease-out: cubic-bezier(0.22, 1, 0.36, 1); }
 @keyframes rb-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes rb-drop { from { opacity: 0; transform: translateY(-6px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
@@ -157,9 +157,9 @@ a:focus-visible, .ib:focus-visible, .ai-btn:focus-visible, .tile:focus-visible, 
 @keyframes rb-slide-l { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: translateX(0); } }
 @keyframes rb-tab-in { from { opacity: 0; transform: translateY(8px) scale(0.94); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @keyframes rb-pulse { 0%, 100% { opacity: 0.42; } 50% { opacity: 1; } }
-.rb-in { animation: rb-rise 180ms var(--ease-out) both; }
+.rb-in { animation: rb-rise 120ms var(--ease-out) both; }
 /* Popup windows: content drops in once when the popup opens (not on every refresh). */
-body.rb-enter > * { animation: rb-drop 140ms var(--ease-out) both; }
+body.rb-enter > * { animation: rb-drop 100ms var(--ease-out) both; }
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
@@ -175,10 +175,11 @@ pub fn enter_attrs(elapsed_ms: Option<u64>, window_ms: u64) -> (&'static str, St
     }
 }
 
-/// Neutral page placeholder painted while a Clean-mode page loads into an empty content area
-/// (new tab, waking a sleeping tab, leaving JS mode). Fades in after 140 ms so fast loads never
-/// flash it.
-pub fn render_page_skeleton_html() -> String {
+/// Neutral page placeholder painted while a page loads into an empty content area.
+/// `animated`: Clean-mode loads fade it in after 120 ms (fast loads never flash it) and pulse it.
+/// The static variant is painted once under a WebView that hasn't drawn yet: the child window
+/// clips our surface there, so it can't animate, and it must be visible from the first frame.
+pub fn render_page_skeleton_html(animated: bool) -> String {
     let mut h = String::with_capacity(4096);
     h.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>");
     h.push_str(THEME_CSS);
@@ -188,7 +189,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surf
 .sk-page {
   max-width: 760px; margin: 0 auto; padding: 44px 32px;
   display: flex; flex-direction: column; gap: 14px;
-  animation: rb-fade 220ms ease-out 140ms both;
+  animation: rb-fade 150ms ease-out 120ms both;
 }
 .b { border-radius: 8px; background: var(--surface-3); animation: rb-pulse 1.2s ease-in-out infinite; }
 .t { height: 30px; width: 62%; }
@@ -196,7 +197,13 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surf
 .img { height: 200px; width: 100%; border-radius: 14px; margin: 4px 0 10px; animation-delay: 80ms; }
 .l { height: 13px; animation-delay: 160ms; }
 .gap { height: 10px; }
-</style></head><body><div class="sk-page"><div class="b t"></div><div class="b m"></div><div class="b img"></div>"#,
+</style>"#,
+    );
+    if !animated {
+        h.push_str("<style>.sk-page, .b { animation: none !important; } .b { opacity: 0.75; }</style>");
+    }
+    h.push_str(
+        r#"</head><body><div class="sk-page"><div class="b t"></div><div class="b m"></div><div class="b img"></div>"#,
     );
     for (i, w) in [100, 97, 92, 95, 71, 0, 98, 94, 86, 62].iter().enumerate() {
         if *w == 0 {
@@ -232,7 +239,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--fram
   padding: 0 8px 0 10px; border-radius: 9px;
   border: 1px solid transparent;
   color: var(--text-2); font-size: 12px;
-  transition: background 110ms ease, color 110ms ease;
+  transition: background 60ms ease, color 60ms ease;
 }
 .tab:hover { background: var(--frame-hover); color: var(--text); }
 .tab:active { background: var(--press); }
@@ -346,7 +353,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--fram
   flex: 1; min-width: 160px; height: 34px; margin: 0 6px;
   padding: 0 6px 0 8px; border-radius: 999px;
   border: 1px solid transparent; background: var(--omni);
-  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+  transition: background 80ms ease, border-color 80ms ease, box-shadow 80ms ease;
 }
 .omni:hover { background: var(--omni-hover); }
 .omni:focus-within {
@@ -440,7 +447,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--fram
 .progress-bar {
   width: 45%; height: 100%; border-radius: 2px;
   background: linear-gradient(90deg, transparent, var(--accent), transparent);
-  animation: progress-slide 0.8s cubic-bezier(0.45, 0, 0.25, 1) infinite;
+  animation: progress-slide 0.65s cubic-bezier(0.45, 0, 0.25, 1) infinite;
 }
 /* Load finished: the bar sweeps to full width, then fades — a clear "done" beat. */
 @keyframes rb-progress-done {
@@ -448,18 +455,18 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--fram
   55% { width: 100%; opacity: 1; }
   100% { width: 100%; opacity: 0; }
 }
-.progress-bar.done { background: var(--accent); animation: rb-progress-done 320ms var(--ease-out) both; }
+.progress-bar.done { background: var(--accent); animation: rb-progress-done 220ms var(--ease-out) both; }
 
 /* ── Press feedback: everything clickable gives under the finger, then snaps back ── */
 .tab, .newtab, .tchip, .ib, .omni-btn, .seg, .ai-btn, .pill, .chip, .tab-close, .wbtn {
-  transition: background 90ms ease, color 90ms ease, border-color 90ms ease, opacity 90ms ease,
-    transform 120ms var(--ease-out);
+  transition: background 60ms ease, color 60ms ease, border-color 60ms ease, opacity 60ms ease,
+    transform 80ms var(--ease-out);
 }
 .newtab:active, .tchip:active, .ib:active, .omni-btn:active, .seg:active, .ai-btn:active,
 .pill:active, .chip:active, .tab-close:active { transform: scale(0.9); }
 .tab:active { transform: scale(0.97); }
 .ib.off:active { transform: none; }
-.tab.rb-in { animation: rb-tab-in 200ms var(--ease-out) both; }
+.tab.rb-in { animation: rb-tab-in 130ms var(--ease-out) both; }
 
 /* ── Bookmark Bar ── */
 .bmbar {
@@ -592,7 +599,7 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
             .iter()
             .find(|(id, _)| *id == tab.id)
             .map(|(_, ms)| *ms);
-        let (enter_cls, enter_style) = enter_attrs(fresh_ms, 200);
+        let (enter_cls, enter_style) = enter_attrs(fresh_ms, 130);
         let cls = match (is_active, is_sleeping, is_detaching) {
             (true, _, true) => "tab active detaching",
             (true, _, false) => "tab active",
@@ -1629,7 +1636,7 @@ pub struct SidebarMotion {
     pub shell_ms: Option<u64>,
 }
 
-const ENTER_WINDOW_MS: u64 = 260;
+const ENTER_WINDOW_MS: u64 = 160;
 
 /// Pixel height of the chat textarea showing `lines` lines (line-height 20px + padding).
 pub fn chat_input_height(lines: usize) -> u32 {
@@ -2005,12 +2012,12 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surf
 .comp-hint { padding: 5px 6px 0; font-size: 10px; color: var(--text-3); text-align: center; }
 
 /* ── Motion ── */
-.sb-shell.rb-in { animation: rb-slide-l 170ms var(--ease-out) both; }
-.sb-settings.rb-in, .sb-sheet.rb-in { animation: rb-drop 150ms var(--ease-out) both; }
+.sb-shell.rb-in { animation: rb-slide-l 120ms var(--ease-out) both; }
+.sb-settings.rb-in, .sb-sheet.rb-in { animation: rb-drop 100ms var(--ease-out) both; }
 .sb-hbtn, .set-chip, .sbtn, .cpill, .send-btn, .qcard, .chat-copy, .font-step, .hist-row,
 .hist-del, .err-retry, .sheet-row, .sheet-ftr {
-  transition: background 90ms ease, color 90ms ease, border-color 90ms ease, opacity 90ms ease,
-    transform 120ms var(--ease-out);
+  transition: background 60ms ease, color 60ms ease, border-color 60ms ease, opacity 60ms ease,
+    transform 80ms var(--ease-out);
 }
 .sb-hbtn:active, .set-chip:active, .sbtn:active, .cpill:active, .chat-copy:active, .font-step:active,
 .hist-del:active, .err-retry:active { transform: scale(0.92); }
@@ -2684,13 +2691,13 @@ body {
   padding: 56px 28px 48px;
 }
 .wrap { max-width: 820px; margin: 0 auto; }
-.wrap > * { animation: rb-rise 220ms var(--ease-out) both; }
-.wrap > *:nth-child(2) { animation-delay: 30ms; }
-.wrap > *:nth-child(3) { animation-delay: 60ms; }
-.wrap > *:nth-child(4) { animation-delay: 90ms; }
-.wrap > *:nth-child(5) { animation-delay: 120ms; }
-.wrap > *:nth-child(6) { animation-delay: 150ms; }
-.tile, .bcard { transition: background 90ms ease, border-color 90ms ease, transform 120ms var(--ease-out); }
+.wrap > * { animation: rb-rise 140ms var(--ease-out) both; }
+.wrap > *:nth-child(2) { animation-delay: 15ms; }
+.wrap > *:nth-child(3) { animation-delay: 30ms; }
+.wrap > *:nth-child(4) { animation-delay: 45ms; }
+.wrap > *:nth-child(5) { animation-delay: 60ms; }
+.wrap > *:nth-child(6) { animation-delay: 75ms; }
+.tile, .bcard { transition: background 60ms ease, border-color 60ms ease, transform 80ms var(--ease-out); }
 .tile:active, .bcard:active { transform: scale(0.97); }
 .hero { display: flex; flex-direction: column; align-items: center; margin-bottom: 24px; text-align: center; }
 .hero-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
@@ -4032,8 +4039,12 @@ mod motion_tests {
     /// The motion CSS must actually animate in Blitz (an invalid rule would silently do nothing).
     #[test]
     fn blitz_runs_entrance_and_skeleton_animations() {
-        let sk = layout(&render_page_skeleton_html());
+        let sk = layout(&render_page_skeleton_html(true));
         assert!(sk.is_animating(), "page skeleton pulses");
+        assert!(
+            !layout(&render_page_skeleton_html(false)).is_animating(),
+            "static under-WebView skeleton is a single, fully visible frame"
+        );
 
         let msg = format!(
             "<!DOCTYPE html><html><head><style>{THEME_CSS}</style></head><body><div class=\"rb-in\">hi</div></body></html>"
