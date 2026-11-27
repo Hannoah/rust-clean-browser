@@ -243,6 +243,8 @@ impl BrowserApp {
         let popup_size = popup_win.surface_size();
         let w = popup_size.width.max(1);
         let h = popup_size.height.max(1);
+        // Entrance animation only when the popup opens; `refresh_popup` re-renders without it.
+        let html = html.replacen("<body>", r#"<body class="rb-enter">"#, 1);
         let doc = self.popup_doc(&html, &popup_win, w, h, popup_scale);
 
         let mut renderer = VelloCpuWindowRenderer::new();
@@ -576,10 +578,14 @@ impl BrowserApp {
         let h = popup.win_size.height.max(1);
         popup.doc.poll(None);
         popup.doc.resolve(anim_time);
+        let animating = popup.doc.is_animating();
         let doc_inner = &mut *popup.doc;
         popup.renderer.render(|scene| {
             paint_scene(scene, doc_inner, scale, w, h, 0, 0);
         });
+        if animating {
+            popup.window.request_redraw();
+        }
     }
 
     fn bookmark_popup_key(&mut self, code: KeyCode) -> bool {

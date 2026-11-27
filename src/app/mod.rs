@@ -181,6 +181,8 @@ pub enum AppEvent {
     AgyModelsLoaded(Vec<crate::chat::ModelOption>),
     /// Typing-effect frame for the newest assistant reply.
     ChatRevealTick,
+    /// Re-render the chrome (end of a timed animation such as the progress bar's finish sweep).
+    RefreshChrome,
     OpenBookmarkPopup {
         key: String,
         root: BookmarkRootKind,
@@ -434,7 +436,25 @@ pub struct BrowserApp {
     /// Next sidebar rebuild ignores the settings inputs' drafts (a chip changed the value).
     sidebar_reset_drafts: bool,
     chat_input_lines: usize,
+
+    // ── Motion bookkeeping (entrance animations survive HTML rebuilds via negative delays) ──
+    /// Highest tab id already shown; ids above it are new tabs that get an entrance animation.
+    seen_tab_id: Option<u64>,
+    fresh_tabs: Vec<(u64, Instant)>,
+    /// Tab id that was loading at the last chrome render, to catch the moment it finishes.
+    loading_tab_seen: Option<u64>,
+    progress_done_at: Option<Instant>,
+    /// Placeholder painted while a Clean-mode page loads into an empty content area.
+    skeleton_doc: Option<HtmlDocument>,
+    sidebar_opened_at: Option<Instant>,
+    chat_seen_len: usize,
+    chat_msg_added: Option<(usize, Instant)>,
+    sidebar_panel_key: u8,
+    sidebar_panel_at: Option<Instant>,
 }
+
+const FRESH_TAB_MS: u64 = 200;
+const PROGRESS_DONE_MS: u64 = 320;
 
 impl BrowserApp {
     pub fn new(
@@ -568,6 +588,16 @@ impl BrowserApp {
             chat_reveal: None,
             sidebar_reset_drafts: false,
             chat_input_lines: 1,
+            seen_tab_id: None,
+            fresh_tabs: Vec::new(),
+            loading_tab_seen: None,
+            progress_done_at: None,
+            skeleton_doc: None,
+            sidebar_opened_at: None,
+            chat_seen_len: 0,
+            chat_msg_added: None,
+            sidebar_panel_key: 0,
+            sidebar_panel_at: None,
         };
 
         app.load_active_tab(false, None);
@@ -622,6 +652,7 @@ impl BrowserApp {
             let scroll = self.current_scroll_y();
             self.apply_html_to_tab(self.active_tab, url, raw, Some(scroll));
         }
+        self.skeleton_doc = None;
         self.sync_viewports();
         self.rebuild_chrome();
         self.last_sidebar_html.clear();
@@ -673,6 +704,52 @@ impl BrowserApp {
         self.request_redraw();
     }
 
+    /// New tabs and the progress bar's finish sweep, as ages for `ChromeMotion`.
+    fn chrome_motion(&mut self) -> crate::chrome_ui::ChromeMotion {
+        let now = Instant::now();
+        let age = |t: Instant| now.saturating_duration_since(t).as_millis() as u64;
+        let max_id = self.tabs.iter().map(|t| t.id).max();
+        if let (Some(seen), Some(max_id)) = (self.seen_tab_id, max_id) {
+            for t in self.tabs.iter().filter(|t| t.id > seen) {
+                self.fresh_tabs.push((t.id, now));
+            }
+            self.seen_tab_id = Some(seen.max(max_id));
+        } else {
+            // First render: every tab is new (launch / torn-off window).
+            self.fresh_tabs = self.tabs.iter().map(|t| (t.id, now)).collect();
+            self.seen_tab_id = max_id;
+        }
+        self.fresh_tabs.retain(|(_, t)| age(*t) < FRESH_TAB_MS);
+
+        let active = &self.tabs[self.active_tab];
+        if active.is_loading {
+            self.loading_tab_seen = Some(active.id);
+            self.progress_done_at = None;
+        } else if self.loading_tab_seen.take() == Some(active.id) {
+            self.progress_done_at = Some(now);
+            let bus = self.bus.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(PROGRESS_DONE_MS + 20)).await;
+                bus.send(AppEvent::RefreshChrome);
+            });
+        }
+        let progress_done_ms = self.progress_done_at.map(age).filter(|ms| *ms < PROGRESS_DONE_MS);
+        if progress_done_ms.is_none() {
+            self.progress_done_at = None;
+        }
+        if !self.fresh_tabs.is_empty() {
+            let bus = self.bus.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(FRESH_TAB_MS + 20)).await;
+                bus.send(AppEvent::RefreshChrome);
+            });
+        }
+        crate::chrome_ui::ChromeMotion {
+            fresh_tabs: self.fresh_tabs.iter().map(|(id, t)| (*id, age(*t))).collect(),
+            progress_done_ms,
+        }
+    }
+
     fn content_phys_size(&self) -> (u32, u32) {
         let ch = self.chrome_phys_height();
         let sw = self.sidebar_phys_width();
@@ -711,6 +788,10 @@ impl BrowserApp {
         let sb_vp = self.sidebar_viewport();
         if let Some(sdoc) = &mut self.sidebar_doc {
             sdoc.set_viewport(sb_vp);
+        }
+        let sk_vp = self.content_viewport(1.0);
+        if let Some(sk) = &mut self.skeleton_doc {
+            sk.set_viewport(sk_vp);
         }
         if let Some(wv) = &self.active_webview {
             let _ = wv.set_bounds(self.webview_bounds());
@@ -872,6 +953,7 @@ impl BrowserApp {
         } else {
             None
         };
+        let motion = self.chrome_motion();
         let drop_target = self.bm_drag.as_ref().and_then(|d| d.hover_folder.as_deref());
         let detaching_tab_id = self
             .tab_drag
@@ -914,6 +996,7 @@ impl BrowserApp {
             downloads_in_progress,
             downloads_unseen: self.unseen_downloads,
             sidebar_open: self.sidebar_open,
+            motion,
         });
         self.update_window_title();
         if html == self.last_chrome_html {
@@ -1226,6 +1309,27 @@ impl BrowserApp {
         self.chrome_doc.resolve(anim_time);
 
         let mut needs_more_frames = self.chrome_doc.is_animating();
+        // Empty content area while a Clean-mode page loads: show the page skeleton.
+        let show_skeleton = self.active_webview.is_none()
+            && self.tabs[self.active_tab].doc.is_none()
+            && self.tabs[self.active_tab].is_loading;
+        if show_skeleton && self.skeleton_doc.is_none() {
+            let mut sk = HtmlDocument::from_html(
+                &crate::chrome_ui::render_page_skeleton_html(),
+                self.doc_config(self.content_viewport(1.0), self.shell_provider.clone()),
+            );
+            sk.resolve(anim_time);
+            self.skeleton_doc = Some(sk);
+        }
+        let skeleton = if show_skeleton {
+            self.skeleton_doc.as_mut().map(|sk| {
+                sk.resolve(anim_time);
+                needs_more_frames |= sk.is_animating();
+                &mut **sk
+            })
+        } else {
+            None
+        };
         // With a WebView mounted, it draws the content area itself.
         let content_doc = if self.active_webview.is_some() {
             None
@@ -1264,6 +1368,14 @@ impl BrowserApp {
         };
 
         self.renderer.render(|scene| {
+            if let Some(sk) = skeleton
+                && content_h_phys > 0
+            {
+                let clip = Rect::new(0.0, chrome_h_phys as f64, content_w_phys as f64, win_h as f64);
+                scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &clip);
+                paint_scene(scene, sk, scale, content_w_phys, content_h_phys, 0, chrome_h_phys);
+                scene.pop_layer();
+            }
             if let Some((content_doc, content_scale)) = content
                 && content_h_phys > 0
             {
