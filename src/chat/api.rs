@@ -6,7 +6,7 @@ use std::time::Duration;
 use super::context::{format_user_turn, neutralize_untrusted};
 use super::prompt::{format_agent_instructions, format_agent_state_block};
 use super::{
-    AgentContext, ChatConfig, ChatMessage, ChatProvider, ChatRole, MAX_HISTORY_TURNS, MAX_TURN_CHARS, PageContext,
+    AgentContext, ChatConfig, ChatMessage, ChatProvider, ChatRole, MAX_TURN_CHARS, ModelOption, PageContext,
     SYSTEM_PROMPT, is_valid_model_id,
 };
 
@@ -125,20 +125,24 @@ pub(super) async fn run_api_chat(
 
     let client = api_http_client()?;
 
-    let (max_turns, max_turn_chars) = if agent.is_some() {
-        (2, MAX_TURN_CHARS.min(600))
+    // Plain chats send everything since the last compaction (bounded by the model's
+    // window); agent-control steps stay on a short leash of 2 clipped turns.
+    let (summary, turns, max_turn_chars) = if agent.is_some() {
+        let t: Vec<&ChatMessage> = history
+            .iter()
+            .filter(|m| matches!(m.role, ChatRole::User | ChatRole::Assistant))
+            .rev()
+            .take(2)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        (None, t, MAX_TURN_CHARS.min(600))
     } else {
-        (MAX_HISTORY_TURNS, MAX_TURN_CHARS)
+        let window = super::context_window_tokens(config.provider, &model);
+        let (s, t) = super::api_history_window(history, window);
+        (s, t, MAX_TURN_CHARS)
     };
-    let turns: Vec<&ChatMessage> = history
-        .iter()
-        .filter(|m| matches!(m.role, ChatRole::User | ChatRole::Assistant))
-        .rev()
-        .take(max_turns)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
     let user_turn = format_user_turn(user_text, page);
     let final_user = if let Some(ctx) = agent {
         format!("{}{}", format_agent_state_block(ctx), user_turn)
@@ -147,6 +151,11 @@ pub(super) async fn run_api_chat(
     };
     let system_prompt = if let Some(ctx) = agent {
         format!("{SYSTEM_PROMPT}\n\n{}", format_agent_instructions(ctx))
+    } else if let Some(s) = summary {
+        format!(
+            "{SYSTEM_PROMPT}\n\n## 이전 대화 요약 (앞선 대화를 압축한 것)\n{}",
+            neutralize_untrusted(s)
+        )
     } else {
         SYSTEM_PROMPT.to_string()
     };
@@ -498,5 +507,152 @@ fn extract_buffered_reply(provider: ChatProvider, val: &Value) -> Option<String>
                     .join("\n")
             }),
         _ => None,
+    }
+}
+
+/// `models` listing URL next to a chat endpoint: OpenAI-compatible `…/chat/completions`
+/// → `…/models`, Anthropic `…/messages` → `…/models`, Gemini's base is already the listing.
+fn models_list_url(provider: ChatProvider, endpoint: &str) -> Option<String> {
+    let ep = endpoint.trim().trim_end_matches('/');
+    let ep = ep.split('?').next().unwrap_or(ep);
+    match provider {
+        ChatProvider::OpenAiApi => ep.strip_suffix("/chat/completions").map(|b| format!("{b}/models")),
+        ChatProvider::AnthropicApi => ep.strip_suffix("/messages").map(|b| format!("{b}/models?limit=1000")),
+        ChatProvider::GeminiApi => ep.ends_with("/models").then(|| format!("{ep}?pageSize=1000")),
+        _ => None,
+    }
+}
+
+/// Non-chat OpenAI models (embeddings, speech, images, …) that the chat endpoint rejects.
+fn is_openai_chat_model(id: &str) -> bool {
+    const SKIP: &[&str] = &[
+        "embedding",
+        "tts",
+        "whisper",
+        "dall-e",
+        "audio",
+        "realtime",
+        "transcribe",
+        "image",
+        "moderation",
+        "search",
+        "davinci",
+        "babbage",
+        "computer-use",
+    ];
+    !SKIP.iter().any(|s| id.contains(s))
+}
+
+/// Parses a provider's model listing into chat-capable options, sorted by id.
+fn parse_models_listing(provider: ChatProvider, val: &Value, official_openai: bool) -> Vec<ModelOption> {
+    let mut out: Vec<ModelOption> = match provider {
+        ChatProvider::GeminiApi => val
+            .get("models")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|m| {
+                m.get("supportedGenerationMethods")
+                    .and_then(Value::as_array)
+                    .is_some_and(|a| a.iter().any(|x| x.as_str() == Some("generateContent")))
+            })
+            .filter_map(|m| {
+                let id = m.get("name")?.as_str()?.trim_start_matches("models/").to_string();
+                let label = m.get("displayName").and_then(Value::as_str).unwrap_or(&id).to_string();
+                Some(ModelOption { id, label })
+            })
+            .collect(),
+        _ => val
+            .get("data")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|m| {
+                let id = m.get("id")?.as_str()?.to_string();
+                let label = m.get("display_name").and_then(Value::as_str).unwrap_or(&id).to_string();
+                Some(ModelOption { id, label })
+            })
+            .filter(|o| !official_openai || is_openai_chat_model(&o.id))
+            .collect(),
+    };
+    out.retain(|o| is_valid_model_id(&o.id));
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out.dedup_by(|a, b| a.id == b.id);
+    out
+}
+
+/// Asks the configured endpoint which models this key can actually use.
+pub async fn fetch_api_models(config: &ChatConfig) -> Result<Vec<ModelOption>, String> {
+    let provider = config.provider;
+    let api_key = config.effective_api_key().to_string();
+    let endpoint = config.effective_endpoint().to_string();
+    let url = models_list_url(provider, &endpoint)
+        .ok_or_else(|| "이 엔드포인트는 모델 목록을 지원하지 않습니다.".to_string())?;
+    let (parsed, is_local) = validate_api_endpoint_url(&url, &api_key)?;
+    if api_key.is_empty() && !is_local {
+        return Err("API 키를 먼저 저장하세요.".to_string());
+    }
+    let client = api_http_client()?;
+    let mut req = client.get(parsed.as_str());
+    req = match provider {
+        ChatProvider::AnthropicApi => req
+            .header("x-api-key", &api_key)
+            .header("anthropic-version", "2023-06-01"),
+        ChatProvider::GeminiApi => req.header("x-goog-api-key", &api_key),
+        _ if !api_key.is_empty() => req.header("Authorization", format!("Bearer {api_key}")),
+        _ => req,
+    };
+    let resp = tokio::time::timeout(Duration::from_secs(20), req.send())
+        .await
+        .map_err(|_| "모델 목록 시간 초과 (20초)".to_string())?
+        .map_err(|e| format!("모델 목록 요청 실패: {e}"))?;
+    let status = resp.status();
+    let bytes = resp.bytes().await.map_err(|e| format!("응답 읽기 실패: {e}"))?;
+    if !status.is_success() {
+        let preview: String = String::from_utf8_lossy(&bytes).chars().take(160).collect();
+        return Err(format!("모델 목록 HTTP {status}: {preview}"));
+    }
+    let val: Value = serde_json::from_slice(&bytes).map_err(|e| format!("JSON 파싱 실패: {e}"))?;
+    let official = parsed.host_str() == Some("api.openai.com");
+    let models = parse_models_listing(provider, &val, official);
+    if models.is_empty() {
+        return Err("사용 가능한 모델이 없습니다.".to_string());
+    }
+    Ok(models)
+}
+
+#[cfg(test)]
+mod model_list_tests {
+    use super::*;
+
+    #[test]
+    fn models_url_and_listing() {
+        assert_eq!(
+            models_list_url(ChatProvider::OpenAiApi, "http://localhost:11434/v1/chat/completions").as_deref(),
+            Some("http://localhost:11434/v1/models")
+        );
+        assert_eq!(
+            models_list_url(ChatProvider::AnthropicApi, "https://api.anthropic.com/v1/messages").as_deref(),
+            Some("https://api.anthropic.com/v1/models?limit=1000")
+        );
+        assert!(models_list_url(ChatProvider::OpenAiApi, "https://x.azure.com/openai/deployments/d").is_none());
+
+        let openai = json!({"data":[{"id":"gpt-4o"},{"id":"text-embedding-3-small"},{"id":"gpt-4o"},{"id":"o4-mini"}]});
+        let ids: Vec<_> = parse_models_listing(ChatProvider::OpenAiApi, &openai, true)
+            .into_iter()
+            .map(|o| o.id)
+            .collect();
+        assert_eq!(ids, ["gpt-4o", "o4-mini"]);
+        // Local/compatible servers keep everything they list.
+        assert_eq!(parse_models_listing(ChatProvider::OpenAiApi, &openai, false).len(), 3);
+
+        let gemini = json!({"models":[
+            {"name":"models/gemini-2.5-flash","displayName":"Gemini 2.5 Flash","supportedGenerationMethods":["generateContent"]},
+            {"name":"models/text-embedding-004","supportedGenerationMethods":["embedContent"]}]});
+        let g = parse_models_listing(ChatProvider::GeminiApi, &gemini, false);
+        assert_eq!(
+            (g.len(), g[0].id.as_str(), g[0].label.as_str()),
+            (1, "gemini-2.5-flash", "Gemini 2.5 Flash")
+        );
     }
 }

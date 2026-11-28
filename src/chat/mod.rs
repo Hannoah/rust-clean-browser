@@ -12,7 +12,7 @@ mod storage;
 pub use agent::{
     AgentAction, build_agent_action_js, build_agent_extract_js, build_agent_text_check_js, parse_agent_response,
 };
-pub use api::{is_loopback_endpoint, test_api_connection};
+pub use api::{fetch_api_models, is_loopback_endpoint, test_api_connection};
 pub use cli::{
     fetch_agy_models, reset_agy_worker, reset_all_cli_workers, reset_claude_worker, shutdown_cli_workers,
     warm_agy_worker, warm_claude_worker,
@@ -33,6 +33,8 @@ use std::time::Duration;
 pub(crate) const MAX_PAGE_CONTEXT_CHARS: usize = 12_000;
 pub(crate) const MAX_HISTORY_TURNS: usize = 8;
 pub(crate) const MAX_TURN_CHARS: usize = 3_000;
+/// Rough chars-per-token for mixed Korean/English text (display + budgeting only).
+pub const CHARS_PER_TOKEN: f32 = 2.6;
 pub(crate) const CLI_TIMEOUT: Duration = Duration::from_secs(120);
 pub(crate) const WORKER_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 pub(crate) const MAX_CLAUDE_WORKER_TURNS: usize = 12;
@@ -48,13 +50,14 @@ use api::run_api_chat;
 use cli::{find_cli_binary, run_agy_persistent, run_claude_persistent, run_cli_agent};
 use prompt::build_cli_prompt;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChatProvider {
     Agy,
     Claude,
     Gemini,
     Codex,
+    Muse,
     OpenAiApi,
     AnthropicApi,
     GeminiApi,
@@ -66,6 +69,7 @@ impl ChatProvider {
         Self::Claude,
         Self::Gemini,
         Self::Codex,
+        Self::Muse,
         Self::OpenAiApi,
         Self::AnthropicApi,
         Self::GeminiApi,
@@ -77,6 +81,7 @@ impl ChatProvider {
             Self::Claude => "claude",
             Self::Gemini => "gemini",
             Self::Codex => "codex",
+            Self::Muse => "muse",
             Self::OpenAiApi => "openai_api",
             Self::AnthropicApi => "anthropic_api",
             Self::GeminiApi => "gemini_api",
@@ -89,6 +94,7 @@ impl ChatProvider {
             "agy" | "gemini" => Some(Self::Agy),
             "claude" => Some(Self::Claude),
             "codex" => Some(Self::Codex),
+            "muse" => Some(Self::Muse),
             "openai_api" => Some(Self::OpenAiApi),
             "anthropic_api" => Some(Self::AnthropicApi),
             "gemini_api" => Some(Self::GeminiApi),
@@ -103,6 +109,7 @@ impl ChatProvider {
             // Legacy entry, hidden from the UI and migrated to `Agy` on load.
             Self::Gemini => "Gemini CLI (구버전)",
             Self::Codex => "Codex CLI",
+            Self::Muse => "Muse CLI",
             Self::OpenAiApi => "OpenAI API",
             Self::AnthropicApi => "Anthropic API",
             Self::GeminiApi => "Gemini API",
@@ -115,6 +122,7 @@ impl ChatProvider {
             Self::Claude => "Claude",
             Self::Gemini => "Gemini",
             Self::Codex => "Codex",
+            Self::Muse => "Muse",
             Self::OpenAiApi => "OpenAI",
             Self::AnthropicApi => "Claude API",
             Self::GeminiApi => "Gemini API",
@@ -122,7 +130,7 @@ impl ChatProvider {
     }
 
     pub fn is_cli(self) -> bool {
-        matches!(self, Self::Agy | Self::Claude | Self::Gemini | Self::Codex)
+        matches!(self, Self::Agy | Self::Claude | Self::Gemini | Self::Codex | Self::Muse)
     }
 
     pub fn default_endpoint(self) -> &'static str {
@@ -149,6 +157,7 @@ impl ChatProvider {
             Self::Claude => "로그아웃 시 터미널에서 `claude login`으로 다시 로그인하세요.",
             Self::Gemini => "로그아웃 시 터미널에서 `gemini`를 실행해 다시 로그인하세요.",
             Self::Codex => "로그아웃 시 터미널에서 `codex login`으로 다시 로그인하세요.",
+            Self::Muse => "로그아웃 시 터미널에서 `muse login`으로 다시 로그인하세요.",
             _ => "설정에서 API 엔드포인트, 모델, API 키를 확인하세요.",
         }
     }
@@ -160,6 +169,7 @@ pub fn open_cli_login_terminal(provider: ChatProvider) -> Result<(), String> {
         ChatProvider::Claude => "claude login",
         ChatProvider::Gemini => "gemini",
         ChatProvider::Codex => "codex login",
+        ChatProvider::Muse => "muse login",
         _ => return Err("API 프로바이더는 설정에서 API 키를 입력하세요.".to_string()),
     };
     #[cfg(windows)]
@@ -183,6 +193,7 @@ pub struct CliAvailability {
     pub claude: bool,
     pub gemini: bool,
     pub codex: bool,
+    pub muse: bool,
 }
 
 impl CliAvailability {
@@ -192,6 +203,7 @@ impl CliAvailability {
             claude: find_cli_binary("claude").is_some(),
             gemini: find_cli_binary("gemini").is_some(),
             codex: find_cli_binary("codex").is_some(),
+            muse: find_cli_binary("muse").is_some(),
         }
     }
 
@@ -201,6 +213,7 @@ impl CliAvailability {
             ChatProvider::Claude => self.claude,
             ChatProvider::Gemini => self.gemini,
             ChatProvider::Codex => self.codex,
+            ChatProvider::Muse => self.muse,
             _ => true,
         }
     }
@@ -212,6 +225,8 @@ impl CliAvailability {
             ChatProvider::Claude
         } else if self.codex {
             ChatProvider::Codex
+        } else if self.muse {
+            ChatProvider::Muse
         } else {
             ChatProvider::OpenAiApi
         }
@@ -313,6 +328,25 @@ pub fn preset_models(provider: ChatProvider, agy_models: &[ModelOption]) -> Vec<
                 label: "GPT-5".into(),
             },
         ],
+        // `muse exec --list-models` on this machine.
+        ChatProvider::Muse => vec![
+            ModelOption {
+                id: String::new(),
+                label: "기본 모델 (자동)".into(),
+            },
+            ModelOption {
+                id: "muse-spark-1.3".into(),
+                label: "Muse Spark 1.3".into(),
+            },
+            ModelOption {
+                id: "muse-spark-1.2".into(),
+                label: "Muse Spark 1.2".into(),
+            },
+            ModelOption {
+                id: "muse-ember-1.0".into(),
+                label: "Muse Ember 1.0".into(),
+            },
+        ],
         ChatProvider::OpenAiApi => vec![
             ModelOption {
                 id: "gpt-4o-mini".into(),
@@ -356,6 +390,83 @@ pub fn preset_models(provider: ChatProvider, agy_models: &[ModelOption]) -> Vec<
             },
         ],
     }
+}
+
+/// Context window (input tokens) of an API model.
+/// ponytail: id-prefix table, not a lookup; unknown/local models get a conservative 32k.
+pub fn context_window_tokens(provider: ChatProvider, model: &str) -> u32 {
+    let m = model.to_ascii_lowercase();
+    match provider {
+        ChatProvider::GeminiApi => 1_048_576,
+        ChatProvider::AnthropicApi => 200_000,
+        _ if m.starts_with("gpt-4.1") => 1_047_576,
+        _ if m.starts_with("gpt-5") => 400_000,
+        _ if m.starts_with('o') && m.chars().nth(1).is_some_and(|c| c.is_ascii_digit()) => 200_000,
+        _ if m.starts_with("gpt-4o") || m.starts_with("gpt-4-turbo") => 128_000,
+        _ if m.starts_with("claude") => 200_000,
+        _ if m.starts_with("gemini") => 1_048_576,
+        _ => 32_768,
+    }
+}
+
+/// Messages an API request carries: the newest `Summary` (if any) and the user/assistant
+/// turns after it, oldest dropped first once they pass ~60% of the context window.
+pub fn api_history_window(history: &[ChatMessage], window_tokens: u32) -> (Option<&str>, Vec<&ChatMessage>) {
+    let start = history.iter().rposition(|m| m.role == ChatRole::Summary);
+    let summary = start.map(|i| history[i].text.as_str());
+    let budget_chars = (window_tokens as f32 * CHARS_PER_TOKEN * 0.6) as usize;
+    let mut used = summary.map_or(0, |s| s.chars().count());
+    let mut turns: Vec<&ChatMessage> = Vec::new();
+    for m in history[start.map_or(0, |i| i + 1)..].iter().rev() {
+        if !matches!(m.role, ChatRole::User | ChatRole::Assistant) {
+            continue;
+        }
+        used += m.text.chars().count().min(MAX_TURN_CHARS);
+        if used > budget_chars && !turns.is_empty() {
+            break;
+        }
+        turns.push(m);
+    }
+    turns.reverse();
+    (summary, turns)
+}
+
+/// `(estimated tokens the next API request carries, model context window)`.
+pub fn api_context_usage(config: &ChatConfig, history: &[ChatMessage]) -> (u32, u32) {
+    let window = context_window_tokens(config.provider, &config.selected_model(config.provider));
+    let (summary, turns) = api_history_window(history, window);
+    let chars = SYSTEM_PROMPT.chars().count()
+        + summary.map_or(0, |s| s.chars().count())
+        + turns
+            .iter()
+            .map(|m| m.text.chars().count().min(MAX_TURN_CHARS))
+            .sum::<usize>();
+    ((chars as f32 / CHARS_PER_TOKEN) as u32, window)
+}
+
+/// Prompt asking the model to fold the conversation (and any earlier summary) into one summary.
+pub fn compact_prompt(history: &[ChatMessage]) -> String {
+    let mut out = String::from(
+        "다음 대화 기록을 읽고, 이후 대화를 이어가는 데 꼭 필요한 핵심만 요약하세요.\n\n규칙:\n\
+- 인사말·설명·코드펜스 없이 요약 본문만 출력합니다.\n\
+- 한국어 마크다운 불릿으로 1500자 이내로 씁니다.\n\
+- 반드시 남길 것: 사용자의 목표와 요구사항, 확정된 결정·조건, 언급된 페이지·파일·이름, 핵심 수치와 결론, 아직 해결되지 않은 질문과 다음에 할 일.\n\
+- 버릴 것: 인사, 반복 설명, 표·로그·코드 전문.\n\
+- 기록에 없는 내용을 추가하거나 추측하지 않습니다. 이름과 수치는 원문 그대로 씁니다.\n",
+    );
+    let (summary, turns) = api_history_window(history, u32::MAX / 4);
+    if let Some(s) = summary {
+        out.push_str("\n## 이전 요약 (아래 새 대화와 합쳐 하나의 요약으로 통합할 것)\n");
+        out.push_str(s);
+        out.push('\n');
+    }
+    out.push_str("\n## 새 대화 기록\n");
+    for m in turns {
+        let who = if m.role == ChatRole::User { "사용자" } else { "AI" };
+        let text: String = m.text.chars().take(MAX_TURN_CHARS).collect();
+        out.push_str(&format!("\n{who}: {text}\n"));
+    }
+    out
 }
 
 pub fn display_model_label(provider: ChatProvider, model_id: &str, agy_models: &[ModelOption]) -> String {
@@ -446,7 +557,8 @@ pub async fn run_chat(
         } else {
             config.selected_model(provider)
         };
-        tokio::task::spawn_blocking(move || run_cli_agent(provider, &model, &prompt, &cancel))
+        let effort = config.effective_effort(provider, agent.is_some());
+        tokio::task::spawn_blocking(move || run_cli_agent(provider, &model, &effort, &prompt, &cancel))
             .await
             .map_err(|e| format!("에이전트 실행 오류: {e}"))?
     } else {
@@ -642,6 +754,7 @@ mod tests {
             claude: true,
             gemini: true,
             codex: true,
+            muse: true,
         };
         let cfg = ChatConfig::default();
         // Nothing installed, no keys: only the active provider shows.

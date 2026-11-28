@@ -24,11 +24,10 @@ impl BrowserApp {
                         self.chat_show_settings = true;
                     }
                 }
-                if provider == ChatProvider::Agy {
-                    self.maybe_fetch_agy_models(false);
-                } else {
+                if provider != ChatProvider::Agy {
                     crate::chat::reset_agy_worker();
                 }
+                self.maybe_fetch_models(false);
                 if provider != ChatProvider::Claude {
                     crate::chat::reset_claude_worker();
                 }
@@ -204,15 +203,13 @@ impl BrowserApp {
                     SidebarPicker::None
                 } else {
                     self.chat_show_settings = false;
-                    if self.chat_config.provider == ChatProvider::Agy {
-                        self.maybe_fetch_agy_models(false);
-                    }
+                    self.maybe_fetch_models(false);
                     SidebarPicker::Model
                 };
                 self.last_sidebar_html.clear();
                 self.rebuild_sidebar_now(false);
             }
-            "chat-refresh-models" => self.maybe_fetch_agy_models(true),
+            "chat-refresh-models" => self.maybe_fetch_models(true),
             "chat-retry" => self.retry_last_chat(),
             "chat-open-login" => {
                 let note = match open_cli_login_terminal(self.chat_config.provider) {
@@ -249,14 +246,29 @@ impl BrowserApp {
             }
             "chat-del-all" => self.delete_chat_session(None),
             "chat-regen" => self.regenerate_last_reply(),
+            // Header tabs: 대화 / 기록 / 설정 each take the whole sidebar body.
+            "chat-tab:chat" | "chat-tab:history" | "chat-tab:settings" => {
+                self.chat_show_history = action == "chat-tab:history";
+                self.chat_show_settings = action == "chat-tab:settings";
+                self.sidebar_picker = SidebarPicker::None;
+                if self.chat_show_history && self.chat_history.is_none() {
+                    self.chat_history = Some(ChatHistory::load());
+                }
+                if self.chat_show_settings {
+                    self.maybe_fetch_models(false);
+                }
+                self.last_sidebar_html.clear();
+                self.rebuild_sidebar_now(false);
+                if action == "chat-tab:chat" {
+                    self.focus_sidebar_input("chat-input");
+                }
+            }
             "chat-toggle-settings" => {
                 self.chat_show_settings = !self.chat_show_settings;
                 if self.chat_show_settings {
                     self.chat_show_history = false;
                     self.sidebar_picker = SidebarPicker::None;
-                    if self.chat_config.provider == ChatProvider::Agy {
-                        self.maybe_fetch_agy_models(false);
-                    }
+                    self.maybe_fetch_models(false);
                 }
                 self.last_sidebar_html.clear();
                 self.rebuild_sidebar_now(false);
@@ -307,6 +319,7 @@ impl BrowserApp {
                 self.last_sidebar_html.clear();
                 self.rebuild_sidebar_now(false);
             }
+            "chat-compact" => self.compact_chat(),
             "chat-send" => self.submit_from_sidebar_input(),
             "chat-stop" => self.cancel_chat_inflight(true),
             _ => {}
@@ -317,17 +330,12 @@ impl BrowserApp {
         if let Some(ep) = self.read_sidebar_input("chat-api-endpoint") {
             self.chat_config.set_api_endpoint(ep);
         }
-        if let Some(model) = self.read_sidebar_input("chat-api-model") {
-            self.chat_config
-                .set_selected_model(self.chat_config.provider, model.trim().to_string());
-        }
         if let Some(key) = self.read_sidebar_input("chat-api-key")
             && !key.trim().is_empty()
         {
             self.chat_config.set_api_key(key);
         }
         let saved = self.chat_config.save();
-        self.chat_show_settings = false;
         self.last_sidebar_html.clear();
         self.set_status_note(if saved {
             "AI 설정 저장됨"
@@ -339,6 +347,8 @@ impl BrowserApp {
         // Saving API settings immediately proves the endpoint/key/model end to end.
         if saved && !self.chat_config.provider.is_cli() {
             self.test_api_connection();
+            // A new key/endpoint may unlock a different set of models.
+            self.maybe_fetch_models(true);
         }
     }
 
@@ -374,9 +384,17 @@ impl BrowserApp {
             .read_sidebar_input("chat-custom-model")
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
-        if self.chat_config.add_custom_model(self.chat_config.provider, id) {
+        let provider = self.chat_config.provider;
+        // CLI agents take any model ID directly; API endpoints keep it in the list too.
+        let ok = crate::chat::is_valid_model_id(&id)
+            && (provider.is_cli()
+                || self.current_model_options().iter().any(|o| o.id == id)
+                || self.chat_config.add_custom_model(provider, id.clone()));
+        if ok {
+            self.chat_config.set_selected_model(provider, id);
             self.chat_config.save();
-            self.set_status_note("모델 추가됨 · 모델 선택에서 고르세요");
+            self.sidebar_reset_drafts = true;
+            self.set_status_note("모델 추가 및 선택됨");
         } else {
             self.set_status_note("추가할 수 없는 모델 ID입니다 (형식·중복·최대 20개 확인)");
         }
@@ -450,7 +468,57 @@ impl BrowserApp {
         self.rebuild_chrome();
     }
 
+    /// 대화 압축: asks the API model to fold the conversation into one summary message;
+    /// later API requests carry only that summary plus the turns after it.
+    pub(in crate::app) fn compact_chat(&mut self) {
+        if self.chat_compacting.is_some() || self.chat_inflight.is_some() || self.chat_config.provider.is_cli() {
+            return;
+        }
+        let prompt = crate::chat::compact_prompt(&self.chat_messages);
+        self.chat_compacting = Some((self.chat_session_id, self.chat_messages.len()));
+        let config = self.chat_config.clone();
+        let bus = self.bus.clone();
+        tokio::spawn(async move {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let result = run_chat(config, Vec::new(), prompt, None, None, cancel, None).await;
+            bus.send(AppEvent::ChatCompactDone(result));
+        });
+        self.last_sidebar_html.clear();
+        self.rebuild_sidebar(false);
+    }
+
+    pub(in crate::app) fn on_chat_compact_done(&mut self, result: Result<String, String>) {
+        let Some(started) = self.chat_compacting.take() else {
+            return;
+        };
+        let same_chat = started == (self.chat_session_id, self.chat_messages.len());
+        let note = match result {
+            Ok(text) if same_chat && !text.trim().is_empty() => {
+                self.chat_messages.push(ChatMessage {
+                    role: ChatRole::Summary,
+                    text: text.trim().to_string(),
+                    page_title: None,
+                    provider_label: None,
+                });
+                self.persist_chat();
+                "대화 압축됨".to_string()
+            }
+            Ok(_) if !same_chat => "대화가 바뀌어 압축 결과를 버렸습니다".to_string(),
+            Ok(_) => "대화 압축 실패: 빈 요약".to_string(),
+            Err(e) => format!("대화 압축 실패: {}", e.chars().take(100).collect::<String>()),
+        };
+        self.set_status_note(&note);
+        self.rebuild_chrome();
+        self.last_sidebar_html.clear();
+        self.rebuild_sidebar(true);
+    }
+
     pub(in crate::app) fn submit_chat_message(&mut self, user_text: String, force_page: bool, agent: bool) {
+        if self.chat_compacting.is_some() {
+            self.set_status_note("대화 압축이 끝난 뒤 보내 주세요");
+            self.rebuild_chrome();
+            return;
+        }
         self.cancel_chat_inflight(false);
         self.chat_show_history = false;
         self.ensure_active_valid();

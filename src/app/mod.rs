@@ -214,6 +214,13 @@ pub enum AppEvent {
         copy: bool,
     },
     AgyModelsLoaded(Vec<crate::chat::ModelOption>),
+    /// Conversation summary for 대화 압축 (`Ok` = summary text).
+    ChatCompactDone(Result<String, String>),
+    /// Model listing from the active API endpoint (`Err` = could not list; presets are shown).
+    ApiModelsLoaded {
+        provider: crate::chat::ChatProvider,
+        result: Result<Vec<crate::chat::ModelOption>, String>,
+    },
     /// Typing-effect frame for the newest assistant reply (`reveal_gen`).
     ChatRevealTick(u64),
     /// Guards `evaluate_script_with_callback` against silent WebView detachment/tab switches.
@@ -462,6 +469,9 @@ pub struct BrowserApp {
     agy_models: Vec<crate::chat::ModelOption>,
     agy_models_loading: bool,
     agy_models_fetched: bool,
+    /// Last model listing per API provider + whether a fetch is running.
+    api_models: std::collections::HashMap<crate::chat::ChatProvider, Result<Vec<crate::chat::ModelOption>, String>>,
+    api_models_loading: bool,
     chat_config: crate::chat::ChatConfig,
     chat_cli_avail: crate::chat::CliAvailability,
     chat_messages: Vec<crate::chat::ChatMessage>,
@@ -473,6 +483,9 @@ pub struct BrowserApp {
     chat_history: Option<crate::chat::ChatHistory>,
     /// History id of the conversation on screen (`None` until its first message is saved).
     chat_session_id: Option<u64>,
+    /// 대화 압축 in flight: `(session id, message count)` when it started, so a summary
+    /// never lands in a conversation that was cleared or switched meanwhile.
+    chat_compacting: Option<(Option<u64>, usize)>,
     chat_show_history: bool,
     /// `(message index, chars shown)` while a reply is typing out.
     chat_reveal: Option<(usize, usize)>,
@@ -654,6 +667,8 @@ impl BrowserApp {
             agy_models: Vec::new(),
             agy_models_loading: false,
             agy_models_fetched: false,
+            api_models: std::collections::HashMap::new(),
+            api_models_loading: false,
             chat_config,
             chat_cli_avail,
             chat_messages: Vec::new(),
@@ -663,6 +678,7 @@ impl BrowserApp {
             agent_run: None,
             chat_history: None,
             chat_session_id: None,
+            chat_compacting: None,
             chat_show_history: false,
             chat_reveal: None,
             chat_reveal_gen: 0,

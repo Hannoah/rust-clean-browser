@@ -997,7 +997,7 @@ pub fn build_reader_html_with_options(raw_html: &str, url: &str, opts: ReaderOpt
     };
     let font_stack = match opts.font {
         ReaderFont::Sans => {
-            r#""Pretendard Variable", "Pretendard", "Segoe UI Variable Text", "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif"#
+            r#""KoPubWorldDotum", "KoPubWorld돋움체", "KoPubWorldDotum Medium", "KoPub Dotum", "Pretendard Variable", "Pretendard", "Segoe UI Variable Text", "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif"#
         }
         ReaderFont::Serif => r#""Noto Serif KR", "Batang", "Georgia", "Charter", "AppleMyungjo", serif"#,
     };
@@ -1043,7 +1043,7 @@ pub fn build_reader_html_with_options(raw_html: &str, url: &str, opts: ReaderOpt
     background: {bar_bg};
     border: 1px solid {border};
     box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
-    font-family: "Pretendard Variable", "Pretendard", "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic", sans-serif;
+    font-family: "KoPubWorldDotum", "KoPubWorld돋움체", "KoPubWorldDotum Medium", "KoPub Dotum", "Pretendard Variable", "Pretendard", "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic", sans-serif;
     font-size: 12px;
   }}
   .rgroup {{ display: flex; align-items: center; gap: 3px; }}
@@ -1069,7 +1069,7 @@ pub fn build_reader_html_with_options(raw_html: &str, url: &str, opts: ReaderOpt
     font-size: 12.5px;
     color: {muted};
     margin-bottom: 10px;
-    font-family: "Pretendard Variable", "Pretendard", "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic", sans-serif;
+    font-family: "KoPubWorldDotum", "KoPubWorld돋움체", "KoPubWorldDotum Medium", "KoPub Dotum", "Pretendard Variable", "Pretendard", "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic", sans-serif;
   }}
   .rmeta-chip {{
     padding: 2px 9px;
