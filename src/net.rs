@@ -182,6 +182,7 @@ pub(crate) mod seal {
 
     #[cfg(not(windows))]
     mod os {
+        #[allow(dead_code)]
         pub fn protect(_: &[u8]) -> Option<Vec<u8>> {
             None
         }

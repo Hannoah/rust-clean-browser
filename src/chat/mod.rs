@@ -30,6 +30,7 @@ pub use storage::{AgentPreset, ChatConfig, ChatHistory, ChatMessage, ChatRole, C
 pub use tools::{fill_form_js, find_in_page_js, network_idle_js, pdf_page_js, pdf_search_js};
 
 use serde::{Deserialize, Serialize};
+#[cfg_attr(not(windows), allow(unused_imports))]
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

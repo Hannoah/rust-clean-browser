@@ -1,3 +1,5 @@
+#![cfg_attr(not(windows), allow(clippy::drop_non_drop))]
+
 use crate::bookmarks::app_data_dir;
 use serde_json::{Value, json};
 use std::io::{BufRead as _, BufReader, Write as _};
