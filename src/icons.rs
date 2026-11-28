@@ -46,7 +46,6 @@ pub enum Icon {
     Sparkles,
     Send,
     Copy,
-    Sliders,
     MoveHorizontal,
 }
 
@@ -134,9 +133,6 @@ impl Icon {
             Icon::Send => r#"<path d="M8 12.5V3.5M4.2 7.3L8 3.5l3.8 3.8"/>"#,
             Icon::Copy => {
                 r#"<rect x="5.5" y="5.5" width="7.5" height="7.5" rx="1.2"/><path d="M3.5 10.5H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h6.5a1 1 0 0 1 1 1v.5"/>"#
-            }
-            Icon::Sliders => {
-                r#"<path d="M2.5 5h2.2M7.3 5h6.2M2.5 11h6.2M11.3 11h2.2"/><circle cx="6" cy="5" r="1.3"/><circle cx="10" cy="11" r="1.3"/>"#
             }
             Icon::MoveHorizontal => r#"<path d="M5 5L2 8l3 3M11 5l3 3-3 3M2.5 8h11"/>"#,
         }

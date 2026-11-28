@@ -107,6 +107,7 @@ impl BrowserApp {
                     self.update_suggestions(event_loop);
                 } else if self.focus_region == UiRegion::Sidebar {
                     self.sync_chat_input_height();
+                    self.sync_key_mask();
                 }
                 if ime_done && self.sidebar_dirty {
                     let scroll = self.sidebar_dirty_scroll;
@@ -132,6 +133,7 @@ impl BrowserApp {
                     self.update_suggestions(event_loop);
                 } else if self.focus_region == UiRegion::Sidebar {
                     self.sync_chat_input_height();
+                    self.sync_key_mask();
                 }
                 self.request_redraw();
             }
@@ -692,10 +694,7 @@ impl BrowserApp {
                 self.submit_from_sidebar_input();
                 return true;
             }
-            if self.is_sidebar_input_focused("chat-api-endpoint")
-                || self.is_sidebar_input_focused("chat-api-model")
-                || self.is_sidebar_input_focused("chat-api-key")
-            {
+            if self.is_sidebar_input_focused("chat-api-endpoint") || self.is_sidebar_input_focused("chat-api-key") {
                 self.save_sidebar_settings();
                 return true;
             }

@@ -36,10 +36,20 @@ pub struct SidebarRenderState<'a> {
     pub effort: &'a str,
     pub custom_presets: &'a [crate::chat::AgentPreset],
     pub model_options: &'a [crate::chat::ModelOption],
+    /// Model list fetch in flight (agy CLI or API endpoint).
     pub agy_models_loading: bool,
+    /// Why the API endpoint's model list could not be fetched (presets shown instead).
+    pub models_error: Option<&'a str>,
+    /// Model IDs the user added by hand for this provider (removable with ×).
+    pub custom_models: &'a [String],
+    /// API providers only: `(estimated tokens the next request carries, context window)`.
+    pub context: Option<(u32, u32)>,
+    /// Conversation compaction (summary request) in flight.
+    pub compacting: bool,
+    /// Enough uncompacted turns to be worth summarizing.
+    pub can_compact: bool,
     pub can_retry: bool,
     pub api_endpoint: &'a str,
-    pub api_model: &'a str,
     pub has_api_key: bool,
     pub draft: &'a str,
     /// Masked saved-key hint (`"••••••Ab12"`), never the secret itself.
@@ -118,14 +128,33 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surf
 .sb-hbtn:active { background: var(--press); }
 .sb-hbtn.on { background: var(--surface-3); color: var(--text); }
 
-/* ── Settings card ── */
+/* ── Header tabs ── */
+.sb-tabs { display: flex; align-items: center; gap: 2px; padding: 2px; border-radius: 10px; background: var(--surface-3); }
+.sb-tab {
+  display: inline-flex; align-items: center; height: 26px; padding: 0 11px; border-radius: 8px;
+  font-size: 12px; font-weight: 600; color: var(--text-2); white-space: nowrap;
+}
+.sb-tab:hover { color: var(--text); }
+.sb-tab.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow-xs); }
+
+/* ── Settings tab (fills the sidebar body) ── */
 .sb-settings {
-  flex: 0 1 auto; min-height: 0; max-height: calc(100% - 150px); overflow-y: auto;
-  margin: 8px 10px 4px; padding: 4px 12px 12px; border-radius: 14px;
-  border: 1px solid var(--border-strong); background: var(--surface);
-  box-shadow: var(--shadow-md);
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 2px 16px 20px; background: var(--surface);
   display: flex; flex-direction: column;
 }
+.key-wrap { position: relative; }
+.key-mask {
+  position: absolute; left: 11px; right: 10px; top: 0; height: 32px; line-height: 32px;
+  font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; pointer-events: none;
+}
+.key-mask .key-ph { color: var(--text-3); }
+.mdl-list {
+  display: flex; flex-direction: column; gap: 2px; max-height: 280px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 10px; padding: 3px;
+}
+.mdl-del { padding: 0 6px; color: var(--text-3); font-size: 14px; }
+.mdl-del:hover { color: var(--danger); }
 .set-sec { padding: 10px 0; border-bottom: 1px solid var(--divider); display: flex; flex-direction: column; gap: 6px; }
 .set-sec:last-child { border-bottom: none; padding-bottom: 2px; }
 .set-lbl { font-size: 10.5px; font-weight: 700; color: var(--text-2); letter-spacing: 0.01em; }
@@ -289,7 +318,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surf
   padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; color: var(--text-3);
 }
 .chat-copy:hover { background: var(--hover); color: var(--text); }
-.sel-hint { font-size: 10.5px; color: var(--text-3); margin-left: auto; padding-right: 4px; }
 
 .msg-a.err {
   padding: 11px 13px; border-radius: 12px;
@@ -444,6 +472,19 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surf
 .send-btn:hover { opacity: 0.85; }
 .send-btn.stop { background: var(--danger); color: #ffffff; }
 .comp-hint { padding: 5px 6px 0; font-size: 10px; color: var(--text-3); text-align: center; }
+.ctx-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; text-align: left; }
+.ctx-meter { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.ctx-meter.warn { color: #d97706; }
+.ctx-meter.full { color: var(--danger); }
+.ctx-compact { padding: 2px 8px; border-radius: 999px; font-weight: 600; color: var(--text-2); background: var(--surface-2); white-space: nowrap; }
+.ctx-compact:hover { background: var(--hover); color: var(--text); }
+.ctx-compact.busy { opacity: 0.6; }
+.sum-card {
+  margin: 4px 0 2px; padding: 10px 12px; border-radius: 12px;
+  border: 1px dashed var(--border-strong); background: var(--surface-2);
+}
+.sum-hdr { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; color: var(--text-2); margin-bottom: 6px; }
+.sum-hdr span:last-child { font-weight: 500; color: var(--text-3); }
 
 /* ── Motion ── */
 .sb-shell.rb-in { animation: rb-slide-l 120ms var(--ease-out) both; }
@@ -514,24 +555,17 @@ fn render_settings_card(h: &mut String, state: &SidebarRenderState<'_>) {
     }
     h.push_str("</div></div>");
 
-    // Connection first: these inputs and the 저장 button used to sit below the card's fold.
+    // Connection first (API: endpoint + key; CLI: login + effort).
     if state.provider.is_cli() {
         let _ = write!(
             h,
-            r#"<div class="set-sec">
-  <div class="set-lbl">사용자 지정 모델 ID (비워두면 기본 모델)</div><input id="chat-api-model" class="set-inp" type="text" value="{model}" placeholder="예: gemini-4-neon-high / sonnet / o4-mini" />
-  <div class="set-row">
-    <span class="set-note">{hint}</span>
-    <div class="set-btns"><div class="sbtn" data-action="chat-open-login">터미널 로그인</div><div class="sbtn primary" data-action="chat-save-settings">적용</div></div>
-  </div>
-</div>"#,
-            model = html_escape(state.api_model),
+            r#"<div class="set-sec"><div class="set-lbl">연결</div><div class="set-row"><span class="set-note">{hint}</span><div class="set-btns"><div class="sbtn" data-action="chat-open-login">터미널 로그인</div></div></div></div>"#,
             hint = html_escape(state.provider.login_hint()),
         );
         // Only the Gemini (`agy`) and Claude CLI agents accept an `--effort` flag.
         if matches!(
             state.provider,
-            crate::chat::ChatProvider::Agy | crate::chat::ChatProvider::Claude
+            crate::chat::ChatProvider::Agy | crate::chat::ChatProvider::Claude | crate::chat::ChatProvider::Muse
         ) {
             h.push_str(r#"<div class="set-sec"><div class="set-lbl">Effort (추론 강도 · 자동은 제어 모드에서 낮음)</div><div class="set-chips">"#);
             for (id, lbl) in [("", "자동"), ("low", "낮음"), ("medium", "중간"), ("high", "높음")] {
@@ -547,14 +581,11 @@ fn render_settings_card(h: &mut String, state: &SidebarRenderState<'_>) {
     } else {
         let (key_lbl, key_ph): (String, &str) = if state.has_api_key {
             (
-                format!("API Key · 저장됨 {} (바꾸려면 새 키 입력)", state.api_key_hint),
-                "새 키 입력 (입력값은 화면에 표시되지 않음)",
+                format!("API Key · 저장됨 {}", state.api_key_hint),
+                "바꾸려면 새 키 입력",
             )
         } else {
-            (
-                "API Key (입력값은 화면에 표시되지 않음 · 로컬 Ollama는 비워두기)".to_string(),
-                "sk-...",
-            )
+            ("API Key (로컬 Ollama는 비워두기)".to_string(), "sk-...")
         };
         let clear_key_btn = if state.has_api_key {
             r#"<div class="sbtn danger" data-action="chat-clear-key">키 삭제</div>"#
@@ -562,98 +593,92 @@ fn render_settings_card(h: &mut String, state: &SidebarRenderState<'_>) {
             ""
         };
         let conn_row = match state.api_conn {
-            Some((true, msg)) => format!(
-                r#"<div class="set-row"><span class="set-note"><span class="pdot ok"></span> {}</span></div>"#,
-                html_escape(msg),
-            ),
-            Some((false, msg)) => format!(
-                r#"<div class="set-row"><span class="set-note"><span class="pdot off"></span> {}</span></div>"#,
+            Some((ok, msg)) => format!(
+                r#"<div class="set-row"><span class="set-note"><span class="pdot {}"></span> {}</span></div>"#,
+                if ok { "ok" } else { "off" },
                 html_escape(msg),
             ),
             None => String::new(),
         };
+        // Blitz draws `type=password` text in the clear: the input text is transparent and
+        // `#chat-api-key-dots` (kept in sync by the app) shows one dot per character.
         let _ = write!(
             h,
             r#"<div class="set-sec">
   <div class="set-lbl">Endpoint URL (Ollama: http://localhost:11434/v1/chat/completions)</div><input id="chat-api-endpoint" class="set-inp" type="text" value="{ep}" />
-  <div class="set-lbl">Model</div><input id="chat-api-model" class="set-inp" type="text" value="{model}" />
-  <div class="set-lbl">{key_lbl}</div><input id="chat-api-key" class="set-inp secret" type="password" value="" placeholder="{key_ph}" />
+  <div class="set-lbl">{key_lbl}</div><div class="key-wrap"><input id="chat-api-key" class="set-inp secret" type="password" value="" placeholder="" /><div class="key-mask"><span id="chat-api-key-ph" class="key-ph">{key_ph}</span><span id="chat-api-key-dots"></span></div></div>
   <div class="set-row">
-    <span class="set-note">{hint}</span>
+    <span class="set-note">저장하면 연결을 확인하고 쓸 수 있는 모델을 불러옵니다.</span>
     <div class="set-btns">{clear_key_btn}<div class="sbtn" data-action="chat-test-connection">연결 테스트</div><div class="sbtn primary" data-action="chat-save-settings">저장</div></div>
   </div>
 {conn_row}</div>"#,
             ep = html_escape(state.api_endpoint),
-            model = html_escape(state.api_model),
             key_lbl = html_escape(&key_lbl),
             key_ph = html_escape(key_ph),
-            hint = html_escape(state.provider.login_hint()),
-            conn_row = conn_row,
         );
-
-        // User-registered models sharing this endpoint: chips with × to remove,
-        // plus an input row to add another model ID.
-        let base_ids: std::collections::BTreeSet<String> = crate::chat::preset_models(state.provider, &[])
-            .into_iter()
-            .map(|o| o.id)
-            .collect();
-        let customs: Vec<&crate::chat::ModelOption> = state
-            .model_options
-            .iter()
-            .filter(|o| !o.id.is_empty() && !base_ids.contains(&o.id))
-            .collect();
-        h.push_str(r#"<div class="set-sec"><div class="set-lbl">직접 추가한 모델 (같은 endpoint에 여러 개)</div>"#);
-        if !customs.is_empty() {
-            h.push_str(r#"<div class="set-chips">"#);
-            for opt in &customs {
-                let _ = write!(
-                    h,
-                    r#"<div class="set-chip"><span>{lbl}</span><span style="margin-left:4px;opacity:0.7" data-action="chat-custom-model-del:{id}" title="삭제">×</span></div>"#,
-                    lbl = html_escape(&opt.label),
-                    id = html_escape(&opt.id),
-                );
-            }
-            h.push_str("</div>");
-        }
-        h.push_str(r#"<div style="display:flex;gap:5px;align-items:center"><input id="chat-custom-model" class="set-inp" style="flex:1" type="text" value="" placeholder="추가할 모델 ID (예: inkling-2-mini)" /><div class="sbtn" data-action="chat-custom-model-add">추가</div></div><div class="set-note">같은 endpoint에서 쓰는 모델을 여러 개 등록하고 모델 선택에서 고르세요.</div></div>"#);
     }
+
+    // Model: one list of what this provider can run (fetched from the endpoint / agy when
+    // possible); click selects. IDs missing from the list are added below and selected at once.
+    let refresh = if state.agy_models_loading {
+        r#"<span class="sheet-tag">불러오는 중…</span>"#.to_string()
+    } else if state.provider == crate::chat::ChatProvider::Agy || !state.provider.is_cli() {
+        format!(
+            r#"<div class="sheet-act" data-action="chat-refresh-models">{}<span>새로고침</span></div>"#,
+            svg(Icon::Reload, 10)
+        )
+    } else {
+        String::new()
+    };
+    let _ = write!(
+        h,
+        r#"<div class="set-sec"><div class="set-lbl-row"><span class="set-lbl">모델</span>{refresh}</div>"#,
+    );
+    if let Some(err) = state.models_error {
+        let _ = write!(
+            h,
+            r#"<div class="set-note">모델 목록을 불러오지 못해 기본 목록을 표시합니다 · {}</div>"#,
+            html_escape(&truncate_chars(err, 90)),
+        );
+    }
+    let chk = svg(Icon::Check, 13);
+    h.push_str(r#"<div class="mdl-list">"#);
+    for opt in state.model_options {
+        let is_act = opt.id == state.active_model_id;
+        let row_cls = if is_act { "sheet-row active" } else { "sheet-row" };
+        let sub = if !opt.id.is_empty() && opt.id != opt.label {
+            format!(r#"<span class="sheet-sub">{}</span>"#, html_escape(&opt.id))
+        } else {
+            String::new()
+        };
+        let del = if state.custom_models.iter().any(|m| m == &opt.id) {
+            format!(
+                r#"<span class="mdl-del" data-action="chat-custom-model-del:{}" title="목록에서 삭제">×</span>"#,
+                html_escape(&opt.id)
+            )
+        } else {
+            String::new()
+        };
+        let right = if is_act {
+            format!(r#"<span class="sheet-chk">{chk}</span>"#)
+        } else {
+            String::new()
+        };
+        let _ = write!(
+            h,
+            r#"<div class="{row_cls}" data-action="chat-model:{id}"><div class="sheet-row-l"><div class="sheet-row-txt"><span class="sheet-name">{lbl}</span>{sub}</div></div>{del}{right}</div>"#,
+            id = html_escape(&opt.id),
+            lbl = html_escape(&opt.label),
+        );
+    }
+    h.push_str("</div>");
+    h.push_str(r#"<div style="display:flex;gap:5px;align-items:center"><input id="chat-custom-model" class="set-inp" style="flex:1" type="text" value="" placeholder="목록에 없는 모델 ID 직접 입력" /><div class="sbtn" data-action="chat-custom-model-add">추가</div></div></div>"#);
 
     let _ = write!(
         h,
         r#"<div class="set-sec"><div class="set-lbl">글자 크기</div><div class="font-row"><div class="font-step" data-action="chat-font:dec" title="작게">−</div><span class="font-val">{fs}px</span><div class="font-step" data-action="chat-font:inc" title="크게">+</div><div class="font-step" data-action="chat-font:reset" title="기본 크기">기본</div><span class="font-prev" style="font-size:{fs}px">가나다 Abc</span></div></div>"#,
         fs = state.font_size,
     );
-
-    let set_refresh = if state.provider == crate::chat::ChatProvider::Agy {
-        if state.agy_models_loading {
-            r#"<span class="sheet-tag">불러오는 중…</span>"#.to_string()
-        } else {
-            format!(
-                r#"<div class="sheet-act" data-action="chat-refresh-models">{}<span>새로고침</span></div>"#,
-                svg(Icon::Reload, 10)
-            )
-        }
-    } else {
-        String::new()
-    };
-    let _ = write!(
-        h,
-        r#"<div class="set-sec"><div class="set-lbl-row"><span class="set-lbl">모델 프리셋</span>{set_refresh}</div><div class="set-chips">"#,
-    );
-    for opt in state.model_options {
-        let cls = if opt.id == state.active_model_id {
-            "set-chip active"
-        } else {
-            "set-chip"
-        };
-        let _ = write!(
-            h,
-            r#"<div class="{cls}" data-action="chat-model:{id}">{lbl}</div>"#,
-            id = html_escape(&opt.id),
-            lbl = html_escape(&opt.label),
-        );
-    }
-    h.push_str("</div></div>");
 
     h.push_str(r#"<div class="set-sec"><div class="set-lbl">브라우저 제어용 빠른 모델</div><div class="set-chips">"#);
     let ctrl_same_cls = if state.control_model_id.is_empty() {
@@ -701,6 +726,44 @@ fn render_settings_card(h: &mut String, state: &SidebarRenderState<'_>) {
         r#"<div style="display:flex;gap:5px;align-items:center"><input id="chat-preset-title" class="set-inp" style="flex:0 0 110px" type="text" value="" placeholder="이름" /><input id="chat-preset-prompt" class="set-inp" style="flex:1" type="text" value="" placeholder="실행할 지시 내용" /><div class="sbtn" data-action="chat-preset-add">추가</div></div><div class="set-note">이름과 지시 내용을 입력하고 추가하면 빈 대화 화면에 실행 카드로 나타납니다.</div></div>"#,
     );
     h.push_str("</div>");
+}
+
+fn fmt_tokens(n: u32) -> String {
+    match n {
+        1_000_000.. => format!("{:.1}M", n as f32 / 1_000_000.0),
+        1_000.. => format!("{:.1}k", n as f32 / 1_000.0),
+        _ => n.to_string(),
+    }
+}
+
+/// Under the composer: the API context meter + 대화 압축, or the key hint for CLI agents
+/// (they keep their own context).
+fn context_row(state: &SidebarRenderState<'_>) -> String {
+    let Some((used, max)) = state.context else {
+        return r#"<div class="comp-hint">Enter 전송 · Shift+Enter 줄바꿈</div>"#.to_string();
+    };
+    let pct = (used as u64 * 100 / max.max(1) as u64).min(100) as u32;
+    let lvl = match pct {
+        90.. => " full",
+        70.. => " warn",
+        _ => "",
+    };
+    let dash = 37.7 * pct as f32 / 100.0;
+    let ring = format!(
+        r#"<svg width="12" height="12" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-opacity="0.25" stroke-width="2.5"/><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-dasharray="{dash:.1} 37.7" transform="rotate(-90 8 8)"/></svg>"#
+    );
+    let btn = if state.compacting {
+        r#"<span class="ctx-compact busy">압축 중…</span>"#
+    } else if state.can_compact && !state.is_loading {
+        r#"<span class="ctx-compact" data-action="chat-compact" title="지금까지의 대화를 요약해 컨텍스트를 비웁니다">대화 압축</span>"#
+    } else {
+        ""
+    };
+    format!(
+        r#"<div class="comp-hint ctx-row"><span class="ctx-meter{lvl}" title="다음 요청에 실릴 대화 추정치 (페이지 본문 제외) · 한글 기준 대략치">{ring}<span>컨텍스트 {} / {} · {pct}%</span></span>{btn}</div>"#,
+        fmt_tokens(used),
+        fmt_tokens(max),
+    )
 }
 
 fn render_history_panel(h: &mut String, state: &SidebarRenderState<'_>) {
@@ -809,6 +872,7 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
     h.push_str(SIDEBAR_CSS);
     let _ = write!(h, ":root {{ --chat-fs: {}px; }}", state.font_size);
     let on = |b: bool| if b { "sb-hbtn on" } else { "sb-hbtn" };
+    let tab = |b: bool| if b { "sb-tab on" } else { "sb-tab" };
     let mode_badge = if state.agent_control {
         r#"<span class="sb-mode-pill"><span class="pdot ok"></span><span>제어</span></span>"#
     } else {
@@ -818,24 +882,21 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
         h,
         r#"</style></head><body><div class="sb-shell{shell_cls}"{shell_style}>
 <div class="sb-hdr">
-  <div class="sb-title"><span class="sb-title-ico">{spark}</span><span class="sb-title-txt">AI Assistant</span>{mode_badge}</div>
+  <div class="sb-title"><span class="sb-title-ico">{spark}</span><div class="sb-tabs"><div class="{chat_tab}" data-action="chat-tab:chat">대화</div><div class="{hist_tab}" data-action="chat-tab:history">기록</div><div class="{set_tab}" data-action="chat-tab:settings">설정</div></div>{mode_badge}</div>
   <div class="sb-acts">
     <div class="sb-hbtn" data-action="chat-clear" title="새 대화">{plus}</div>
-    <div class="{hist_cls}" data-action="chat-toggle-history" title="대화 기록">{hist}</div>
     <div class="{width_cls}" data-action="chat-toggle-width" title="사이드바 폭 전환 (경계 드래그로도 조절)">{width_ico}</div>
-    <div class="{settings_cls}" data-action="chat-toggle-settings" title="모델 / API / 글자 크기 설정">{sliders}</div>
     <div class="sb-hbtn" data-action="toggle-sidebar" title="닫기 (Ctrl+Shift+I)">{close}</div>
   </div>
 </div>"#,
         spark = svg(Icon::Sparkles, 13),
         plus = svg(Icon::Plus, 14),
-        hist = svg(Icon::History, 14),
         width_ico = svg(Icon::MoveHorizontal, 13),
-        sliders = svg(Icon::Sliders, 13),
         close = svg(Icon::Close, 12),
-        hist_cls = on(state.show_history),
+        chat_tab = tab(!state.show_history && !state.show_settings),
+        hist_tab = tab(state.show_history),
+        set_tab = tab(state.show_settings),
         width_cls = on(state.sidebar_wide),
-        settings_cls = on(state.show_settings),
         shell_cls = enter_attrs(state.motion.shell_ms, ENTER_WINDOW_MS).0,
         shell_style = enter_attrs(state.motion.shell_ms, ENTER_WINDOW_MS).1,
     );
@@ -844,7 +905,16 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
         render_settings_card(&mut h, state);
     }
 
-    h.push_str(r#"<div id="chat-messages" class="sb-msgs">"#);
+    // The message list stays in the DOM (hidden) on the settings tab so its scroll survives.
+    let _ = write!(
+        h,
+        r#"<div id="chat-messages" class="sb-msgs"{}>"#,
+        if state.show_settings {
+            r#" style="display:none""#
+        } else {
+            ""
+        }
+    );
     let is_internal = state.active_url.starts_with("rust://");
     if state.show_history {
         render_history_panel(&mut h, state);
@@ -918,13 +988,8 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
                         } else {
                             String::new()
                         };
-                        let hint = if Some(idx) == last_assistant {
-                            r#"<span class="sel-hint">드래그해서 일부만 선택 → Ctrl+C</span>"#
-                        } else {
-                            ""
-                        };
                         format!(
-                            r#"<div class="msg-a-ftr"><span class="chat-copy" data-action="chat-copy-msg:{idx}" title="답변 전체 복사">{copy_svg}<span>복사</span></span>{regen}{hint}</div>"#
+                            r#"<div class="msg-a-ftr"><span class="chat-copy" data-action="chat-copy-msg:{idx}" title="답변 전체 복사">{copy_svg}<span>복사</span></span>{regen}</div>"#
                         )
                     };
                     let tag = msg.provider_label.as_deref().unwrap_or("AI");
@@ -938,6 +1003,14 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
                         h,
                         r#"<div class="msg-a{enter_cls}"{enter_style}><div class="msg-a-hdr"><span class="msg-a-ico">{spark_mini}</span><span class="msg-a-tag">{tag}</span></div><div class="msg-body">{body_html}</div>{footer}</div>"#,
                         tag = html_escape(tag),
+                    );
+                }
+                crate::chat::ChatRole::Summary => {
+                    let _ = write!(
+                        h,
+                        r#"<div class="sum-card{enter_cls}"{enter_style}><div class="sum-hdr">{ico}<span>이전 대화 요약</span><span>· 이후 요청엔 이 요약과 새 대화만 전달</span></div><div class="msg-body">{body}</div></div>"#,
+                        ico = svg(Icon::BookOpen, 12),
+                        body = crate::chat::render_markdown_to_html(&msg.text, &mut code_blocks),
                     );
                 }
                 crate::chat::ChatRole::Error => {
@@ -1096,7 +1169,7 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
             }
             let _ = write!(
                 h,
-                r#"</div><div class="sheet-ftr" data-action="chat-toggle-settings"><span>직접 모델명 입력</span>{}</div></div>"#,
+                r#"</div><div class="sheet-ftr" data-action="chat-tab:settings"><span>모델 추가 · 설정</span>{}</div></div>"#,
                 svg(Icon::ChevronRight, 12),
             );
         }
@@ -1165,7 +1238,7 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
     let input_h = chat_input_height(state.draft.split('\n').count());
     let _ = write!(
         h,
-        r#"<div class="sb-comp">
+        r#"<div class="sb-comp"{comp_style}>
   <div class="composer">
     <textarea id="chat-input" rows="1" style="height:{input_h}px" placeholder="무엇이든 물어보세요…">{draft}</textarea>
     <div class="comp-bar">
@@ -1178,10 +1251,17 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
       {send_btn}
     </div>
   </div>
-  <div class="comp-hint">Enter 전송 · Shift+Enter 줄바꿈</div>
+  {hint_row}
 </div>
 </div></body></html>"#,
         draft = html_escape(state.draft),
+        hint_row = context_row(state),
+        // Hidden (not removed) off the chat tab so the typed draft survives tab switches.
+        comp_style = if state.show_settings || state.show_history {
+            r#" style="display:none""#
+        } else {
+            ""
+        },
         prov_lbl = html_escape(state.provider.short_label()),
         mod_lbl = html_escape(&truncate_chars(state.active_model_label, 15)),
     );

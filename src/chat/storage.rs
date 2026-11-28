@@ -350,6 +350,9 @@ pub enum ChatRole {
     User,
     Assistant,
     Error,
+    /// Compacted summary of everything before it: API requests send this summary
+    /// plus only the messages after the newest one (the UI still shows them all).
+    Summary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

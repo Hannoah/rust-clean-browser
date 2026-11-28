@@ -142,7 +142,7 @@ pub(super) const THEME_CSS: &str = r#"
 }
 * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
 body {
-  font-family: "Pretendard Variable", "Pretendard", "Segoe UI Variable Text", "Segoe UI", -apple-system, "SF Pro Text", "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif;
+  font-family: "KoPubWorldDotum", "KoPubWorld돋움체", "KoPubWorldDotum Medium", "KoPub Dotum", "Pretendard Variable", "Pretendard", "Segoe UI Variable Text", "Segoe UI", -apple-system, "SF Pro Text", "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif;
   color: var(--text);
   cursor: default;
   line-height: 1.45;
@@ -1451,6 +1451,11 @@ mod tests {
             }],
             model_options: &model_options,
             agy_models_loading: false,
+            models_error: None,
+            custom_models: &[],
+            context: None,
+            compacting: false,
+            can_compact: false,
             messages: &messages,
             is_loading: false,
             can_retry: true,
@@ -1463,7 +1468,6 @@ mod tests {
             active_title: "Rust",
             active_url: "https://www.rust-lang.org/",
             api_endpoint: "",
-            api_model: "sonnet",
             has_api_key: true,
             draft: "질문",
             font_size: 13,
@@ -1512,9 +1516,11 @@ mod tests {
             },
         );
         doc.resolve(0.0);
-        let inp = doc.get_element_by_id("chat-input").expect("chat-input");
-        let sz = doc.get_node(inp).unwrap().final_layout().size;
-        assert!(sz.width > 120.0 && sz.height >= 24.0, "chat-input={sz:?}");
+        // Settings tab fills the body; the composer stays in the DOM (hidden) to keep the draft.
+        assert!(doc.get_element_by_id("chat-input").is_some());
+        let set = doc.get_element_by_id("chat-settings").expect("chat-settings");
+        let sz = doc.get_node(set).unwrap().final_layout().size;
+        assert!(sz.width > 300.0 && sz.height > 400.0, "chat-settings={sz:?}");
 
         let (loading_html, _) = render_sidebar_html(&SidebarRenderState {
             provider: crate::chat::ChatProvider::Claude,
@@ -1530,6 +1536,11 @@ mod tests {
             custom_presets: &[],
             model_options: &model_options,
             agy_models_loading: false,
+            models_error: None,
+            custom_models: &[],
+            context: None,
+            compacting: false,
+            can_compact: false,
             messages: &messages,
             is_loading: true,
             can_retry: false,
@@ -1542,7 +1553,6 @@ mod tests {
             active_title: "Rust",
             active_url: "https://www.rust-lang.org/",
             api_endpoint: "",
-            api_model: "sonnet",
             has_api_key: false,
             draft: "",
             font_size: 13,
@@ -1579,6 +1589,11 @@ mod tests {
             custom_presets: &[],
             model_options: &[],
             agy_models_loading: false,
+            models_error: None,
+            custom_models: &[],
+            context: None,
+            compacting: false,
+            can_compact: false,
             messages: &evil_err,
             is_loading: false,
             can_retry: false,
@@ -1591,7 +1606,6 @@ mod tests {
             active_title: "t",
             active_url: "rust://home",
             api_endpoint: "",
-            api_model: "",
             has_api_key: false,
             draft: "",
             font_size: 13,
@@ -1742,6 +1756,11 @@ mod motion_tests {
                 custom_presets: &[],
                 model_options: &model_options,
                 agy_models_loading: false,
+                models_error: None,
+                custom_models: &[],
+                context: None,
+                compacting: false,
+                can_compact: false,
                 messages: &[],
                 is_loading: false,
                 can_retry: false,
@@ -1754,7 +1773,6 @@ mod motion_tests {
                 active_title: "t",
                 active_url: "https://e.test",
                 api_endpoint: "https://api.example.com/v1/chat/completions",
-                api_model: "gpt-4o-mini",
                 has_api_key,
                 draft: "",
                 font_size: 13,
@@ -1803,6 +1821,11 @@ mod motion_tests {
                 custom_presets: &[],
                 model_options: &model_options,
                 agy_models_loading: false,
+                models_error: None,
+                custom_models: &[],
+                context: None,
+                compacting: false,
+                can_compact: false,
                 messages: &[],
                 is_loading: false,
                 can_retry: false,
@@ -1815,7 +1838,6 @@ mod motion_tests {
                 active_title: "t",
                 active_url: url,
                 api_endpoint: "",
-                api_model: "",
                 has_api_key: false,
                 draft: "",
                 font_size: 13,

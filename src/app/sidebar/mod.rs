@@ -124,7 +124,6 @@ impl BrowserApp {
         };
         Self::is_input_composing(doc, "chat-input")
             || Self::is_input_composing(doc, "chat-api-endpoint")
-            || Self::is_input_composing(doc, "chat-api-model")
             || Self::is_input_composing(doc, "chat-api-key")
             || Self::is_input_composing(doc, "chat-custom-model")
             || Self::is_input_composing(doc, "chat-preset-title")
@@ -235,8 +234,63 @@ impl BrowserApp {
         }
     }
 
+    /// Fetches the active provider's real model list (agy CLI or API endpoint).
+    pub(super) fn maybe_fetch_models(&mut self, force: bool) {
+        let provider = self.chat_config.provider;
+        if provider == ChatProvider::Agy {
+            self.maybe_fetch_agy_models(force);
+            return;
+        }
+        if provider.is_cli() || self.api_models_loading || (!force && self.api_models.contains_key(&provider)) {
+            return;
+        }
+        self.api_models_loading = true;
+        let config = self.chat_config.clone();
+        let bus = self.bus.clone();
+        tokio::spawn(async move {
+            let result = crate::chat::fetch_api_models(&config).await;
+            bus.send(AppEvent::ApiModelsLoaded { provider, result });
+        });
+        if self.sidebar_open {
+            self.last_sidebar_html.clear();
+            self.rebuild_sidebar(false);
+        }
+    }
+
+    pub(super) fn on_api_models_loaded(&mut self, provider: ChatProvider, result: Result<Vec<ModelOption>, String>) {
+        self.api_models_loading = false;
+        self.api_models.insert(provider, result);
+        if self.sidebar_open {
+            self.last_sidebar_html.clear();
+            self.rebuild_sidebar(false);
+        }
+    }
+
+    /// `true` while the active provider's model list is being fetched.
+    fn models_loading(&self) -> bool {
+        if self.chat_config.provider == ChatProvider::Agy {
+            self.agy_models_loading
+        } else {
+            self.api_models_loading
+        }
+    }
+
+    /// Error from the last API model listing (presets are shown instead).
+    fn models_error(&self) -> Option<&str> {
+        match self.api_models.get(&self.chat_config.provider) {
+            Some(Err(e)) if !self.chat_config.provider.is_cli() => Some(e.as_str()),
+            _ => None,
+        }
+    }
+
     fn current_model_options(&self) -> Vec<ModelOption> {
-        let mut opts = preset_models(self.chat_config.provider, &self.agy_models);
+        let provider = self.chat_config.provider;
+        // A successful listing from the endpoint replaces the hard-coded presets:
+        // only models this key can actually use are offered.
+        let mut opts = match self.api_models.get(&provider) {
+            Some(Ok(list)) if !provider.is_cli() => list.clone(),
+            _ => preset_models(provider, &self.agy_models),
+        };
         if !self.chat_config.provider.is_cli() {
             for id in self.chat_config.custom_models_for(self.chat_config.provider) {
                 if !opts.iter().any(|o| o.id == id) {
@@ -350,7 +404,6 @@ impl BrowserApp {
         let focused_input_id = [
             "chat-input",
             "chat-api-endpoint",
-            "chat-api-model",
             "chat-api-key",
             "chat-custom-model",
             "chat-preset-title",
@@ -363,7 +416,6 @@ impl BrowserApp {
         // (which 저장/적용 would otherwise write back over the selection).
         let reset_drafts = std::mem::take(&mut self.sidebar_reset_drafts);
         let endpoint_draft = self.read_sidebar_input("chat-api-endpoint").filter(|_| !reset_drafts);
-        let model_draft = self.read_sidebar_input("chat-api-model").filter(|_| !reset_drafts);
         let key_draft = self
             .read_sidebar_input("chat-api-key")
             .filter(|s| !reset_drafts && !s.is_empty());
@@ -378,6 +430,11 @@ impl BrowserApp {
             .filter(|s| !reset_drafts && !s.is_empty());
         let active = &self.tabs[self.active_tab];
         let model_options = self.current_model_options();
+        let custom_models = if self.chat_config.provider.is_cli() {
+            Vec::new()
+        } else {
+            self.chat_config.custom_models_for(self.chat_config.provider)
+        };
         let active_model_id = self.chat_config.selected_model(self.chat_config.provider);
         let active_model_label = display_model_label(self.chat_config.provider, &active_model_id, &self.agy_models);
         // Offer only usable entries: installed CLI binaries, connected (key saved
@@ -396,7 +453,6 @@ impl BrowserApp {
         let api_endpoint = endpoint_draft
             .as_deref()
             .unwrap_or_else(|| self.chat_config.effective_endpoint());
-        let api_model = model_draft.as_deref().unwrap_or(&active_model_id);
         let can_retry = self.chat_inflight.is_none()
             && self.chat_messages.last().is_some_and(|m| m.role == ChatRole::Error)
             && self.chat_messages.iter().any(|m| m.role == ChatRole::User);
@@ -412,7 +468,20 @@ impl BrowserApp {
             effort: &self.chat_config.selected_effort(self.chat_config.provider),
             custom_presets: &self.chat_config.custom_presets,
             model_options: &model_options,
-            agy_models_loading: self.agy_models_loading,
+            agy_models_loading: self.models_loading(),
+            models_error: self.models_error(),
+            custom_models: &custom_models,
+            context: (!self.chat_config.provider.is_cli())
+                .then(|| crate::chat::api_context_usage(&self.chat_config, &self.chat_messages)),
+            compacting: self.chat_compacting.is_some(),
+            can_compact: self
+                .chat_messages
+                .iter()
+                .rev()
+                .take_while(|m| m.role != ChatRole::Summary)
+                .filter(|m| matches!(m.role, ChatRole::User | ChatRole::Assistant))
+                .count()
+                >= 2,
             messages: &self.chat_messages,
             is_loading: self.chat_inflight.is_some(),
             can_retry,
@@ -425,7 +494,6 @@ impl BrowserApp {
             active_title: &active.title,
             active_url: &active.url,
             api_endpoint,
-            api_model,
             has_api_key: !self.chat_config.effective_api_key().is_empty(),
             api_key_hint: &self.chat_config.masked_api_key_hint(),
             api_conn: match &self.api_conn {
@@ -499,6 +567,7 @@ impl BrowserApp {
                 }
             }
         }
+        self.sync_key_mask();
         if let Some(fid) = focused_input_id {
             self.focus_sidebar_input_inner(fid, false);
             if let Some(doc) = &mut self.sidebar_doc
@@ -714,6 +783,28 @@ impl BrowserApp {
         }
     }
 
+    /// Blitz draws `type=password` text in the clear, so the key input's text is transparent
+    /// and this overlay shows one dot per typed character (or the placeholder when empty).
+    pub(super) fn sync_key_mask(&mut self) {
+        let Some(len) = self.read_sidebar_input("chat-api-key").map(|s| s.chars().count()) else {
+            return;
+        };
+        let anim_time = self.anim_time();
+        let Some(doc) = &mut self.sidebar_doc else {
+            return;
+        };
+        let (Some(dots), Some(ph)) = (
+            doc.get_element_by_id("chat-api-key-dots"),
+            doc.get_element_by_id("chat-api-key-ph"),
+        ) else {
+            return;
+        };
+        doc.mutate().set_inner_html(dots, &"•".repeat(len.min(64)));
+        doc.set_style_property(ph, "display", if len == 0 { "inline" } else { "none" });
+        doc.resolve(anim_time);
+        self.request_redraw();
+    }
+
     /// Grows the chat textarea with its content (Shift+Enter lines), up to `MAX_INPUT_LINES`.
     ///
     /// The editor scroll is pinned back to the top after growing: Blitz keeps the
@@ -723,14 +814,28 @@ impl BrowserApp {
         let Some(text) = self.read_sidebar_input("chat-input") else {
             return;
         };
-        let lines = text.split('\n').count().clamp(1, MAX_INPUT_LINES);
+        let anim_time = self.anim_time();
+        let Some(doc) = &mut self.sidebar_doc else {
+            return;
+        };
+        let Some(id) = doc.get_element_by_id("chat-input") else {
+            return;
+        };
+        // Visual lines from the editor's own layout, so soft-wrapped text grows the box
+        // too (counting only '\n' left the first wrapped line scrolled out of view).
+        doc.resolve(anim_time);
+        let wrapped = doc
+            .get_node(id)
+            .and_then(|n| n.element_data())
+            .and_then(|el| el.text_input_data())
+            .and_then(|ti| ti.editor.try_layout().map(|l| l.len()));
+        let lines = wrapped
+            .unwrap_or_else(|| text.split('\n').count())
+            .clamp(1, MAX_INPUT_LINES);
         if lines == self.chat_input_lines {
             return;
         }
         self.chat_input_lines = lines;
-        let anim_time = self.anim_time();
-        if let Some(doc) = &mut self.sidebar_doc
-            && let Some(id) = doc.get_element_by_id("chat-input")
         {
             doc.set_style_property(
                 id,
@@ -822,9 +927,13 @@ mod tests {
             custom_presets: &[],
             model_options: &opts,
             agy_models_loading: false,
+            models_error: None,
+            custom_models: &[],
+            context: None,
+            compacting: false,
+            can_compact: false,
             can_retry: false,
             api_endpoint: "https://api.openai.com/v1/chat/completions",
-            api_model: "gpt-4o-mini",
             has_api_key: false,
             providers: &[
                 ChatProvider::Agy,
@@ -985,9 +1094,13 @@ mod tests {
             custom_presets: &[],
             model_options: &opts,
             agy_models_loading: false,
+            models_error: None,
+            custom_models: &[],
+            context: None,
+            compacting: false,
+            can_compact: false,
             can_retry: false,
             api_endpoint: "",
-            api_model: "",
             has_api_key: false,
             providers: &[ChatProvider::Claude],
             api_key_hint: "",
@@ -1066,9 +1179,13 @@ mod tests {
             custom_presets: &[],
             model_options: &opts,
             agy_models_loading: false,
+            models_error: None,
+            custom_models: &[],
+            context: None,
+            compacting: false,
+            can_compact: false,
             can_retry: false,
             api_endpoint: "https://api.openai.com/v1/chat/completions",
-            api_model: "gpt-4o-mini",
             has_api_key: false,
             providers: &[
                 ChatProvider::Agy,
@@ -1159,9 +1276,9 @@ mod tests {
             let rec = Rc::new(RefCell::new(Vec::new()));
             let header_and_composer = [
                 ("chat-clear", r#"[data-action="chat-clear"]"#),
-                ("chat-toggle-history", r#"[data-action="chat-toggle-history"]"#),
+                ("chat-tab:history", r#"[data-action="chat-tab:history"]"#),
                 ("chat-toggle-width", r#"[data-action="chat-toggle-width"]"#),
-                ("chat-toggle-settings", r#"[data-action="chat-toggle-settings"]"#),
+                ("chat-tab:settings", r#"[data-action="chat-tab:settings"]"#),
                 ("toggle-sidebar", r#"[data-action="toggle-sidebar"]"#),
                 ("chat-picker:provider", r#"[data-action="chat-picker:provider"]"#),
                 ("chat-picker:model", r#"[data-action="chat-picker:model"]"#),

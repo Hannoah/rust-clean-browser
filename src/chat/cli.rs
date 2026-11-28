@@ -1049,12 +1049,14 @@ pub(super) fn build_cli_command(bin_path: &Path, args: &[String]) -> Result<Comm
 pub(super) fn run_cli_agent(
     provider: ChatProvider,
     model: &str,
+    effort: &str,
     prompt: &str,
     cancel: &AtomicBool,
 ) -> Result<String, String> {
     let bin_name = match provider {
         ChatProvider::Gemini => "gemini",
         ChatProvider::Codex => "codex",
+        ChatProvider::Muse => "muse",
         _ => return Err("지원되지 않는 CLI 에이전트입니다.".to_string()),
     };
     let Some(bin_path) = find_cli_binary(bin_name) else {
@@ -1071,8 +1073,34 @@ pub(super) fn run_cli_agent(
     let mut args: Vec<String> = match provider {
         ChatProvider::Gemini => vec!["-p".into(), "".into(), "--approval-mode".into(), "plan".into()],
         ChatProvider::Codex => vec!["exec".into(), "--sandbox".into(), "read-only".into()],
+        // `--preset empty`: plain chat, no workspace tools. Effort defaults to low: Muse's
+        // own default (high) makes a short browser question take tens of seconds.
+        ChatProvider::Muse => vec![
+            "exec".into(),
+            "--preset".into(),
+            "empty".into(),
+            "--reasoning-effort".into(),
+            if is_valid_effort(effort) && !effort.is_empty() {
+                effort.into()
+            } else {
+                "low".into()
+            },
+        ],
         _ => Vec::new(),
     };
+    // Muse gets its own dir: the prompt file must never sit in Gemini/Codex's working directory.
+    let cwd = empty_cwd(if provider == ChatProvider::Muse {
+        "muse-cwd"
+    } else {
+        "cli-cwd"
+    });
+    if provider == ChatProvider::Muse {
+        // Muse reads the prompt from an argument or file, not stdin.
+        let file = cwd.join("muse-prompt.txt");
+        std::fs::write(&file, prompt).map_err(|e| format!("프롬프트 파일 쓰기 실패: {e}"))?;
+        args.push("--prompt-file".into());
+        args.push(file.to_string_lossy().into_owned());
+    }
     if !model.is_empty() {
         args.push("--model".into());
         args.push(model.to_string());
@@ -1083,7 +1111,7 @@ pub(super) fn run_cli_agent(
 
     let mut cmd = build_cli_command(&bin_path, &args)?;
     // Gemini/Codex read files in their working directory: start them in an empty one.
-    cmd.current_dir(empty_cwd("cli-cwd"))
+    cmd.current_dir(&cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1142,6 +1170,7 @@ pub(super) fn run_cli_agent(
     drop(job);
 
     let _ = writer.join();
+    let _ = std::fs::remove_file(cwd.join("muse-prompt.txt"));
     let stdout = strip_ansi(&out_reader.join().unwrap_or_default()).trim().to_string();
     let stderr = strip_ansi(&err_reader.join().unwrap_or_default()).trim().to_string();
 
