@@ -29,6 +29,17 @@ impl BrowserApp {
     pub(super) fn handle_main_window_event(&mut self, event_loop: &dyn ActiveEventLoop, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => self.exit_app(event_loop),
+            // Files dragged onto the open AI sidebar become chat attachments.
+            WindowEvent::DragEntered { id, position } => self.on_drag_over(event_loop, id, position),
+            WindowEvent::DragPosition { id, position, .. } => self.on_drag_over(event_loop, id, Some(position)),
+            WindowEvent::DragDropped { id, .. } => {
+                // Win32 answers right away with a `DataTransferReceived` event.
+                let _ = event_loop.fetch_data_transfer(id, &winit::data_transfer::TypeHint::UriList);
+            }
+            WindowEvent::DataTransferReceived { value, .. } => match value.try_as_file_paths() {
+                Ok(paths) => self.attach_chat_files(paths),
+                Err(_) => self.set_status_note("끌어 놓은 항목에서 파일을 찾지 못했습니다"),
+            },
             WindowEvent::Focused(false) => {
                 self.buttons = MouseEventButtons::None;
                 self.sidebar_pressed_action = None;
@@ -939,6 +950,22 @@ impl BrowserApp {
             node_id = node.parent;
         }
         false
+    }
+
+    /// Accepts the drag (copy) only while it is over the open AI sidebar.
+    fn on_drag_over(
+        &self,
+        event_loop: &dyn ActiveEventLoop,
+        id: winit::data_transfer::DataTransferId,
+        position: Option<PhysicalPosition<f64>>,
+    ) {
+        let over_sidebar = position.is_some_and(|p| self.region_at(p) == UiRegion::Sidebar);
+        let actions: &[winit::event_loop::DndAction] = if over_sidebar {
+            &[winit::event_loop::DndAction::Copy]
+        } else {
+            &[]
+        };
+        let _ = event_loop.set_valid_dnd_actions(id, actions);
     }
 
     fn region_at(&self, pos: PhysicalPosition<f64>) -> UiRegion {
