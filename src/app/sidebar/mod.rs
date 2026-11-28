@@ -1015,6 +1015,54 @@ mod tests {
         );
     }
 
+    /// Regression: Blitz hit-testing does not clip to a scroll container, so once the message
+    /// list (or settings panel) was scrolled past the header's height, its scrolled-away content
+    /// "covered" the header and 새 대화 / 기록 / 설정 / 닫기 stopped responding.
+    #[test]
+    fn header_stays_clickable_over_a_scrolled_conversation() {
+        let msgs: Vec<ChatMessage> = (0..40)
+            .map(|i| ChatMessage {
+                role: if i % 2 == 0 {
+                    ChatRole::User
+                } else {
+                    ChatRole::Assistant
+                },
+                text: format!("message {i} with enough text to take up a couple of lines in the sidebar"),
+                page_title: None,
+                provider_label: None,
+            })
+            .collect();
+        for (show_settings, scroller) in [(false, "chat-messages"), (true, "chat-settings")] {
+            let rec = Rc::new(RefCell::new(Vec::new()));
+            let mut doc = sidebar_doc(480, show_settings, &msgs);
+            let id = doc.get_element_by_id(scroller).unwrap();
+            doc.scroll_to(id, 0.0, 1.0e9, ScrollBehavior::Instant);
+            doc.resolve(0.05);
+            assert!(
+                doc.get_node(id).unwrap().scroll_offset().y > 100.0,
+                "{scroller} must scroll"
+            );
+            let actions = ["chat-clear", "chat-tab:history", "chat-tab:settings", "toggle-sidebar"];
+            for a in actions {
+                let pos = center(&doc, &format!(r#"[data-action="{a}"]"#));
+                click(&mut doc, &rec, pos);
+            }
+            assert_eq!(*rec.borrow(), actions, "scrolled {scroller}");
+        }
+        // Mirror case: list scrolled to the top, its overflow sits under the composer.
+        let rec = Rc::new(RefCell::new(Vec::new()));
+        let mut doc = sidebar_doc(480, false, &msgs);
+        let id = doc.get_element_by_id("chat-messages").unwrap();
+        doc.scroll_to(id, 0.0, 0.0, ScrollBehavior::Instant);
+        doc.resolve(0.05);
+        let actions = ["chat-picker:model", "chat-toggle-page", "chat-send"];
+        for a in actions {
+            let pos = center(&doc, &format!(r#"[data-action="{a}"]"#));
+            click(&mut doc, &rec, pos);
+        }
+        assert_eq!(*rec.borrow(), actions, "composer over an unscrolled list");
+    }
+
     /// Regression: `user-select: none` on <body> was inherited by reply text, so dragging never
     /// started a selection and there was nothing to copy.
     #[test]
