@@ -97,6 +97,19 @@ pub enum AgentAction {
     Screenshot,
 }
 
+/// `요소 [10] 클릭` + the element's visible label → `"다음 페이지" 클릭`, so the action log
+/// (shown to the user and fed back to the model) says what was actually clicked.
+pub fn label_action_desc(desc: &str, label: &str) -> String {
+    let label = label.trim();
+    if label.is_empty() {
+        return desc.to_string();
+    }
+    match desc.strip_prefix("요소 [").and_then(|r| r.split_once(']')) {
+        Some((id, rest)) => format!("\"{label}\"[{id}]{rest}"),
+        None => format!("{desc} · \"{label}\""),
+    }
+}
+
 impl AgentAction {
     /// Short tool-style name for the activity cards (`click`, `type`, …).
     pub fn kind(&self) -> &'static str {
@@ -205,7 +218,8 @@ pub fn build_agent_action_js(action: &AgentAction) -> Option<String> {
   var extra='';
   if(el.checked!==undefined&&el.checked!==prevChk)extra=' checked='+el.checked;
   else if(prevExp!==null&&el.getAttribute('aria-expanded')!==prevExp)extra=' expanded='+el.getAttribute('aria-expanded');
-  return JSON.stringify({{ok:true,msg:'clicked [{target}]'+extra}});
+  function lbl(el){{try{{return String(el.innerText||el.value||el.getAttribute('aria-label')||el.placeholder||el.title||el.name||'').replace(/\s+/g,' ').trim().slice(0,40);}}catch(e){{return '';}}}}
+  return JSON.stringify({{ok:true,msg:'clicked [{target}]'+extra,label:lbl(el)}});
 }}catch(e){{return JSON.stringify({{ok:false,msg:String(e)}});}}}})()"#
         )),
         AgentAction::ClickText { text } => {
@@ -298,7 +312,8 @@ pub fn build_agent_action_js(action: &AgentAction) -> Option<String> {
     if(el.form&&typeof el.form.requestSubmit==='function')el.form.requestSubmit();
     else if(el.form)el.form.submit();
   }}
-  return JSON.stringify({{ok:true,msg:'typed into [{target}]'}});
+  function lbl(el){{try{{return String(el.innerText||el.value||el.getAttribute('aria-label')||el.placeholder||el.title||el.name||'').replace(/\s+/g,' ').trim().slice(0,40);}}catch(e){{return '';}}}}
+  return JSON.stringify({{ok:true,msg:'typed into [{target}]',label:lbl(el)}});
 }}catch(e){{return JSON.stringify({{ok:false,msg:String(e)}});}}}})()"#
             ))
         }
@@ -344,7 +359,8 @@ pub fn build_agent_action_js(action: &AgentAction) -> Option<String> {
   el.dispatchEvent(new w.MouseEvent('mouseover',opt));
   el.dispatchEvent(new w.MouseEvent('mouseenter',{{bubbles:false,clientX:opt.clientX,clientY:opt.clientY}}));
   el.dispatchEvent(new w.MouseEvent('mousemove',opt));
-  return JSON.stringify({{ok:true,msg:'hovered [{target}]'}});
+  function lbl(el){{try{{return String(el.innerText||el.value||el.getAttribute('aria-label')||el.placeholder||el.title||el.name||'').replace(/\s+/g,' ').trim().slice(0,40);}}catch(e){{return '';}}}}
+  return JSON.stringify({{ok:true,msg:'hovered [{target}]',label:lbl(el)}});
 }}catch(e){{return JSON.stringify({{ok:false,msg:String(e)}});}}}})()"#
         )),
         AgentAction::Press { key } => {
@@ -820,5 +836,17 @@ pub(super) fn parse_action_value(val: &Value) -> Option<AgentAction> {
                 .to_string(),
         }),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod label_tests {
+    #[test]
+    fn labels_replace_element_numbers() {
+        use super::label_action_desc as l;
+        assert_eq!(l("요소 [10] 클릭", "다음 페이지"), "\"다음 페이지\"[10] 클릭");
+        assert_eq!(l("요소 [3]에 \"rust\" 입력", "검색"), "\"검색\"[3]에 \"rust\" 입력");
+        assert_eq!(l("요소 [10] 클릭", "  "), "요소 [10] 클릭");
+        assert_eq!(l("스크롤 (down)", "x"), "스크롤 (down) · \"x\"");
     }
 }

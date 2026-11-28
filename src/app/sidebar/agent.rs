@@ -422,8 +422,8 @@ impl BrowserApp {
         };
         let status_prefix = if ok { "OK" } else { "ERR" };
         run.action_log.push(format!("{status_prefix}: {summary}"));
-        // A failure's message says why; a success keeps the action it started with.
-        let detail = if ok { String::new() } else { summary.clone() };
+        // The result line: says what was clicked/typed (element label) or why it failed.
+        let detail = summary.clone();
         self.live_agent_step(req_id, "", &detail, Some(ok));
         let Some(run) = self.agent_run.as_mut().filter(|r| r.req_id == req_id) else {
             return;
@@ -950,13 +950,18 @@ impl BrowserApp {
                                 .and_then(|v| v.get("ok"))
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false);
+                            let label = parsed
+                                .as_ref()
+                                .and_then(|v| v.get("label"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
                             let msg = parsed
                                 .as_ref()
                                 .and_then(|v| v.get("msg"))
                                 .and_then(|v| v.as_str())
                                 .map(|m| {
                                     if ok {
-                                        desc_c.clone()
+                                        crate::chat::label_action_desc(&desc_c, label)
                                     } else {
                                         let m: String = m.chars().take(200).collect();
                                         format!("{desc_c} ({m})")
