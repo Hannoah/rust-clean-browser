@@ -103,6 +103,17 @@ impl BrowserApp {
             self.rebuild_sidebar_now(false);
             return;
         }
+        if let Some(i) = action
+            .strip_prefix("chat-attach-del:")
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            if i < self.chat_attachments.len() {
+                self.chat_attachments.remove(i);
+            }
+            self.last_sidebar_html.clear();
+            self.rebuild_sidebar_now(false);
+            return;
+        }
         if let Some(mid) = action.strip_prefix("chat-custom-model-del:") {
             self.delete_custom_model(mid);
             return;
@@ -333,6 +344,7 @@ impl BrowserApp {
                 self.rebuild_sidebar_now(false);
             }
             "chat-compact" => self.compact_chat(),
+            "chat-attach" => self.pick_chat_attachments(),
             "chat-send" => self.submit_from_sidebar_input(),
             "chat-stop" => self.cancel_chat_inflight(true),
             _ => {}
@@ -430,10 +442,23 @@ impl BrowserApp {
         let Some(raw) = self.read_sidebar_input("chat-input") else {
             return;
         };
-        let prompt = raw.trim().to_string();
-        if prompt.is_empty() {
+        let mut prompt = raw.trim().to_string();
+        if prompt.is_empty() && self.chat_attachments.is_empty() {
             return;
         }
+        if prompt.is_empty() {
+            prompt = "첨부한 파일을 확인해 주세요.".to_string();
+        }
+        let small_talk = crate::chat::is_small_talk(&prompt) && self.chat_attachments.is_empty();
+        let atts = std::mem::take(&mut self.chat_attachments);
+        self.chat_turn_images = atts
+            .iter()
+            .filter_map(|a| match &a.kind {
+                crate::chat::AttachKind::Image(b64) => Some(b64.clone()),
+                crate::chat::AttachKind::Text(_) => None,
+            })
+            .collect();
+        let prompt = crate::chat::embed_attachments(&prompt, &atts);
         if let Some(doc) = &mut self.sidebar_doc
             && let Some(id) = doc.get_element_by_id("chat-input")
         {
@@ -444,8 +469,77 @@ impl BrowserApp {
         }
         self.chat_input_lines = 1;
         // Small talk ("하이", "고마워") never needs the page: plain reply even in 제어 mode.
-        let agent = self.chat_config.agent_control && !crate::chat::is_small_talk(&prompt);
+        let agent = self.chat_config.agent_control && !small_talk;
         self.submit_chat_message(prompt, false, agent);
+    }
+
+    /// 📎: native file picker; each file becomes a chip above the chat box.
+    pub(super) fn pick_chat_attachments(&mut self) {
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("AI에게 보낼 파일")
+            .add_filter(
+                "이미지·문서·텍스트",
+                &[
+                    "png", "jpg", "jpeg", "gif", "webp", "bmp", "pdf", "txt", "md", "csv", "json", "log", "xml",
+                    "html", "yaml", "yml", "toml", "rs", "py", "js", "ts", "java", "c", "cpp", "h", "sql", "sas", "r",
+                ],
+            )
+            .add_filter("모든 파일", &["*"]);
+        if let Some(win) = self.window.as_ref() {
+            dialog = dialog.set_parent(win);
+        }
+        let Some(paths) = dialog.pick_files() else {
+            return;
+        };
+        for path in paths {
+            match crate::chat::load_attachment(&path) {
+                Ok(att) => self.add_chat_attachment(att),
+                Err(e) => self.set_status_note(&e),
+            }
+        }
+        self.last_sidebar_html.clear();
+        self.rebuild_chrome();
+        self.rebuild_sidebar_now(false);
+        self.focus_sidebar_input("chat-input");
+    }
+
+    fn add_chat_attachment(&mut self, att: crate::chat::Attachment) {
+        let is_image = matches!(att.kind, crate::chat::AttachKind::Image(_));
+        let images = self
+            .chat_attachments
+            .iter()
+            .filter(|a| matches!(a.kind, crate::chat::AttachKind::Image(_)))
+            .count();
+        if is_image && images >= crate::chat::MAX_IMAGES {
+            self.set_status_note(&format!(
+                "이미지는 한 번에 {}개까지 첨부할 수 있습니다",
+                crate::chat::MAX_IMAGES
+            ));
+            return;
+        }
+        self.chat_attachments.push(att);
+    }
+
+    /// Ctrl+V in the chat box with an image (and no text) on the clipboard: attach it.
+    /// Returns whether it handled the paste.
+    pub(in crate::app) fn paste_chat_image(&mut self) -> bool {
+        let Ok(mut cb) = arboard::Clipboard::new() else {
+            return false;
+        };
+        if cb.get_text().is_ok_and(|t| !t.is_empty()) {
+            return false;
+        }
+        let Ok(img) = cb.get_image() else {
+            return false;
+        };
+        match crate::chat::attachment_from_rgba(img.width as u32, img.height as u32, img.bytes.into_owned()) {
+            Ok(att) => self.add_chat_attachment(att),
+            Err(e) => self.set_status_note(&e),
+        }
+        self.last_sidebar_html.clear();
+        self.rebuild_chrome();
+        self.rebuild_sidebar_now(false);
+        true
     }
 
     pub(in crate::app) fn sidebar_has_selection(&self) -> bool {
@@ -495,7 +589,7 @@ impl BrowserApp {
         let bus = self.bus.clone();
         tokio::spawn(async move {
             let cancel = Arc::new(AtomicBool::new(false));
-            let result = run_chat(config, Vec::new(), prompt, None, None, cancel, None, None).await;
+            let result = run_chat(config, Vec::new(), prompt, None, None, Vec::new(), cancel, None, None).await;
             bus.send(AppEvent::ChatCompactDone(result));
         });
         self.last_sidebar_html.clear();
@@ -774,6 +868,13 @@ impl BrowserApp {
                 // A screenshot is shown to the model once, on the round right after it was taken.
                 image_png_b64: r.screenshot.take(),
             });
+        // Attached images go with the first model call of a turn (later control rounds already
+        // saw them).
+        let images = if agent_ctx.as_ref().is_none_or(|a| a.step == 0) {
+            self.chat_turn_images.clone()
+        } else {
+            Vec::new()
+        };
         let model_id = if agent_ctx.is_some() {
             config.effective_control_model(config.provider)
         } else {
@@ -818,6 +919,7 @@ impl BrowserApp {
                 prompt,
                 page,
                 agent_ctx,
+                images,
                 cancel_task,
                 stream_cb,
                 Some(progress),

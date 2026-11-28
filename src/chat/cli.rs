@@ -503,6 +503,7 @@ pub(super) fn run_agy_persistent(
     user_text: &str,
     page: Option<&PageContext>,
     agent: Option<&AgentContext>,
+    images: &[String],
     cancel: &AtomicBool,
     progress: Option<&super::ProgressCb>,
 ) -> Result<String, String> {
@@ -515,23 +516,8 @@ pub(super) fn run_agy_persistent(
         *guard = Some(AgyStreamWorker::spawn(model, effort)?);
     }
     let include_history = guard.as_ref().is_none_or(|w| w.turns == 0);
-    let mut prompt = build_cli_prompt(history, user_text, page, agent, include_history);
-    // agy has no image flag, but its sandboxed `read_file` reads images: drop the agent's
-    // screenshot into its working folder and point it there.
-    if let Some(bytes) = agent
-        .and_then(|a| a.image_png_b64.as_deref())
-        .and_then(super::decode_base64)
-    {
-        let file = empty_cwd("agy-cwd").join("agent-screenshot.png");
-        if std::fs::write(&file, bytes).is_ok() {
-            prompt.push_str(&format!(
-                "
-
-[SCREENSHOT] The visible page was captured to `{}`. Open it with read_file before answering.",
-                file.display()
-            ));
-        }
-    }
+    let image_note = agy_image_note(images);
+    let prompt = build_cli_prompt(history, user_text, page, agent, include_history) + &image_note;
     let res = match guard.as_mut() {
         Some(w) => w.send_turn(&prompt, cancel, progress),
         None => return Err("Gemini CLI 워커 초기화 실패".to_string()),
@@ -556,7 +542,7 @@ pub(super) fn run_agy_persistent(
             *guard = None;
             let broken = err.contains("입력 전송 실패") || err.contains("세션이 종료되었습니다");
             if was_reused && broken && !cancel.load(Ordering::Acquire) {
-                let fresh_prompt = build_cli_prompt(history, user_text, page, agent, true);
+                let fresh_prompt = build_cli_prompt(history, user_text, page, agent, true) + &image_note;
                 let mut fresh = AgyStreamWorker::spawn(model, effort)?;
                 let retry = fresh.send_turn(&fresh_prompt, cancel, progress);
                 if retry.is_ok() {
@@ -756,18 +742,12 @@ impl ClaudeStreamWorker {
         prompt: &str,
         cancel: &AtomicBool,
         progress: Option<&super::ProgressCb>,
-        image: Option<&str>,
+        images: &[String],
     ) -> Result<String, String> {
         while self.rx.try_recv().is_ok() {}
         let payload = json!({
             "type": "user",
-            "message": { "role": "user", "content": match image {
-                Some(b64) => json!([
-                    { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": b64 } },
-                    { "type": "text", "text": prompt },
-                ]),
-                None => json!(prompt),
-            }}
+            "message": { "role": "user", "content": super::anthropic_user_content(prompt, images) }
         });
         let line = serde_json::to_string(&payload).map_err(|e| format!("Claude CLI 요청 직렬화 실패: {e}"))?;
         self.stdin
@@ -962,12 +942,12 @@ pub(super) fn run_claude_persistent(
     user_text: &str,
     page: Option<&PageContext>,
     agent: Option<&AgentContext>,
+    images: &[String],
     cancel: &AtomicBool,
     progress: Option<&super::ProgressCb>,
 ) -> Result<String, String> {
     let effort = effort.trim();
     let agent_mode = agent.is_some();
-    let image = agent.and_then(|a| a.image_png_b64.as_deref());
     let mut guard = claude_worker_lock()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -980,7 +960,7 @@ pub(super) fn run_claude_persistent(
     let include_history = guard.as_ref().is_none_or(|w| w.turns == 0);
     let prompt = build_claude_turn_prompt(history, user_text, page, agent, include_history);
     let res = match guard.as_mut() {
-        Some(w) => w.send_turn(&prompt, cancel, progress, image),
+        Some(w) => w.send_turn(&prompt, cancel, progress, images),
         None => return Err("Claude CLI 워커 초기화 실패".to_string()),
     };
     match res {
@@ -1005,7 +985,7 @@ pub(super) fn run_claude_persistent(
             if was_reused && broken && !cancel.load(Ordering::Acquire) {
                 let mut fresh = ClaudeStreamWorker::spawn(model, effort, agent_mode)?;
                 let fresh_prompt = build_claude_turn_prompt(history, user_text, page, agent, true);
-                let retry = fresh.send_turn(&fresh_prompt, cancel, progress, image);
+                let retry = fresh.send_turn(&fresh_prompt, cancel, progress, images);
                 if retry.is_ok() {
                     fresh.turns = 1;
                     fresh.last_used = Instant::now();
@@ -1101,7 +1081,7 @@ pub(super) fn run_cli_agent(
     model: &str,
     effort: &str,
     prompt: &str,
-    image_png_b64: Option<&str>,
+    images: &[String],
     cancel: &AtomicBool,
 ) -> Result<String, String> {
     let bin_name = match provider {
@@ -1152,14 +1132,17 @@ pub(super) fn run_cli_agent(
         args.push("--prompt-file".into());
         args.push(file.to_string_lossy().into_owned());
     }
-    // The agent's screenshot: Codex and Muse both take `--image <file>`.
-    let image_file = cwd.join("agent-screenshot.png");
-    if let Some(b64) = image_png_b64.filter(|_| matches!(provider, ChatProvider::Codex | ChatProvider::Muse))
-        && let Some(bytes) = super::decode_base64(b64)
-        && std::fs::write(&image_file, bytes).is_ok()
-    {
-        args.push("--image".into());
-        args.push(image_file.to_string_lossy().into_owned());
+    // Attached images / the agent's screenshot: Codex and Muse both take `--image <file>`.
+    if matches!(provider, ChatProvider::Codex | ChatProvider::Muse) {
+        for (i, b64) in images.iter().enumerate() {
+            let file = cwd.join(format!("image-{i}.png"));
+            if let Some(bytes) = super::decode_base64(b64)
+                && std::fs::write(&file, bytes).is_ok()
+            {
+                args.push("--image".into());
+                args.push(file.to_string_lossy().into_owned());
+            }
+        }
     }
     if !model.is_empty() {
         args.push("--model".into());
@@ -1231,7 +1214,9 @@ pub(super) fn run_cli_agent(
 
     let _ = writer.join();
     let _ = std::fs::remove_file(cwd.join("muse-prompt.txt"));
-    let _ = std::fs::remove_file(&image_file);
+    for i in 0..images.len() {
+        let _ = std::fs::remove_file(cwd.join(format!("image-{i}.png")));
+    }
     let stdout = strip_ansi(&out_reader.join().unwrap_or_default()).trim().to_string();
     let stderr = strip_ansi(&err_reader.join().unwrap_or_default()).trim().to_string();
 
@@ -1303,4 +1288,22 @@ pub fn strip_ansi(input: &str) -> String {
         }
     }
     out
+}
+
+/// agy has no image flag, but its sandboxed `read_file` reads images: drop each image into its
+/// working folder and point the prompt at the files.
+fn agy_image_note(images: &[String]) -> String {
+    let mut note = String::new();
+    for (i, b64) in images.iter().enumerate() {
+        let file = empty_cwd("agy-cwd").join(format!("image-{i}.png"));
+        if let Some(bytes) = super::decode_base64(b64)
+            && std::fs::write(&file, bytes).is_ok()
+        {
+            note.push_str(&format!(
+                "\n\n[IMAGE] An image (attached file or page screenshot) is at `{}`. Open it with read_file before answering.",
+                file.display()
+            ));
+        }
+    }
+    note
 }

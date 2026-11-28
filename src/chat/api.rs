@@ -95,12 +95,14 @@ pub(super) fn extract_sse_delta(provider: ChatProvider, data: &str) -> Option<St
     }
 }
 
+#[allow(clippy::too_many_arguments)] // request plumbing, like `run_chat`
 pub(super) async fn run_api_chat(
     config: &ChatConfig,
     history: &[ChatMessage],
     user_text: &str,
     page: Option<&PageContext>,
     agent: Option<&AgentContext>,
+    images: &[String],
     cancel: &AtomicBool,
     stream_cb: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
 ) -> Result<String, String> {
@@ -149,7 +151,6 @@ pub(super) async fn run_api_chat(
     } else {
         user_turn
     };
-    let image = agent.and_then(|a| a.image_png_b64.as_deref());
     let system_prompt = if let Some(ctx) = agent {
         format!("{SYSTEM_PROMPT}\n\n{}", format_agent_instructions(ctx))
     } else if let Some(s) = summary {
@@ -170,12 +171,14 @@ pub(super) async fn run_api_chat(
                     let txt: String = neutralize_untrusted(&m.text).chars().take(max_turn_chars).collect();
                     msgs.push(json!({ "role": role, "content": txt }));
                 }
-                msgs.push(match image {
-                    Some(b64) => json!({ "role": "user", "content": [
-                        { "type": "text", "text": final_user.clone() },
-                        { "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{b64}") } },
-                    ]}),
-                    None => json!({ "role": "user", "content": final_user.clone() }),
+                msgs.push(if images.is_empty() {
+                    json!({ "role": "user", "content": final_user.clone() })
+                } else {
+                    let mut content = vec![json!({ "type": "text", "text": final_user.clone() })];
+                    content.extend(images.iter().map(|b64| {
+                        json!({ "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{b64}") } })
+                    }));
+                    json!({ "role": "user", "content": content })
                 });
                 let payload = json!({ "model": model.clone(), "messages": msgs.clone(), "stream": streamed });
                 let bytes = serde_json::to_vec(&payload).map_err(|e| format!("JSON 직렬화 실패: {e}"))?;
@@ -192,13 +195,7 @@ pub(super) async fn run_api_chat(
                     let txt: String = neutralize_untrusted(&m.text).chars().take(max_turn_chars).collect();
                     msgs.push(json!({ "role": role, "content": txt }));
                 }
-                msgs.push(match image {
-                    Some(b64) => json!({ "role": "user", "content": [
-                        { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": b64 } },
-                        { "type": "text", "text": final_user.clone() },
-                    ]}),
-                    None => json!({ "role": "user", "content": final_user.clone() }),
-                });
+                msgs.push(json!({ "role": "user", "content": super::anthropic_user_content(&final_user, images) }));
                 let payload = json!({
                     "model": model.clone(),
                     "max_tokens": if agent.is_some() { 768 } else { 2048 },
@@ -228,9 +225,11 @@ pub(super) async fn run_api_chat(
                     contents.push(json!({ "role": role, "parts": [{ "text": txt }] }));
                 }
                 let mut parts = vec![json!({ "text": final_user.clone() })];
-                if let Some(b64) = image {
-                    parts.push(json!({ "inline_data": { "mime_type": "image/png", "data": b64 } }));
-                }
+                parts.extend(
+                    images
+                        .iter()
+                        .map(|b64| json!({ "inline_data": { "mime_type": "image/png", "data": b64 } })),
+                );
                 contents.push(json!({ "role": "user", "parts": parts }));
                 let payload = json!({
                     "system_instruction": { "parts": [{ "text": &system_prompt }] },

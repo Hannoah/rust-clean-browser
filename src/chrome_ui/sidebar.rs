@@ -54,6 +54,8 @@ pub struct SidebarRenderState<'a> {
     pub api_endpoint: &'a str,
     pub has_api_key: bool,
     pub draft: &'a str,
+    /// Names of files waiting in the composer (sent with the next message).
+    pub attachments: &'a [String],
     /// Masked saved-key hint (`"••••••Ab12"`), never the secret itself.
     pub api_key_hint: &'a str,
     /// Last connection test for the active API provider: `(ok, summary)`.
@@ -447,6 +449,18 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surf
   color: var(--text); font-size: 13px; line-height: 20px; outline: none;
   font-family: inherit; overflow-y: auto; max-height: 120px;
 }
+.att-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.att-chip {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
+  height: 24px; padding: 0 4px 0 8px; border-radius: 8px;
+  background: var(--surface-3); color: var(--text-2); font-size: 11px;
+}
+.att-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
+.att-x { display: inline-flex; padding: 3px; border-radius: 6px; color: var(--text-3); }
+.att-x:hover { background: var(--hover); color: var(--text); }
+.msg-u .att-row { margin-top: 6px; }
+.msg-u .att-chip { background: var(--surface); padding-right: 8px; }
+.cpill.att { padding: 0 7px; }
 .comp-bar { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .comp-left { display: flex; align-items: center; gap: 4px; min-width: 0; flex: 1; overflow: hidden; }
 .cpill {
@@ -1030,10 +1044,12 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
                             )
                         })
                         .unwrap_or_default();
+                    let (body, files) = crate::chat::split_attachments(&msg.text);
                     let _ = write!(
                         h,
-                        r#"<div class="msg-u-wrap{enter_cls}"{enter_style}>{ctx_badge}<div class="msg-u">{}</div></div>"#,
-                        html_escape(&msg.text),
+                        r#"<div class="msg-u-wrap{enter_cls}"{enter_style}>{ctx_badge}<div class="msg-u">{}{}</div></div>"#,
+                        html_escape(body),
+                        attachment_chips(&files, false),
                     );
                 }
                 crate::chat::ChatRole::Assistant => {
@@ -1321,9 +1337,11 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
         h,
         r#"<div class="sb-comp"{comp_style}>
   <div class="composer">
+    {att_row}
     <textarea id="chat-input" rows="1" style="height:{input_h}px" placeholder="무엇이든 물어보세요…">{draft}</textarea>
     <div class="comp-bar">
       <div class="comp-left">
+        <div class="cpill att" data-action="chat-attach" title="파일 첨부 (이미지·PDF·텍스트, 이미지는 Ctrl+V로 붙여넣기)">{clip}</div>
         <div class="{prov_pill_cls}" data-action="chat-picker:provider" title="에이전트 / API 전환">{prov_dot}<span class="cpill-txt">{prov_lbl}</span><span class="cpill-chev">{chev}</span></div>
         <div class="{mod_pill_cls}" data-action="chat-picker:model" title="사용할 모델 변경"><span class="cpill-txt">{mod_lbl}</span><span class="cpill-chev">{chev}</span></div>
         <div class="{ctx_cls}"{ctx_action} title="{ctx_tip}"><span class="cpill-dot"></span><span class="cpill-txt">페이지</span></div>
@@ -1336,6 +1354,8 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
 </div>
 </div></body></html>"#,
         draft = html_escape(state.draft),
+        att_row = attachment_chips(state.attachments, true),
+        clip = svg(Icon::Paperclip, 14),
         hint_row = context_row(state),
         // Hidden (not removed) off the chat tab so the typed draft survives tab switches.
         comp_style = if state.show_settings || state.show_history {
@@ -1348,4 +1368,30 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
     );
 
     (h, code_blocks)
+}
+
+/// File chips: under a sent message (`removable == false`) or above the chat box.
+fn attachment_chips<S: AsRef<str>>(names: &[S], removable: bool) -> String {
+    if names.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(r#"<div class="att-row">"#);
+    for (i, n) in names.iter().enumerate() {
+        let x = if removable {
+            format!(
+                r#"<span class="att-x" data-action="chat-attach-del:{i}" title="첨부 취소">{}</span>"#,
+                svg(Icon::Close, 10)
+            )
+        } else {
+            String::new()
+        };
+        let _ = write!(
+            out,
+            r#"<div class="att-chip">{}<span class="att-name">{}</span>{x}</div>"#,
+            svg(Icon::Paperclip, 11),
+            html_escape(n.as_ref())
+        );
+    }
+    out.push_str("</div>");
+    out
 }
