@@ -25,18 +25,25 @@ const MAX_EDGE: u32 = 1568;
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp"];
 
 pub fn load_file(path: &Path) -> Result<Attachment, String> {
-    let name = clean_name(
-        &path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-    );
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let size = std::fs::metadata(path).map_err(|e| format!("{name}: {e}"))?.len();
     if size > MAX_FILE_BYTES {
         return Err(format!("{name}: 20MB보다 큰 파일은 첨부할 수 없습니다"));
     }
     let bytes = std::fs::read(path).map_err(|e| format!("{name}: {e}"))?;
-    let ext = path
+    load_bytes(&name, bytes)
+}
+
+/// A file's contents by name (a JS-mode page hands over dropped files as bytes, not paths).
+pub fn load_bytes(name: &str, bytes: Vec<u8>) -> Result<Attachment, String> {
+    let name = clean_name(name);
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(format!("{name}: 20MB보다 큰 파일은 첨부할 수 없습니다"));
+    }
+    let ext = Path::new(&name)
         .extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();

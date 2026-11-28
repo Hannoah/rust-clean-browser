@@ -952,15 +952,15 @@ impl BrowserApp {
         false
     }
 
-    /// Accepts the drag (copy) only while it is over the open AI sidebar.
+    /// Accepts the drag (copy) over the page and the AI sidebar; dropped files go to the chat.
     fn on_drag_over(
         &self,
         event_loop: &dyn ActiveEventLoop,
         id: winit::data_transfer::DataTransferId,
         position: Option<PhysicalPosition<f64>>,
     ) {
-        let over_sidebar = position.is_some_and(|p| self.region_at(p) == UiRegion::Sidebar);
-        let actions: &[winit::event_loop::DndAction] = if over_sidebar {
+        let over_page = position.is_some_and(|p| self.region_at(p) != UiRegion::Chrome);
+        let actions: &[winit::event_loop::DndAction] = if over_page {
             &[winit::event_loop::DndAction::Copy]
         } else {
             &[]

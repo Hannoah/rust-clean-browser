@@ -495,8 +495,17 @@ impl BrowserApp {
 
     /// Picked or dropped files → chips above the chat box (errors as a status note).
     pub(in crate::app) fn attach_chat_files(&mut self, paths: Vec<std::path::PathBuf>) {
-        for path in paths {
-            match crate::chat::load_attachment(&path) {
+        self.attach_to_chat(paths.iter().map(|p| crate::chat::load_attachment(p)).collect());
+    }
+
+    /// Adds loaded files to the composer, opening this tab's AI sidebar first if it is closed
+    /// (a file dropped on the page goes to the chat).
+    pub(in crate::app) fn attach_to_chat(&mut self, loaded: Vec<Result<crate::chat::Attachment, String>>) {
+        if !self.sidebar_open {
+            self.toggle_sidebar();
+        }
+        for att in loaded {
+            match att {
                 Ok(att) => self.add_chat_attachment(att),
                 Err(e) => self.set_status_note(&e),
             }

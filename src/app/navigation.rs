@@ -84,6 +84,14 @@ fn ipc_event(tab_id: u64, body: &str) -> Option<AppEvent> {
         Some(("zoomkey", "in")) => Some(AppEvent::ZoomBy(1.0)),
         Some(("zoomkey", "out")) => Some(AppEvent::ZoomBy(-1.0)),
         Some(("zoomkey", "reset")) => Some(AppEvent::ZoomReset),
+        Some(("chatdrop", json)) => {
+            let v: serde_json::Value = serde_json::from_str(json).ok()?;
+            Some(AppEvent::ChatDroppedFile {
+                tab_id,
+                name: v.get("n")?.as_str()?.to_string(),
+                b64: v.get("d")?.as_str()?.to_string(),
+            })
+        }
         Some(("media", v @ ("0" | "1"))) => Some(AppEvent::WebViewMedia {
             tab_id,
             active: v == "1",
@@ -101,6 +109,38 @@ fn eviction_index(media_active: impl Iterator<Item = bool> + Clone) -> usize {
 /// Ctrl/Cmd + wheel (also trackpad pinch) and Ctrl +/-/0 inside a JS-mode page. WebView2's own zoom hotkeys
 /// are off, so these are forwarded to the app, which owns the per-tab zoom (address-bar label, restore on tab
 /// switch). The PDF annotator (pdf.js) has its own zoom and is left alone.
+/// A file dropped on a JS-mode page that the page itself does not take (no drop zone called
+/// `preventDefault`) goes to the AI chat instead of WebView2 navigating away to the file.
+/// Gmail-style upload areas keep working: they handle the drop first.
+/// ponytail: any page script can post `chatdrop:` too; the result is only a visible chip in the
+/// composer (like page text it is untrusted, and never names trusted sites for the agent).
+const CHAT_DROP_SCRIPT: &str = r#"(function () {
+  if (location.hostname === 'rcbpdf.localhost' || location.protocol === 'rcbpdf:') return;
+  var post = function (m) { try { window.ipc.postMessage(m); } catch (e) {} };
+  var hasFiles = function (e) {
+    var t = e.dataTransfer && e.dataTransfer.types;
+    return !!t && Array.prototype.indexOf.call(t, 'Files') >= 0;
+  };
+  addEventListener('dragover', function (e) {
+    if (e.defaultPrevented || !hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  addEventListener('drop', function (e) {
+    if (e.defaultPrevented || !hasFiles(e)) return;
+    e.preventDefault();
+    Array.prototype.slice.call(e.dataTransfer.files, 0, 8).forEach(function (f) {
+      if (f.size > 20 * 1024 * 1024) { post('chatdrop:' + JSON.stringify({ n: f.name, d: '' })); return; }
+      var r = new FileReader();
+      r.onload = function () {
+        var s = String(r.result);
+        post('chatdrop:' + JSON.stringify({ n: f.name, d: s.slice(s.indexOf(',') + 1) }));
+      };
+      r.readAsDataURL(f);
+    });
+  });
+})();"#;
+
 const ZOOM_SCRIPT: &str = r#"(function () {
   if (location.hostname === 'rcbpdf.localhost' || location.protocol === 'rcbpdf:') return;
   // `window.ipc` is installed by wry after the page's init scripts ran, so look it up per message.
@@ -308,6 +348,7 @@ impl BrowserApp {
             .with_initialization_script(crate::pdfjs::INIT_SCRIPT)
             .with_initialization_script(ZOOM_SCRIPT)
             .with_initialization_script(MEDIA_SCRIPT)
+            .with_initialization_script(CHAT_DROP_SCRIPT)
             .with_ipc_handler(move |req| {
                 if let Some(ev) = ipc_event(tab_id, req.body()) {
                     bus_zoom.send(ev);
@@ -1206,6 +1247,21 @@ mod tests {
         assert!(ipc_event(7, "media:yes").is_none());
         assert!(matches!(ipc_event(1, "zoomkey:in"), Some(AppEvent::ZoomBy(_))));
         assert!(ipc_event(1, "rust://evil").is_none());
+    }
+
+    #[test]
+    fn dropped_file_ipc_becomes_attachment() {
+        // "aGk=" is "hi": a dropped note.txt from a JS-mode page (`CHAT_DROP_SCRIPT`).
+        let Some(AppEvent::ChatDroppedFile { tab_id: 3, name, b64 }) =
+            ipc_event(3, r#"chatdrop:{"n":"note:1.txt","d":"aGk="}"#)
+        else {
+            panic!("not parsed");
+        };
+        let att = crate::chat::attachment_from_bytes(&name, crate::chat::decode_base64(&b64).unwrap()).unwrap();
+        assert_eq!(att.name, "note:1.txt");
+        assert!(matches!(att.kind, crate::chat::AttachKind::Text(ref t) if t == "hi"));
+        assert!(ipc_event(3, "chatdrop:not json").is_none());
+        assert!(crate::chat::attachment_from_bytes("a.bin", vec![0, 159, 146, 150]).is_err());
     }
 
     #[test]

@@ -623,6 +623,19 @@ impl BrowserApp {
                         focus_main_window(&**win, true);
                     }
                 }
+                AppEvent::ChatDroppedFile { tab_id, name, b64 } => {
+                    // Only the page the user is looking at can hand over a dropped file.
+                    if self.tabs.get(self.active_tab).is_some_and(|t| t.id == tab_id) {
+                        let att = if b64.is_empty() {
+                            Err(format!("{name}: 20MB보다 큰 파일은 첨부할 수 없습니다"))
+                        } else {
+                            crate::chat::decode_base64(&b64)
+                                .ok_or_else(|| format!("{name}: 파일을 읽지 못했습니다"))
+                                .and_then(|bytes| crate::chat::attachment_from_bytes(&name, bytes))
+                        };
+                        self.attach_to_chat(vec![att]);
+                    }
+                }
                 AppEvent::WebViewMedia { tab_id, active } => {
                     if let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id)
                         && self.tabs[idx].media_active != active
