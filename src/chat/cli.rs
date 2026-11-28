@@ -361,7 +361,12 @@ impl AgyStreamWorker {
             && matches!(self.child.try_wait(), Ok(None))
     }
 
-    fn send_turn(&mut self, prompt: &str, cancel: &AtomicBool) -> Result<String, String> {
+    fn send_turn(
+        &mut self,
+        prompt: &str,
+        cancel: &AtomicBool,
+        progress: Option<&super::ProgressCb>,
+    ) -> Result<String, String> {
         // Drain any stale lines emitted before sending the new turn.
         while self.rx.try_recv().is_ok() {}
         let payload = json!({
@@ -392,6 +397,11 @@ impl AgyStreamWorker {
                 Ok(line) => {
                     if let Some(result) = parse_agy_stream_result(&line) {
                         return result;
+                    }
+                    if let Some(cb) = progress
+                        && let Some(p) = super::activity::parse_agy_progress(&line)
+                    {
+                        cb(p);
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {}
@@ -483,6 +493,7 @@ pub fn reset_agy_worker() {
     });
 }
 
+#[allow(clippy::too_many_arguments)] // request plumbing; each argument is one piece of the turn
 pub(super) fn run_agy_persistent(
     model: &str,
     effort: &str,
@@ -491,6 +502,7 @@ pub(super) fn run_agy_persistent(
     page: Option<&PageContext>,
     agent: Option<&AgentContext>,
     cancel: &AtomicBool,
+    progress: Option<&super::ProgressCb>,
 ) -> Result<String, String> {
     let effort = effort.trim();
     let mut guard = agy_worker_lock()
@@ -503,7 +515,7 @@ pub(super) fn run_agy_persistent(
     let include_history = guard.as_ref().is_none_or(|w| w.turns == 0);
     let prompt = build_cli_prompt(history, user_text, page, agent, include_history);
     let res = match guard.as_mut() {
-        Some(w) => w.send_turn(&prompt, cancel),
+        Some(w) => w.send_turn(&prompt, cancel, progress),
         None => return Err("Gemini CLI 워커 초기화 실패".to_string()),
     };
     match res {
@@ -528,7 +540,7 @@ pub(super) fn run_agy_persistent(
             if was_reused && broken && !cancel.load(Ordering::Acquire) {
                 let fresh_prompt = build_cli_prompt(history, user_text, page, agent, true);
                 let mut fresh = AgyStreamWorker::spawn(model, effort)?;
-                let retry = fresh.send_turn(&fresh_prompt, cancel);
+                let retry = fresh.send_turn(&fresh_prompt, cancel, progress);
                 if retry.is_ok() {
                     fresh.turns = 1;
                     fresh.last_used = Instant::now();
@@ -721,7 +733,12 @@ impl ClaudeStreamWorker {
             && matches!(self.child.try_wait(), Ok(None))
     }
 
-    fn send_turn(&mut self, prompt: &str, cancel: &AtomicBool) -> Result<String, String> {
+    fn send_turn(
+        &mut self,
+        prompt: &str,
+        cancel: &AtomicBool,
+        progress: Option<&super::ProgressCb>,
+    ) -> Result<String, String> {
         while self.rx.try_recv().is_ok() {}
         let payload = json!({
             "type": "user",
@@ -751,6 +768,11 @@ impl ClaudeStreamWorker {
                 Ok(line) => {
                     if let Some(result) = parse_claude_stream_result(&line) {
                         return result;
+                    }
+                    if let Some(cb) = progress {
+                        super::activity::parse_claude_progress(&line)
+                            .into_iter()
+                            .for_each(|p| cb(p));
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {}
@@ -907,6 +929,7 @@ pub fn shutdown_cli_workers() {
     let _ = std::fs::remove_file(prompt_dir.join(format!("system-agent-{pid}.txt")));
 }
 
+#[allow(clippy::too_many_arguments)] // request plumbing; each argument is one piece of the turn
 pub(super) fn run_claude_persistent(
     model: &str,
     effort: &str,
@@ -915,6 +938,7 @@ pub(super) fn run_claude_persistent(
     page: Option<&PageContext>,
     agent: Option<&AgentContext>,
     cancel: &AtomicBool,
+    progress: Option<&super::ProgressCb>,
 ) -> Result<String, String> {
     let effort = effort.trim();
     let agent_mode = agent.is_some();
@@ -930,7 +954,7 @@ pub(super) fn run_claude_persistent(
     let include_history = guard.as_ref().is_none_or(|w| w.turns == 0);
     let prompt = build_claude_turn_prompt(history, user_text, page, agent, include_history);
     let res = match guard.as_mut() {
-        Some(w) => w.send_turn(&prompt, cancel),
+        Some(w) => w.send_turn(&prompt, cancel, progress),
         None => return Err("Claude CLI 워커 초기화 실패".to_string()),
     };
     match res {
@@ -955,7 +979,7 @@ pub(super) fn run_claude_persistent(
             if was_reused && broken && !cancel.load(Ordering::Acquire) {
                 let mut fresh = ClaudeStreamWorker::spawn(model, effort, agent_mode)?;
                 let fresh_prompt = build_claude_turn_prompt(history, user_text, page, agent, true);
-                let retry = fresh.send_turn(&fresh_prompt, cancel);
+                let retry = fresh.send_turn(&fresh_prompt, cancel, progress);
                 if retry.is_ok() {
                     fresh.turns = 1;
                     fresh.last_used = Instant::now();

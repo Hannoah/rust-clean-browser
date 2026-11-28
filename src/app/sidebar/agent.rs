@@ -422,6 +422,12 @@ impl BrowserApp {
         };
         let status_prefix = if ok { "OK" } else { "ERR" };
         run.action_log.push(format!("{status_prefix}: {summary}"));
+        // A failure's message says why; a success keeps the action it started with.
+        let detail = if ok { String::new() } else { summary.clone() };
+        self.live_agent_step(req_id, "", &detail, Some(ok));
+        let Some(run) = self.agent_run.as_mut().filter(|r| r.req_id == req_id) else {
+            return;
+        };
         if ok {
             run.consecutive_errors = 0;
         } else {
@@ -491,15 +497,19 @@ impl BrowserApp {
         };
         self.chat_inflight = None;
         let summary = override_summary.unwrap_or(run.finish_summary);
-        let text = format_agent_final_message(&run.finish_cleaned, &summary, &run.action_log);
+        let text = format_agent_final_message(&run.finish_cleaned, &summary, &[]);
+        let req_id = run.req_id;
         let provider_label = (!run.provider_label.is_empty()).then_some(run.provider_label);
         self.chat_messages.push(ChatMessage {
             role: ChatRole::Assistant,
             text,
             page_title: None,
             provider_label,
+            activity: Vec::new(),
+            elapsed_ms: None,
         });
         self.persist_chat();
+        self.finish_live(req_id);
         self.last_sidebar_html.clear();
         self.rebuild_sidebar(true);
     }
@@ -516,8 +526,10 @@ impl BrowserApp {
         let is_final = run.pending_actions.is_empty() && run.finish_after_queue;
         let has_more_queued = !run.pending_actions.is_empty();
         run.status = format!("{}단계 실행 · {desc}", run.step);
+        let kind = action.kind();
         self.last_sidebar_html.clear();
         self.rebuild_sidebar(true);
+        self.live_agent_step(req_id, kind, &desc, None);
         self.execute_agent_action(req_id, action, desc, is_final, has_more_queued);
     }
 

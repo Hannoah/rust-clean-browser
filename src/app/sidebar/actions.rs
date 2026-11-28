@@ -177,6 +177,17 @@ impl BrowserApp {
             }
             return;
         }
+        if let Some(idx) = action
+            .strip_prefix("chat-activity:")
+            .and_then(|v| v.parse::<usize>().ok())
+        {
+            if !self.chat_activity_open.remove(&idx) {
+                self.chat_activity_open.insert(idx);
+            }
+            self.last_sidebar_html.clear();
+            self.rebuild_sidebar_now(false);
+            return;
+        }
         if let Some(idx_str) = action.strip_prefix("chat-copy-code:") {
             if let Ok(idx) = idx_str.parse::<usize>()
                 && let Some(code) = self.sidebar_code_blocks.get(idx).cloned()
@@ -223,6 +234,7 @@ impl BrowserApp {
                 self.cancel_chat_inflight(false);
                 self.chat_messages.clear();
                 self.chat_session_id = None;
+                self.chat_activity_open.clear();
                 self.chat_reveal = None;
                 self.chat_show_history = false;
                 crate::chat::reset_all_cli_workers();
@@ -480,7 +492,7 @@ impl BrowserApp {
         let bus = self.bus.clone();
         tokio::spawn(async move {
             let cancel = Arc::new(AtomicBool::new(false));
-            let result = run_chat(config, Vec::new(), prompt, None, None, cancel, None).await;
+            let result = run_chat(config, Vec::new(), prompt, None, None, cancel, None, None).await;
             bus.send(AppEvent::ChatCompactDone(result));
         });
         self.last_sidebar_html.clear();
@@ -499,6 +511,8 @@ impl BrowserApp {
                     text: text.trim().to_string(),
                     page_title: None,
                     provider_label: None,
+                    activity: Vec::new(),
+                    elapsed_ms: None,
                 });
                 self.persist_chat();
                 "대화 압축됨".to_string()
@@ -538,6 +552,8 @@ impl BrowserApp {
             text: user_text.clone(),
             page_title: attach_title,
             provider_label: None,
+            activity: Vec::new(),
+            elapsed_ms: None,
         });
         self.persist_chat();
 
@@ -784,8 +800,22 @@ impl BrowserApp {
             None
         };
 
+        self.begin_live(req_id);
+        let bus_p = self.bus.clone();
+        let progress: crate::chat::ProgressCb =
+            Arc::new(move |progress| bus_p.send(AppEvent::ChatProgress { req_id, progress }));
         let handle = tokio::spawn(async move {
-            let result = run_chat(config, history, prompt, page, agent_ctx, cancel_task, stream_cb).await;
+            let result = run_chat(
+                config,
+                history,
+                prompt,
+                page,
+                agent_ctx,
+                cancel_task,
+                stream_cb,
+                Some(progress),
+            )
+            .await;
             bus.send(AppEvent::ChatFinished {
                 req_id,
                 provider_label,
@@ -823,8 +853,13 @@ impl BrowserApp {
                 text: delta,
                 page_title: None,
                 provider_label: Some(provider_label),
+                activity: Vec::new(),
+                elapsed_ms: None,
             });
             self.chat_stream_req = Some(req_id);
+        }
+        if let Some(live) = self.chat_live.as_mut().filter(|l| l.req_id == req_id) {
+            live.writing = true;
         }
         self.last_sidebar_html.clear();
         self.rebuild_sidebar(true);
@@ -846,12 +881,15 @@ impl BrowserApp {
             let Some(plan) = maybe_plan else {
                 let log = self.agent_run.take().map(|r| r.action_log).unwrap_or_default();
                 self.chat_inflight = None;
-                let text = format_agent_final_message(&cleaned, "", &log);
+                let _ = log; // shown as activity cards instead (see `live`)
+                let text = format_agent_final_message(&cleaned, "", &[]);
                 self.chat_messages.push(ChatMessage {
                     role: ChatRole::Assistant,
                     text,
                     page_title: None,
                     provider_label: Some(provider_label),
+                    activity: Vec::new(),
+                    elapsed_ms: None,
                 });
                 self.persist_chat();
                 self.start_reveal(self.chat_messages.len() - 1);
@@ -931,6 +969,8 @@ impl BrowserApp {
                             text,
                             page_title: None,
                             provider_label: Some(provider_label),
+                            activity: Vec::new(),
+                            elapsed_ms: None,
                         });
                     }
                     self.chat_stream_req = None;
@@ -940,6 +980,8 @@ impl BrowserApp {
                         text,
                         page_title: None,
                         provider_label: Some(provider_label),
+                        activity: Vec::new(),
+                        elapsed_ms: None,
                     });
                     self.start_reveal(self.chat_messages.len() - 1);
                 }
@@ -954,6 +996,8 @@ impl BrowserApp {
                     text: err,
                     page_title: None,
                     provider_label: Some(provider_label),
+                    activity: Vec::new(),
+                    elapsed_ms: None,
                 });
             }
         }

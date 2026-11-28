@@ -22,8 +22,10 @@ pub struct SidebarRenderState<'a> {
     pub is_loading: bool,
     pub include_page: bool,
     pub agent_control: bool,
-    pub agent_status: Option<&'a str>,
-    pub agent_log: &'a [String],
+    /// Request in flight: `(status line, steps so far)`.
+    pub live: Option<(String, &'a [crate::chat::ActivityStep])>,
+    /// Replies whose tool-card list is expanded.
+    pub activity_open: &'a std::collections::HashSet<usize>,
     pub sidebar_wide: bool,
     pub show_settings: bool,
     pub picker_open: SidebarPicker,
@@ -504,6 +506,28 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surf
 }
 .qcard:hover { transform: translateY(-1px); }
 
+/* ── Agent activity: live status line + tool cards ── */
+.act-live { padding-left: 30px; font-size: 12.5px; color: var(--text-3); margin-bottom: 8px; }
+.act-live-txt { animation: rb-pulse 1.4s ease-in-out infinite; }
+.act-sum {
+  display: inline-flex; align-items: center; gap: 4px; margin: 0 0 8px 30px;
+  font-size: 12px; font-weight: 500; color: var(--text-3);
+}
+.act-sum:hover { color: var(--text); }
+.act-sum .chev { display: inline-flex; transition: transform 80ms var(--ease-out); }
+.act-sum.open .chev { transform: rotate(90deg); }
+.act-list { display: flex; flex-direction: column; gap: 5px; margin: 0 0 10px 30px; }
+.act-card {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface); font-size: 12px;
+}
+.act-name { font-family: "Cascadia Code", Consolas, monospace; font-weight: 500; color: var(--text); flex-shrink: 0; }
+.act-detail { flex: 1; min-width: 0; color: var(--text-3); white-space: nowrap; overflow: hidden; }
+.act-st { flex-shrink: 0; color: var(--text-3); }
+.act-st.err { color: var(--danger); }
+.act-st.run { color: var(--accent-text); }
+.ftr-time { margin-left: auto; padding-right: 4px; font-size: 11px; color: var(--text-3); }
+
 /* ── Answer skeleton (replaces the spinner while the model thinks) ── */
 .sk-msg { display: flex; flex-direction: column; gap: 8px; padding-left: 30px; padding-top: 2px; }
 .sk-line { height: 10px; border-radius: 6px; background: var(--surface-3); animation: rb-pulse 1.1s ease-in-out infinite; }
@@ -730,6 +754,45 @@ fn render_settings_card(h: &mut String, state: &SidebarRenderState<'_>) {
         r#"<div style="display:flex;gap:5px;align-items:center"><input id="chat-preset-title" class="set-inp" style="flex:0 0 110px" type="text" value="" placeholder="이름" /><input id="chat-preset-prompt" class="set-inp" style="flex:1" type="text" value="" placeholder="실행할 지시 내용" /><div class="sbtn" data-action="chat-preset-add">추가</div></div><div class="set-note">이름과 지시 내용을 입력하고 추가하면 빈 대화 화면에 실행 카드로 나타납니다.</div></div>"#,
     );
     h.push_str("</div>");
+}
+
+fn fmt_secs(ms: u64) -> String {
+    if ms < 10_000 {
+        format!("{:.1}초", ms as f64 / 1000.0)
+    } else if ms < 60_000 {
+        format!("{}초", ms / 1000)
+    } else {
+        format!("{}분 {}초", ms / 60_000, (ms / 1000) % 60)
+    }
+}
+
+/// Thin bordered cards, one per tool call / browser action.
+fn activity_cards(steps: &[crate::chat::ActivityStep]) -> String {
+    let mut out = String::from(r#"<div class="act-list">"#);
+    for s in steps {
+        let (cls, st) = if s.running {
+            ("act-st run", "실행 중".to_string())
+        } else if s.ok {
+            (
+                "act-st",
+                if s.ms > 0 {
+                    format!("완료 · {}", fmt_secs(s.ms))
+                } else {
+                    "완료".to_string()
+                },
+            )
+        } else {
+            ("act-st err", "오류".to_string())
+        };
+        let _ = write!(
+            out,
+            r#"<div class="act-card"><span class="act-name">{}</span><span class="act-detail">{}</span><span class="{cls}">{st}</span></div>"#,
+            html_escape(&s.name),
+            html_escape(&s.detail),
+        );
+    }
+    out.push_str("</div>");
+    out
 }
 
 fn fmt_tokens(n: u32) -> String {
@@ -992,8 +1055,33 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
                         } else {
                             String::new()
                         };
+                        let time = msg
+                            .elapsed_ms
+                            .map(|ms| format!(r#"<span class="ftr-time">{}</span>"#, fmt_secs(ms)))
+                            .unwrap_or_default();
                         format!(
-                            r#"<div class="msg-a-ftr"><span class="chat-copy" data-action="chat-copy-msg:{idx}" title="답변 전체 복사">{copy_svg}<span>복사</span></span>{regen}</div>"#
+                            r#"<div class="msg-a-ftr"><span class="chat-copy" data-action="chat-copy-msg:{idx}" title="답변 전체 복사">{copy_svg}<span>복사</span></span>{regen}{time}</div>"#
+                        )
+                    };
+                    let activity = if msg.activity.is_empty() {
+                        String::new()
+                    } else {
+                        let open = state.activity_open.contains(&idx);
+                        let errs = msg.activity.iter().filter(|s| !s.ok).count();
+                        let label = if errs > 0 {
+                            format!("도구 {}개 사용 · 오류 {errs}", msg.activity.len())
+                        } else {
+                            format!("도구 {}개 사용", msg.activity.len())
+                        };
+                        format!(
+                            r#"<div class="act-sum{}" data-action="chat-activity:{idx}"><span>{label}</span><span class="chev">{}</span></div>{}"#,
+                            if open { " open" } else { "" },
+                            svg(Icon::ChevronRight, 12),
+                            if open {
+                                activity_cards(&msg.activity)
+                            } else {
+                                String::new()
+                            },
                         )
                     };
                     let tag = msg.provider_label.as_deref().unwrap_or("AI");
@@ -1005,7 +1093,7 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
                     };
                     let _ = write!(
                         h,
-                        r#"<div class="msg-a{enter_cls}"{enter_style}><div class="msg-a-hdr"><span class="msg-a-ico">{spark_mini}</span><span class="msg-a-tag">{tag}</span></div><div class="msg-body">{body_html}</div>{footer}</div>"#,
+                        r#"<div class="msg-a{enter_cls}"{enter_style}><div class="msg-a-hdr"><span class="msg-a-ico">{spark_mini}</span><span class="msg-a-tag">{tag}</span></div>{activity}<div class="msg-body">{body_html}</div>{footer}</div>"#,
                         tag = html_escape(tag),
                     );
                 }
@@ -1050,16 +1138,24 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
     }
 
     if state.is_loading && !state.show_history {
-        let loading_lbl = match state.agent_status {
-            Some(st) => st.to_string(),
-            None => format!("{} 생각 중…", state.provider.short_label()),
+        let (live_lbl, steps) = state.live.clone().unwrap_or_else(|| ("생각 중…".to_string(), &[]));
+        // Skeleton lines only while nothing is known yet; then the steps take their place.
+        let skeleton = if steps.is_empty() && !live_lbl.starts_with("응답 작성") {
+            r#"<div class="sk-msg"><div class="sk-line w1"></div><div class="sk-line w2"></div><div class="sk-line w3"></div></div>"#
+        } else {
+            ""
         };
-        // Skeleton answer instead of a spinner: the reply's shape is already on screen.
+        let cards = if steps.is_empty() {
+            String::new()
+        } else {
+            activity_cards(steps)
+        };
         let _ = write!(
             h,
-            r#"<div class="msg-a rb-in"><div class="msg-a-hdr"><span class="msg-a-ico">{spark}</span><span class="msg-a-tag">{lbl}</span><span class="chat-copy sk-stop" data-action="chat-stop">중지</span></div><div class="sk-msg"><div class="sk-line w1"></div><div class="sk-line w2"></div><div class="sk-line w3"></div></div></div>"#,
+            r#"<div class="msg-a rb-in"><div class="msg-a-hdr"><span class="msg-a-ico">{spark}</span><span class="msg-a-tag">{prov}</span><span class="chat-copy sk-stop" data-action="chat-stop">중지</span></div><div class="act-live"><span id="act-live-txt" class="act-live-txt">{lbl}</span></div>{cards}{skeleton}</div>"#,
             spark = svg(Icon::Sparkles, 11),
-            lbl = html_escape(&loading_lbl),
+            prov = html_escape(state.provider.short_label()),
+            lbl = html_escape(&live_lbl),
         );
         if let Some((desc, host)) = state.agent_confirm {
             let _ = write!(
@@ -1068,25 +1164,6 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
                 host = html_escape(host),
                 desc = html_escape(desc),
             );
-        }
-        if !state.agent_log.is_empty() {
-            h.push_str(r#"<div class="sb-agent-log">"#);
-            let start = state.agent_log.len().saturating_sub(6);
-            for entry in &state.agent_log[start..] {
-                let is_err = entry.starts_with("ERR:");
-                let cls = if is_err { "sb-agent-step err" } else { "sb-agent-step" };
-                let marker = if is_err { "!" } else { "✓" };
-                let body = entry
-                    .strip_prefix("OK: ")
-                    .or_else(|| entry.strip_prefix("ERR: "))
-                    .unwrap_or(entry);
-                let _ = write!(
-                    h,
-                    r#"<div class="{cls}">{marker} {}</div>"#,
-                    html_escape(&truncate_chars(body, 56)),
-                );
-            }
-            h.push_str("</div>");
         }
     }
     h.push_str("</div>");
