@@ -8,6 +8,14 @@ mod tools;
 
 pub(in crate::app) use live::LiveActivity;
 
+/// A tab's conversation while another tab is active.
+#[derive(Default)]
+pub(in crate::app) struct TabChat {
+    messages: Vec<ChatMessage>,
+    session_id: Option<u64>,
+    activity_open: std::collections::HashSet<usize>,
+}
+
 use super::bus::SidebarEventHandler;
 use super::{AppEvent, BrowserApp, UiRegion};
 use crate::chat::{
@@ -394,10 +402,61 @@ impl BrowserApp {
         self.rebuild_sidebar_inner(scroll_to_bottom, false);
     }
 
+    /// Each tab has its own conversation (a new tab starts empty). Swaps the shown conversation
+    /// when the active tab changed. Returns whether it swapped.
+    pub(in crate::app) fn sync_chat_to_active_tab(&mut self) -> bool {
+        self.ensure_active_valid();
+        let active = self.tabs[self.active_tab].id;
+        if active == self.chat_tab_id {
+            return false;
+        }
+        // A control-mode run moves between tabs on purpose: its conversation follows it.
+        // ponytail: a tab that already had its own conversation loses it from memory here
+        // (it stays in 기록, every message is saved).
+        if self.agent_run.is_some() {
+            self.tab_chats.remove(&active);
+            self.chat_tab_id = active;
+            return false;
+        }
+        // A reply still arriving belongs to the tab that asked: swap once it has landed.
+        if self.chat_inflight.is_some() || self.chat_compacting.is_some() || self.chat_live.is_some() {
+            return false;
+        }
+        let leaving = TabChat {
+            messages: std::mem::take(&mut self.chat_messages),
+            session_id: self.chat_session_id.take(),
+            activity_open: std::mem::take(&mut self.chat_activity_open),
+        };
+        let had_chat = !leaving.messages.is_empty();
+        if had_chat && self.tabs.iter().any(|t| t.id == self.chat_tab_id) {
+            self.tab_chats.insert(self.chat_tab_id, leaving);
+        }
+        let next = self.tab_chats.remove(&active).unwrap_or_default();
+        let has_chat = !next.messages.is_empty();
+        self.chat_messages = next.messages;
+        self.chat_session_id = next.session_id;
+        self.chat_activity_open = next.activity_open;
+        self.chat_tab_id = active;
+        self.chat_reveal = None;
+        self.chat_show_history = false;
+        self.sidebar_picker = SidebarPicker::None;
+        self.chat_input_lines = 0;
+        // The persistent CLI workers remember the previous conversation: start them fresh.
+        if had_chat || has_chat {
+            crate::chat::reset_all_cli_workers();
+            if self.sidebar_open {
+                self.warm_cli_for_current_mode();
+            }
+        }
+        self.last_sidebar_html.clear();
+        true
+    }
+
     fn rebuild_sidebar_inner(&mut self, scroll_to_bottom: bool, defer_if_composing: bool) {
         if !self.sidebar_open {
             return;
         }
+        let scroll_to_bottom = self.sync_chat_to_active_tab() || scroll_to_bottom;
         if defer_if_composing && self.sidebar_input_composing() {
             self.sidebar_dirty = true;
             self.sidebar_dirty_scroll |= scroll_to_bottom;
@@ -855,16 +914,28 @@ impl BrowserApp {
             return;
         }
         self.chat_input_lines = lines;
-        {
-            doc.set_style_property(
-                id,
-                "height",
-                &format!("{}px", crate::chrome_ui::chat_input_height(lines)),
-            );
-            doc.resolve(anim_time);
-            doc.scroll_to(id, 0.0, 0.0, ScrollBehavior::Instant);
-            self.request_redraw();
-        }
+        resize_text_input(doc, id, crate::chrome_ui::chat_input_height(lines), anim_time);
+        self.request_redraw();
+    }
+}
+
+/// Sets a textarea's height and re-fits its text scroll to the new box.
+///
+/// Blitz keeps a textarea's own text scroll (`TextInputData::scroll_offset`, not the node
+/// scroll) from when it was computed. After a paste into a one-line box that offset is
+/// "caret at the bottom of a 20px box", so growing the box left the text shifted up out of view
+/// until the next keystroke. `clamp_scroll_offset` recomputes it for the new size.
+fn resize_text_input(doc: &mut HtmlDocument, id: blitz_dom::NodeId, height_px: u32, anim_time: f64) {
+    doc.set_style_property(id, "height", &format!("{height_px}px"));
+    doc.resolve(anim_time);
+    let Some(node) = doc.get_node_mut(id) else {
+        return;
+    };
+    let l = node.final_layout();
+    let w = l.size.width - l.padding.left - l.padding.right - l.border.left - l.border.right;
+    let h = l.size.height - l.padding.top - l.padding.bottom - l.border.top - l.border.bottom;
+    if let Some(ti) = node.element_data_mut().and_then(|el| el.text_input_data_mut()) {
+        ti.clamp_scroll_offset(w.max(0.0), h.max(0.0));
     }
 }
 
@@ -1031,6 +1102,42 @@ mod tests {
         assert_eq!(
             *rec.borrow(),
             ["chat-provider:anthropic_api", "chat-save-settings", "chat-font:inc"]
+        );
+    }
+
+    /// Regression: after pasting into the one-line box the text kept the scroll it had in that
+    /// 20px box, so growing the box showed the text shifted up out of view.
+    #[test]
+    fn growing_chat_box_refits_pasted_text() {
+        let mut doc = sidebar_doc(720, false, &[]);
+        let id = doc.get_element_by_id("chat-input").unwrap();
+        doc.set_focus_to(id);
+        doc.with_text_input(id, |mut d| {
+            d.insert_or_replace_selection(
+                "line one
+line two
+line three
+line four",
+            )
+        });
+        // State right after the paste keydown: scrolled to keep the caret in a 1-line box.
+        if let Some(ti) = doc
+            .get_node_mut(id)
+            .and_then(|n| n.element_data_mut())
+            .and_then(|e| e.text_input_data_mut())
+        {
+            ti.scroll_offset = 60.0;
+        }
+        super::resize_text_input(&mut doc, id, crate::chrome_ui::chat_input_height(4), 0.0);
+        let offset = doc
+            .get_node(id)
+            .and_then(|n| n.element_data())
+            .and_then(|e| e.text_input_data())
+            .map(|ti| ti.scroll_offset)
+            .unwrap();
+        assert_eq!(
+            offset, 0.0,
+            "4 lines fit the 4-line box: nothing may stay scrolled away"
         );
     }
 

@@ -443,7 +443,9 @@ impl BrowserApp {
             });
         }
         self.chat_input_lines = 1;
-        self.submit_chat_message(prompt, false, self.chat_config.agent_control);
+        // Small talk ("하이", "고마워") never needs the page: plain reply even in 제어 mode.
+        let agent = self.chat_config.agent_control && !crate::chat::is_small_talk(&prompt);
+        self.submit_chat_message(prompt, false, agent);
     }
 
     pub(in crate::app) fn sidebar_has_selection(&self) -> bool {
@@ -529,6 +531,7 @@ impl BrowserApp {
     }
 
     pub(in crate::app) fn submit_chat_message(&mut self, user_text: String, force_page: bool, agent: bool) {
+        self.sync_chat_to_active_tab();
         if self.chat_compacting.is_some() {
             self.set_status_note("대화 압축이 끝난 뒤 보내 주세요");
             self.rebuild_chrome();
@@ -607,7 +610,7 @@ impl BrowserApp {
                 max_steps: 10,
                 action_log: Vec::new(),
                 notes: Vec::new(),
-                status: "화면 분석 중…".to_string(),
+                status: "생각 중…".to_string(),
                 pending_actions: VecDeque::new(),
                 finish_after_queue: false,
                 finish_cleaned: String::new(),

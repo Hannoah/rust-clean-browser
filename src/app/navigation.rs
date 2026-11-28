@@ -783,6 +783,7 @@ impl BrowserApp {
         self.unload_active();
         self.active_tab = target_idx;
         // A kept Clean-mode page: show it exactly as it was left, no re-render.
+        self.rebuild_sidebar(true);
         let tab = &self.tabs[target_idx];
         if tab.doc.is_some() && !tab.js_mode {
             let id = tab.id;
@@ -798,6 +799,7 @@ impl BrowserApp {
         }
         let restore_y = Some(self.tabs[target_idx].scroll_y);
         self.load_active_tab(false, restore_y);
+        self.rebuild_sidebar(true);
     }
 
     pub(super) fn open_new_tab(&mut self, url: &str) {
@@ -822,6 +824,7 @@ impl BrowserApp {
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
         self.load_active_tab(false, None);
+        self.rebuild_sidebar(true);
     }
 
     /// Ctrl+click: add a sleeping tab right after the active one without loading it.
@@ -886,7 +889,9 @@ impl BrowserApp {
         }
 
         let had_doc = self.tabs[idx].unload();
+        let closed_id = self.tabs[idx].id;
         self.tabs.remove(idx);
+        self.tab_chats.remove(&closed_id);
         if had_doc {
             trim_process_working_set();
         }
