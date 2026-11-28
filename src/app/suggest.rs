@@ -156,7 +156,7 @@ impl BrowserApp {
     }
 
     /// Omnibox container's left, bottom and width in main-window logical px.
-    fn url_bar_rect(&self) -> Option<(f64, f64, u32)> {
+    pub(super) fn url_bar_rect(&self) -> Option<(f64, f64, u32)> {
         let id = self
             .chrome_doc
             .get_element_by_id("omni-box")

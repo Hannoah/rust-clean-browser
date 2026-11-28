@@ -1,0 +1,1146 @@
+use super::{THEME_CSS, enter_attrs, format_relative_time, truncate_chars};
+use crate::cleaner::html_escape;
+use crate::icons::{Icon, svg};
+use std::fmt::Write;
+
+// ── Docked AI Assistant Sidebar ──
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SidebarPicker {
+    #[default]
+    None,
+    Provider,
+    Model,
+}
+
+pub struct SidebarRenderState<'a> {
+    pub provider: crate::chat::ChatProvider,
+    pub avail: crate::chat::CliAvailability,
+    pub messages: &'a [crate::chat::ChatMessage],
+    pub is_loading: bool,
+    pub include_page: bool,
+    pub agent_control: bool,
+    pub agent_status: Option<&'a str>,
+    pub agent_log: &'a [String],
+    pub sidebar_wide: bool,
+    pub show_settings: bool,
+    pub picker_open: SidebarPicker,
+    pub active_title: &'a str,
+    pub active_url: &'a str,
+    pub active_model_id: &'a str,
+    pub active_model_label: &'a str,
+    pub control_model_id: &'a str,
+    /// Stored `--effort` override (`""` = auto). Only the Gemini/Claude CLI agents use it.
+    pub effort: &'a str,
+    pub custom_presets: &'a [crate::chat::AgentPreset],
+    pub model_options: &'a [crate::chat::ModelOption],
+    pub agy_models_loading: bool,
+    pub can_retry: bool,
+    pub api_endpoint: &'a str,
+    pub api_model: &'a str,
+    pub has_api_key: bool,
+    pub draft: &'a str,
+    /// Masked saved-key hint (`"••••••Ab12"`), never the secret itself.
+    pub api_key_hint: &'a str,
+    /// Message text size in px.
+    pub font_size: u32,
+    /// `(message index, chars shown)` while a reply is typing out.
+    pub reveal: Option<(usize, usize)>,
+    pub show_history: bool,
+    pub history: &'a [crate::chat::ChatSession],
+    pub session_id: Option<u64>,
+    /// `(action description, host)` of an agent navigation awaiting the user's OK.
+    pub agent_confirm: Option<(&'a str, &'a str)>,
+    pub motion: SidebarMotion,
+}
+
+/// Time-based entrance animations for the sidebar (see `enter_attrs`), in ms since appearing.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SidebarMotion {
+    /// `(message index, ms)` for the newest message.
+    pub msg: Option<(usize, u64)>,
+    /// Settings card / history list / picker sheet that was just opened.
+    pub panel_ms: Option<u64>,
+    /// The sidebar itself, just opened.
+    pub shell_ms: Option<u64>,
+}
+
+const ENTER_WINDOW_MS: u64 = 160;
+
+/// Pixel height of the chat textarea showing `lines` lines (line-height 20px + padding).
+pub fn chat_input_height(lines: usize) -> u32 {
+    8 + 20 * lines.clamp(1, 6) as u32
+}
+
+// Text selection: THEME_CSS sets `* { user-select: none }`, and Blitz starts a drag-selection only
+// when the pressed element computes `auto` AND its parent isn't `none`. So message text (and its
+// wrappers, for the parent check) opts back in; buttons inside replies stay `none`.
+const SIDEBAR_CSS: &str = r#"
+html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surface); user-select: none; }
+.msg-u-wrap, .msg-u, .msg-a, .msg-body, .msg-body *, .msg-a.err > div { user-select: auto; }
+.msg-body .chat-code-hdr, .msg-body .chat-code-hdr *, .msg-a-hdr, .msg-a-hdr *, .msg-a-ftr, .msg-a-ftr *,
+.msg-u-ctx, .msg-u-ctx *, .err-acts, .err-acts *, [data-action], [data-action] * { user-select: none; }
+[data-action] { cursor: pointer; }
+.sb-shell {
+  display: flex; flex-direction: column; width: 100%; height: 100%;
+  border-left: 1px solid var(--border); background: var(--surface);
+}
+.sb-hdr {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 46px; padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--divider);
+  background: var(--surface); flex-shrink: 0;
+}
+.sb-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--text); letter-spacing: -0.015em; min-width: 0; }
+.sb-title-ico {
+  width: 24px; height: 24px; border-radius: 8px;
+  background: var(--ink); color: var(--ink-fg);
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.sb-title-txt { white-space: nowrap; overflow: hidden; }
+.sb-mode-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 20px; padding: 0 7px; border-radius: 999px;
+  background: var(--accent-bg); color: var(--accent-text);
+  font-size: 10px; font-weight: 600; flex-shrink: 0;
+}
+.sb-acts { display: flex; align-items: center; gap: 1px; flex-shrink: 0; }
+.sb-hbtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 9px;
+  color: var(--text-2);
+}
+.sb-hbtn:hover { background: var(--hover); color: var(--text); }
+.sb-hbtn:active { background: var(--press); }
+.sb-hbtn.on { background: var(--surface-3); color: var(--text); }
+
+/* ── Settings card ── */
+.sb-settings {
+  flex: 0 1 auto; min-height: 0; max-height: calc(100% - 150px); overflow-y: auto;
+  margin: 8px 10px 4px; padding: 4px 12px 12px; border-radius: 14px;
+  border: 1px solid var(--border-strong); background: var(--surface);
+  box-shadow: var(--shadow-md);
+  display: flex; flex-direction: column;
+}
+.set-sec { padding: 10px 0; border-bottom: 1px solid var(--divider); display: flex; flex-direction: column; gap: 6px; }
+.set-sec:last-child { border-bottom: none; padding-bottom: 2px; }
+.set-lbl { font-size: 10.5px; font-weight: 700; color: var(--text-2); letter-spacing: 0.01em; }
+.set-lbl-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.set-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.set-chip {
+  display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 10px;
+  border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2);
+  font-size: 11px; font-weight: 500; color: var(--text-2); white-space: nowrap;
+}
+.set-chip:hover { background: var(--hover); color: var(--text); border-color: var(--border-strong); }
+.set-chip.active { background: var(--ink); border-color: var(--ink); color: var(--ink-fg); font-weight: 600; }
+.set-chip.dim { opacity: 0.55; }
+.set-inp {
+  width: 100%; height: 32px; padding: 0 10px; border-radius: 9px;
+  border: 1px solid var(--border); background: var(--surface-2);
+  color: var(--text); font-size: 12px; outline: none;
+}
+.set-inp:focus { background: var(--surface); border-color: var(--accent); box-shadow: 0 0 0 2.5px var(--accent-ring); }
+.set-inp.secret { color: transparent; caret-color: var(--text); }
+.set-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.set-note { font-size: 10.5px; color: var(--text-3); line-height: 1.4; flex: 1; }
+.set-btns { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.font-row { display: flex; align-items: center; gap: 6px; }
+.font-step {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 30px; height: 28px; padding: 0 8px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface-2);
+  font-size: 13px; font-weight: 600; color: var(--text);
+}
+.font-step:hover { background: var(--hover); border-color: var(--border-strong); }
+.font-val { min-width: 44px; text-align: center; font-size: 12px; font-weight: 600; color: var(--text); }
+.font-prev { flex: 1; text-align: right; color: var(--text-2); white-space: nowrap; overflow: hidden; }
+.sbtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 28px; padding: 0 12px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface);
+  font-size: 11px; font-weight: 600; color: var(--text);
+}
+.sbtn:hover { background: var(--hover); }
+.sbtn.primary { background: var(--ink); border-color: var(--ink); color: var(--ink-fg); }
+.sbtn.primary:hover { opacity: 0.88; }
+.sbtn.danger { color: var(--danger); }
+
+/* ── Conversation ── */
+.sb-msgs {
+  flex: 1; min-height: 0; overflow-y: auto; padding: 16px 16px 18px;
+  background: var(--surface);
+  display: flex; flex-direction: column; gap: 20px;
+}
+.sb-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; padding: 18px 4px 8px; gap: 9px; margin: auto 0;
+}
+.sb-emblem {
+  width: 44px; height: 44px; border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--ink); color: var(--ink-fg);
+  box-shadow: var(--shadow-sm); margin-bottom: 2px;
+}
+.sb-empty-t { font-size: 17px; font-weight: 700; color: var(--text); letter-spacing: -0.025em; }
+.sb-empty-s { font-size: 12px; color: var(--text-2); line-height: 1.5; max-width: 268px; }
+.sb-page-pill {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface-2);
+  font-size: 11px; color: var(--text-2); white-space: nowrap; overflow: hidden;
+}
+.sb-page-dot { width: 6px; height: 6px; border-radius: 3px; background: var(--green); flex-shrink: 0; }
+.sb-quick-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
+  width: 100%; margin-top: 10px;
+}
+.qcard {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+  padding: 11px 12px; border-radius: 13px; text-align: left;
+  border: 1px solid var(--border); background: var(--surface);
+  box-shadow: var(--shadow-xs);
+}
+.qcard:hover { background: var(--surface-2); border-color: var(--border-strong); }
+.qcard:active { background: var(--press); }
+.qcard-top { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text); }
+.qcard-ico { color: var(--text-2); display: inline-flex; flex-shrink: 0; }
+.qcard:hover .qcard-ico { color: var(--accent); }
+.qcard-sub { font-size: 11px; color: var(--text-3); line-height: 1.35; }
+
+.msg-u-wrap { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.msg-u-ctx {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10.5px; color: var(--text-3); padding-right: 4px; max-width: 86%; white-space: nowrap; overflow: hidden;
+}
+.msg-u {
+  max-width: 86%; padding: 9px 13px;
+  border-radius: 16px 16px 5px 16px;
+  background: var(--accent-bg); color: var(--text);
+  font-size: var(--chat-fs); line-height: 1.55; white-space: pre-wrap;
+}
+.msg-a { align-self: stretch; padding: 2px 0; color: var(--text); }
+.msg-a-hdr { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.msg-a-ico {
+  width: 22px; height: 22px; border-radius: 7px;
+  background: var(--ink); color: var(--ink-fg);
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.msg-a-tag { font-size: 11.5px; font-weight: 600; color: var(--text-2); letter-spacing: -0.01em; }
+.msg-body {
+  padding-left: 30px;
+  font-size: var(--chat-fs); line-height: 1.68; color: var(--text);
+}
+.msg-body p { margin: 0 0 10px; }
+.msg-body p:last-child { margin-bottom: 0; }
+.msg-body h3 { font-size: 1.08em; font-weight: 700; letter-spacing: -0.015em; margin: 16px 0 6px; }
+.msg-body h4 { font-size: 1em; font-weight: 700; margin: 12px 0 4px; }
+.msg-body ul, .msg-body ol { margin: 4px 0 10px; padding-left: 20px; }
+.msg-body li { margin-bottom: 4px; }
+.msg-body blockquote {
+  margin: 10px 0; padding: 8px 12px; border-left: 3px solid var(--accent);
+  background: var(--surface-2); border-radius: 0 9px 9px 0; color: var(--text-2);
+}
+.msg-body blockquote p { margin: 0 0 4px; }
+.msg-body blockquote p:last-child { margin-bottom: 0; }
+.msg-body hr { border: none; border-top: 1px solid var(--divider); margin: 14px 0; }
+.msg-body a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.msg-body code {
+  padding: 1.5px 5px; border-radius: 5px; background: var(--surface-3);
+  font-family: "Cascadia Code", Consolas, monospace; font-size: 0.92em;
+}
+.type-caret {
+  display: inline-block; width: 7px; height: 1.05em; margin-left: 2px;
+  border-radius: 2px; background: var(--accent); vertical-align: text-bottom;
+}
+.chat-tbl {
+  margin: 10px 0; border-radius: 10px; border: 1px solid var(--border);
+  overflow-x: auto; background: var(--surface);
+}
+.chat-tbl table { width: 100%; border-collapse: collapse; font-size: 0.92em; }
+.chat-tbl th, .chat-tbl td {
+  padding: 7px 10px; border-bottom: 1px solid var(--divider);
+  border-right: 1px solid var(--divider); text-align: left;
+}
+.chat-tbl th:last-child, .chat-tbl td:last-child { border-right: none; }
+.chat-tbl tr:last-child td { border-bottom: none; }
+.chat-tbl th { font-weight: 600; color: var(--text-2); background: var(--surface-2); }
+.chat-code {
+  margin: 10px 0; border-radius: 11px; border: 1px solid var(--border);
+  background: var(--surface-2); overflow: hidden;
+}
+.chat-code-hdr {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 6px 4px 12px; border-bottom: 1px solid var(--divider);
+  background: var(--surface-3); font-size: 11px; font-weight: 600; color: var(--text-2);
+}
+.chat-code pre {
+  margin: 0; padding: 11px 13px; overflow-x: auto;
+  font-family: "Cascadia Code", Consolas, monospace; font-size: 0.92em; line-height: 1.55;
+}
+.chat-code pre code { padding: 0; background: transparent; font-size: 1em; }
+.msg-a-ftr { display: flex; align-items: center; gap: 2px; padding-left: 26px; margin-top: 6px; }
+.chat-copy {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; color: var(--text-3);
+}
+.chat-copy:hover { background: var(--hover); color: var(--text); }
+.sel-hint { font-size: 10.5px; color: var(--text-3); margin-left: auto; padding-right: 4px; }
+
+.msg-a.err {
+  padding: 11px 13px; border-radius: 12px;
+  background: var(--danger-bg); color: var(--danger);
+  font-size: 12.5px; line-height: 1.55;
+}
+.msg-a.err .msg-a-hdr { margin-bottom: 4px; }
+.msg-a.err .msg-a-tag { color: var(--danger); }
+.err-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.err-retry {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 10px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--border);
+  font-size: 11px; font-weight: 600; color: var(--text);
+}
+.err-retry:hover { border-color: var(--border-strong); background: var(--surface-2); }
+
+.sb-loading {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 0 4px 2px; font-size: 12.5px; font-weight: 500; color: var(--text-2);
+}
+.sb-loading-l { display: flex; align-items: center; gap: 8px; }
+.sb-agent-log {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 8px 11px; border-radius: 11px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  font-size: 11px; color: var(--text-2);
+}
+.sb-agent-step { white-space: nowrap; overflow: hidden; line-height: 1.4; }
+.sb-agent-step.err { color: var(--danger); }
+.agent-confirm {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 12px 13px; border-radius: 13px;
+  background: var(--amber-bg); border: 1px solid var(--amber);
+  font-size: 12px; color: var(--text); line-height: 1.5;
+}
+.ac-t { font-weight: 700; color: var(--amber-text); }
+.ac-d { font-size: 11px; color: var(--text-2); font-family: "Cascadia Code", Consolas, monospace; white-space: nowrap; overflow: hidden; }
+.ac-btns { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; }
+@keyframes tab-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.fav-spin {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; flex-shrink: 0;
+  animation: tab-spin 0.8s linear infinite;
+}
+
+/* ── Conversation history ── */
+.hist-hdr { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.hist-t { font-size: 13px; font-weight: 700; color: var(--text); }
+.hist-sub { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+.hist-list { display: flex; flex-direction: column; gap: 4px; }
+.hist-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 8px 9px 12px; border-radius: 11px;
+  border: 1px solid transparent;
+}
+.hist-row:hover { background: var(--hover); }
+.hist-row.active { background: var(--surface-2); border-color: var(--border); }
+.hist-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.hist-title { font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; }
+.hist-meta { font-size: 10.5px; color: var(--text-3); white-space: nowrap; }
+.hist-del {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 8px; color: var(--text-3); flex-shrink: 0;
+}
+.hist-del:hover { background: var(--danger-bg); color: var(--danger); }
+.hist-empty { padding: 36px 8px; text-align: center; font-size: 12px; color: var(--text-3); }
+
+/* ── Picker sheet (above the composer) ── */
+.sb-sheet {
+  display: flex; flex-direction: column;
+  margin: 0 12px 6px; border-radius: 14px;
+  border: 1px solid var(--border-strong); background: var(--surface);
+  box-shadow: var(--shadow-md); flex-shrink: 0; overflow: hidden;
+}
+.sheet-hdr {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 9px 12px 6px; font-size: 11px; font-weight: 600; color: var(--text-2);
+}
+.sheet-act {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 500; color: var(--accent);
+}
+.sheet-act:hover { background: var(--accent-bg); }
+.sheet-list { max-height: 220px; overflow-y: auto; padding: 2px 8px 8px; display: flex; flex-direction: column; gap: 2px; }
+.sheet-sec { padding: 6px 6px 2px; font-size: 10px; font-weight: 700; color: var(--text-3); letter-spacing: 0.03em; }
+.sheet-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  min-height: 32px; padding: 5px 9px; border-radius: 9px;
+  font-size: 12px; color: var(--text);
+}
+.sheet-row:hover { background: var(--hover); }
+.sheet-row.active { background: var(--surface-3); color: var(--text); font-weight: 600; }
+.sheet-row-l { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1; }
+.sheet-row-txt { display: flex; flex-direction: column; min-width: 0; }
+.sheet-name { white-space: nowrap; overflow: hidden; }
+.sheet-sub { font-size: 10px; color: var(--text-3); font-family: "Cascadia Code", Consolas, monospace; white-space: nowrap; overflow: hidden; }
+.sheet-chk { color: var(--accent); display: inline-flex; flex-shrink: 0; }
+.sheet-tag { font-size: 10px; color: var(--text-3); flex-shrink: 0; }
+.sheet-ftr {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; border-top: 1px solid var(--divider); background: var(--surface-2);
+  font-size: 11px; font-weight: 500; color: var(--text-2);
+}
+.sheet-ftr:hover { background: var(--hover); color: var(--text); }
+
+/* ── Composer ── */
+.sb-comp { padding: 6px 12px 10px; background: var(--surface); flex-shrink: 0; }
+.composer {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 10px 9px 14px; border-radius: 18px;
+  border: 1px solid var(--border-strong); background: var(--surface-2);
+  box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--divider);
+}
+.composer:focus-within {
+  border-color: var(--accent); background: var(--surface);
+  box-shadow: 0 0 0 3px var(--accent-ring), var(--shadow-sm);
+}
+#chat-input {
+  width: 100%; padding: 4px 0; border: none; background: transparent; resize: none;
+  color: var(--text); font-size: 13px; line-height: 20px; outline: none;
+  font-family: inherit; overflow-y: auto; max-height: 120px;
+}
+.comp-bar { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.comp-left { display: flex; align-items: center; gap: 4px; min-width: 0; flex: 1; overflow: hidden; }
+.cpill {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 9px; border-radius: 999px;
+  background: var(--surface-2);
+  font-size: 11px; font-weight: 600; color: var(--text-2);
+  white-space: nowrap; min-width: 0;
+}
+.cpill:hover { background: var(--hover); color: var(--text); }
+.cpill.on { background: var(--surface-3); color: var(--text); }
+.cpill.mod { flex: 0 1 auto; }
+.cpill.ctx.on { background: var(--green-bg); color: var(--green-text); }
+.cpill.ctrl.on { background: var(--accent-bg); color: var(--accent-text); }
+.cpill-txt { white-space: nowrap; overflow: hidden; }
+.cpill-chev { color: var(--text-3); display: inline-flex; flex-shrink: 0; }
+.cpill.on .cpill-chev { color: var(--text); }
+.pdot { width: 6px; height: 6px; border-radius: 3px; flex-shrink: 0; }
+.pdot.ok { background: var(--green); }
+.pdot.off { background: var(--text-3); opacity: 0.45; }
+.cpill-dot { width: 5px; height: 5px; border-radius: 3px; background: var(--text-3); opacity: 0.45; flex-shrink: 0; }
+.cpill.ctx.on .cpill-dot { background: var(--green); opacity: 1; }
+.cpill.ctrl.on .cpill-dot { background: var(--accent); opacity: 1; }
+.send-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 999px;
+  background: var(--ink); color: var(--ink-fg); flex-shrink: 0;
+}
+.send-btn:hover { opacity: 0.85; }
+.send-btn.stop { background: var(--danger); color: #ffffff; }
+.comp-hint { padding: 5px 6px 0; font-size: 10px; color: var(--text-3); text-align: center; }
+
+/* ── Motion ── */
+.sb-shell.rb-in { animation: rb-slide-l 120ms var(--ease-out) both; }
+.sb-settings.rb-in, .sb-sheet.rb-in { animation: rb-drop 100ms var(--ease-out) both; }
+.sb-hbtn, .set-chip, .sbtn, .cpill, .send-btn, .qcard, .chat-copy, .font-step, .hist-row,
+.hist-del, .err-retry, .sheet-row, .sheet-ftr {
+  transition: background 60ms ease, color 60ms ease, border-color 60ms ease, opacity 60ms ease,
+    transform 80ms var(--ease-out);
+}
+.sb-hbtn:active, .set-chip:active, .sbtn:active, .cpill:active, .chat-copy:active, .font-step:active,
+.hist-del:active, .err-retry:active, .send-btn:active, .qcard:active, .hist-row:active, .sheet-row:active {
+  opacity: 0.78;
+}
+.qcard:hover { transform: translateY(-1px); }
+
+/* ── Answer skeleton (replaces the spinner while the model thinks) ── */
+.sk-msg { display: flex; flex-direction: column; gap: 8px; padding-left: 30px; padding-top: 2px; }
+.sk-line { height: 10px; border-radius: 6px; background: var(--surface-3); animation: rb-pulse 1.1s ease-in-out infinite; }
+.sk-line.w1 { width: 92%; }
+.sk-line.w2 { width: 76%; animation-delay: 140ms; }
+.sk-line.w3 { width: 52%; animation-delay: 280ms; }
+.msg-a-hdr .sk-stop { margin-left: auto; }
+"#;
+
+/// Inserts the typing caret inside the last text block so it trails the words, not a new line.
+fn with_type_caret(mut body_html: String) -> String {
+    const CARET: &str = r#"<span class="type-caret"></span>"#;
+    for close in [
+        "</p>",
+        "</li>",
+        "</h3>",
+        "</h4>",
+        "</code></pre></div>",
+        "</td></tr></tbody></table></div>",
+    ] {
+        if body_html.ends_with(close) {
+            let at = body_html.len() - close.len();
+            body_html.insert_str(at, CARET);
+            return body_html;
+        }
+    }
+    body_html.push_str(CARET);
+    body_html
+}
+
+fn render_settings_card(h: &mut String, state: &SidebarRenderState<'_>) {
+    let (enter_cls, enter_style) = enter_attrs(state.motion.panel_ms, ENTER_WINDOW_MS);
+    let _ = write!(
+        h,
+        r#"<div id="chat-settings" class="sb-settings{enter_cls}"{enter_style}>"#
+    );
+    h.push_str(r#"<div class="set-sec"><div class="set-lbl">AI 프로바이더</div><div class="set-chips">"#);
+    for &p in crate::chat::ChatProvider::ALL {
+        // The legacy `gemini` CLI entry was folded into the `agy` (Gemini) agent.
+        if p == crate::chat::ChatProvider::Gemini {
+            continue;
+        }
+        let is_act = p == state.provider;
+        let cli_missing = p.is_cli() && !state.avail.is_available(p);
+        let cls = match (is_act, cli_missing) {
+            (true, true) => "set-chip active dim",
+            (true, false) => "set-chip active",
+            (false, true) => "set-chip dim",
+            (false, false) => "set-chip",
+        };
+        let _ = write!(
+            h,
+            r#"<div class="{cls}" data-action="chat-provider:{pid}">{plbl}</div>"#,
+            pid = p.id(),
+            plbl = html_escape(p.short_label()),
+        );
+    }
+    h.push_str("</div></div>");
+
+    // Connection first: these inputs and the 저장 button used to sit below the card's fold.
+    if state.provider.is_cli() {
+        let _ = write!(
+            h,
+            r#"<div class="set-sec">
+  <div class="set-lbl">사용자 지정 모델 ID (비워두면 기본 모델)</div><input id="chat-api-model" class="set-inp" type="text" value="{model}" placeholder="예: gemini-4-neon-high / sonnet / o4-mini" />
+  <div class="set-row">
+    <span class="set-note">{hint}</span>
+    <div class="set-btns"><div class="sbtn" data-action="chat-open-login">터미널 로그인</div><div class="sbtn primary" data-action="chat-save-settings">적용</div></div>
+  </div>
+</div>"#,
+            model = html_escape(state.api_model),
+            hint = html_escape(state.provider.login_hint()),
+        );
+        // Only the Gemini (`agy`) and Claude CLI agents accept an `--effort` flag.
+        if matches!(
+            state.provider,
+            crate::chat::ChatProvider::Agy | crate::chat::ChatProvider::Claude
+        ) {
+            h.push_str(r#"<div class="set-sec"><div class="set-lbl">Effort (추론 강도 · 자동은 제어 모드에서 낮음)</div><div class="set-chips">"#);
+            for (id, lbl) in [("", "자동"), ("low", "낮음"), ("medium", "중간"), ("high", "높음")] {
+                let cls = if state.effort == id {
+                    "set-chip active"
+                } else {
+                    "set-chip"
+                };
+                let _ = write!(h, r#"<div class="{cls}" data-action="chat-effort:{id}">{lbl}</div>"#);
+            }
+            h.push_str("</div></div>");
+        }
+    } else {
+        let (key_lbl, key_ph): (String, &str) = if state.has_api_key {
+            (
+                format!("API Key · 저장됨 {} (바꾸려면 새 키 입력)", state.api_key_hint),
+                "새 키 입력 (입력값은 화면에 표시되지 않음)",
+            )
+        } else {
+            (
+                "API Key (입력값은 화면에 표시되지 않음 · 로컬 Ollama는 비워두기)".to_string(),
+                "sk-...",
+            )
+        };
+        let clear_key_btn = if state.has_api_key {
+            r#"<div class="sbtn danger" data-action="chat-clear-key">키 삭제</div>"#
+        } else {
+            ""
+        };
+        let _ = write!(
+            h,
+            r#"<div class="set-sec">
+  <div class="set-lbl">Endpoint URL (Ollama: http://localhost:11434/v1/chat/completions)</div><input id="chat-api-endpoint" class="set-inp" type="text" value="{ep}" />
+  <div class="set-lbl">Model</div><input id="chat-api-model" class="set-inp" type="text" value="{model}" />
+  <div class="set-lbl">{key_lbl}</div><input id="chat-api-key" class="set-inp secret" type="password" value="" placeholder="{key_ph}" />
+  <div class="set-row">
+    <span class="set-note">{hint}</span>
+    <div class="set-btns">{clear_key_btn}<div class="sbtn primary" data-action="chat-save-settings">저장</div></div>
+  </div>
+</div>"#,
+            ep = html_escape(state.api_endpoint),
+            model = html_escape(state.api_model),
+            key_lbl = html_escape(&key_lbl),
+            key_ph = html_escape(key_ph),
+            hint = html_escape(state.provider.login_hint()),
+        );
+    }
+
+    let _ = write!(
+        h,
+        r#"<div class="set-sec"><div class="set-lbl">글자 크기</div><div class="font-row"><div class="font-step" data-action="chat-font:dec" title="작게">−</div><span class="font-val">{fs}px</span><div class="font-step" data-action="chat-font:inc" title="크게">+</div><div class="font-step" data-action="chat-font:reset" title="기본 크기">기본</div><span class="font-prev" style="font-size:{fs}px">가나다 Abc</span></div></div>"#,
+        fs = state.font_size,
+    );
+
+    let set_refresh = if state.provider == crate::chat::ChatProvider::Agy {
+        if state.agy_models_loading {
+            r#"<span class="sheet-tag">불러오는 중…</span>"#.to_string()
+        } else {
+            format!(
+                r#"<div class="sheet-act" data-action="chat-refresh-models">{}<span>새로고침</span></div>"#,
+                svg(Icon::Reload, 10)
+            )
+        }
+    } else {
+        String::new()
+    };
+    let _ = write!(
+        h,
+        r#"<div class="set-sec"><div class="set-lbl-row"><span class="set-lbl">모델 프리셋</span>{set_refresh}</div><div class="set-chips">"#,
+    );
+    for opt in state.model_options {
+        let cls = if opt.id == state.active_model_id {
+            "set-chip active"
+        } else {
+            "set-chip"
+        };
+        let _ = write!(
+            h,
+            r#"<div class="{cls}" data-action="chat-model:{id}">{lbl}</div>"#,
+            id = html_escape(&opt.id),
+            lbl = html_escape(&opt.label),
+        );
+    }
+    h.push_str("</div></div>");
+
+    h.push_str(r#"<div class="set-sec"><div class="set-lbl">브라우저 제어용 빠른 모델</div><div class="set-chips">"#);
+    let ctrl_same_cls = if state.control_model_id.is_empty() {
+        "set-chip active"
+    } else {
+        "set-chip"
+    };
+    let ctrl_auto_lbl = if state.provider == crate::chat::ChatProvider::Agy {
+        "자동 (Flash Low · 빠름)"
+    } else {
+        "대화 모델과 동일"
+    };
+    let _ = write!(
+        h,
+        r#"<div class="{ctrl_same_cls}" data-action="chat-ctrl-model:">{ctrl_auto_lbl}</div>"#
+    );
+    for opt in state.model_options.iter().filter(|o| !o.id.is_empty()) {
+        let cls = if opt.id == state.control_model_id {
+            "set-chip active"
+        } else {
+            "set-chip"
+        };
+        let _ = write!(
+            h,
+            r#"<div class="{cls}" data-action="chat-ctrl-model:{id}">{lbl}</div>"#,
+            id = html_escape(&opt.id),
+            lbl = html_escape(&opt.label),
+        );
+    }
+    h.push_str("</div></div>");
+
+    h.push_str(r#"<div class="set-sec"><div class="set-lbl">제어 프리셋 (원클릭 매크로)</div>"#);
+    if !state.custom_presets.is_empty() {
+        h.push_str(r#"<div class="set-chips">"#);
+        for (i, preset) in state.custom_presets.iter().enumerate() {
+            let _ = write!(
+                h,
+                r#"<div class="set-chip"><span>{title}</span><span style="margin-left:4px;opacity:0.7" data-action="chat-preset-del:{i}" title="삭제">×</span></div>"#,
+                title = html_escape(&preset.title),
+            );
+        }
+        h.push_str("</div>");
+    }
+    h.push_str(
+        r#"<div style="display:flex;gap:5px;align-items:center"><input id="chat-preset-title" class="set-inp" style="flex:0 0 110px" type="text" value="" placeholder="이름" /><input id="chat-preset-prompt" class="set-inp" style="flex:1" type="text" value="" placeholder="실행할 지시 내용" /><div class="sbtn" data-action="chat-preset-add">추가</div></div><div class="set-note">이름과 지시 내용을 입력하고 추가하면 빈 대화 화면에 실행 카드로 나타납니다.</div></div>"#,
+    );
+    h.push_str("</div>");
+}
+
+fn render_history_panel(h: &mut String, state: &SidebarRenderState<'_>) {
+    let del_all = if state.history.is_empty() {
+        String::new()
+    } else {
+        r#"<div class="sbtn danger" data-action="chat-del-all">전체 삭제</div>"#.to_string()
+    };
+    let _ = write!(
+        h,
+        r#"<div class="hist-hdr"><div><div class="hist-t">대화 기록</div><div class="hist-sub">이 PC에만 저장됩니다 · {n}개</div></div>{del_all}</div>"#,
+        n = state.history.len(),
+    );
+    if state.history.is_empty() {
+        h.push_str(r#"<div class="hist-empty">저장된 대화가 없습니다.<br/>대화를 시작하면 자동으로 저장됩니다.</div>"#);
+        return;
+    }
+    let (enter_cls, enter_style) = enter_attrs(state.motion.panel_ms, ENTER_WINDOW_MS);
+    let _ = write!(h, r#"<div class="hist-list{enter_cls}"{enter_style}>"#);
+    let trash = svg(Icon::Trash, 13);
+    for s in state.history {
+        let cls = if Some(s.id) == state.session_id {
+            "hist-row active"
+        } else {
+            "hist-row"
+        };
+        let _ = write!(
+            h,
+            r#"<div class="{cls}" data-action="chat-load:{id}"><div class="hist-main"><span class="hist-title">{title}</span><span class="hist-meta">{when} · 메시지 {n}개</span></div><span class="hist-del" data-action="chat-del:{id}" title="이 대화 삭제">{trash}</span></div>"#,
+            id = s.id,
+            title = html_escape(&s.title),
+            when = format_relative_time(s.updated),
+            n = s.messages.len(),
+        );
+    }
+    h.push_str("</div>");
+}
+
+fn render_quick_actions(state: &SidebarRenderState<'_>, is_internal: bool) -> String {
+    let cards: &[(&str, Icon, &str, &str)] = if state.agent_control {
+        &[
+            (
+                "chat-quick:extract-tables",
+                Icon::Sparkles,
+                "표 데이터 추출",
+                "테이블 전체를 표로 정리",
+            ),
+            (
+                "chat-quick:compare-tabs",
+                Icon::BookOpen,
+                "열린 탭 비교",
+                "탭 전환하며 핵심 비교",
+            ),
+            (
+                "chat-quick:extract-links",
+                Icon::ExternalLink,
+                "주요 링크 수집",
+                "페이지 링크 분류 정리",
+            ),
+            ("chat-quick:summary", Icon::Zap, "페이지 요약", "핵심 내용 한눈에"),
+        ]
+    } else if is_internal {
+        &[]
+    } else {
+        &[
+            ("chat-quick:summary", Icon::Sparkles, "페이지 요약", "핵심 내용 한눈에"),
+            ("chat-quick:bullets", Icon::BookOpen, "핵심 포인트", "3~5줄 불릿 정리"),
+            ("chat-quick:explain-ko", Icon::Zap, "쉽게 설명", "한국어 쉬운 해설"),
+            (
+                "chat-quick:translate",
+                Icon::ExternalLink,
+                "한국어 번역",
+                "자연스러운 번역",
+            ),
+        ]
+    };
+    if cards.is_empty() && state.custom_presets.is_empty() {
+        return String::new();
+    }
+    let mut qa = String::from(r#"<div class="sb-quick-grid">"#);
+    for (action, icon, title, sub) in cards {
+        let _ = write!(
+            qa,
+            r#"<div class="qcard" data-action="{action}"><div class="qcard-top"><span class="qcard-ico">{ico}</span><span>{title}</span></div><div class="qcard-sub">{sub}</div></div>"#,
+            ico = svg(*icon, 13),
+        );
+    }
+    for (i, preset) in state.custom_presets.iter().enumerate() {
+        let _ = write!(
+            qa,
+            r#"<div class="qcard" data-action="chat-preset-run:{i}"><div class="qcard-top"><span class="qcard-ico">{ico}</span><span>{title}</span></div><div class="qcard-sub">{sub}</div></div>"#,
+            ico = svg(Icon::Zap, 13),
+            title = html_escape(&truncate_chars(&preset.title, 18)),
+            sub = html_escape(&truncate_chars(&preset.prompt, 26)),
+        );
+    }
+    qa.push_str("</div>");
+    qa
+}
+
+pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<String>) {
+    let mut code_blocks = Vec::new();
+    let mut h = String::with_capacity(16 * 1024);
+    h.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>");
+    h.push_str(THEME_CSS);
+    h.push_str(SIDEBAR_CSS);
+    let _ = write!(h, ":root {{ --chat-fs: {}px; }}", state.font_size);
+    let on = |b: bool| if b { "sb-hbtn on" } else { "sb-hbtn" };
+    let mode_badge = if state.agent_control {
+        r#"<span class="sb-mode-pill"><span class="pdot ok"></span><span>제어</span></span>"#
+    } else {
+        ""
+    };
+    let _ = write!(
+        h,
+        r#"</style></head><body><div class="sb-shell{shell_cls}"{shell_style}>
+<div class="sb-hdr">
+  <div class="sb-title"><span class="sb-title-ico">{spark}</span><span class="sb-title-txt">AI Assistant</span>{mode_badge}</div>
+  <div class="sb-acts">
+    <div class="sb-hbtn" data-action="chat-clear" title="새 대화">{plus}</div>
+    <div class="{hist_cls}" data-action="chat-toggle-history" title="대화 기록">{hist}</div>
+    <div class="{width_cls}" data-action="chat-toggle-width" title="사이드바 폭 전환 (경계 드래그로도 조절)">{width_ico}</div>
+    <div class="{settings_cls}" data-action="chat-toggle-settings" title="모델 / API / 글자 크기 설정">{sliders}</div>
+    <div class="sb-hbtn" data-action="toggle-sidebar" title="닫기 (Ctrl+Shift+I)">{close}</div>
+  </div>
+</div>"#,
+        spark = svg(Icon::Sparkles, 13),
+        plus = svg(Icon::Plus, 14),
+        hist = svg(Icon::History, 14),
+        width_ico = svg(Icon::MoveHorizontal, 13),
+        sliders = svg(Icon::Sliders, 13),
+        close = svg(Icon::Close, 12),
+        hist_cls = on(state.show_history),
+        width_cls = on(state.sidebar_wide),
+        settings_cls = on(state.show_settings),
+        shell_cls = enter_attrs(state.motion.shell_ms, ENTER_WINDOW_MS).0,
+        shell_style = enter_attrs(state.motion.shell_ms, ENTER_WINDOW_MS).1,
+    );
+
+    if state.show_settings {
+        render_settings_card(&mut h, state);
+    }
+
+    h.push_str(r#"<div id="chat-messages" class="sb-msgs">"#);
+    let is_internal = state.active_url.starts_with("rust://");
+    if state.show_history {
+        render_history_panel(&mut h, state);
+    } else if state.messages.is_empty() && !state.is_loading {
+        let page_pill = if is_internal {
+            String::new()
+        } else {
+            format!(
+                r#"<div class="sb-page-pill"><span class="sb-page-dot"></span><span>{}</span></div>"#,
+                html_escape(&truncate_chars(state.active_title, 34))
+            )
+        };
+        let _ = write!(
+            h,
+            r#"<div class="sb-empty">
+  <div class="sb-emblem">{emblem}</div>
+  <div class="sb-empty-t">무엇을 도와드릴까요?</div>
+  <div class="sb-empty-s">웹페이지를 읽고 요약·번역·코드 분석까지 바로 답해드립니다.</div>
+  {page_pill}
+  {quick}
+</div>"#,
+            emblem = svg(Icon::Sparkles, 20),
+            quick = render_quick_actions(state, is_internal),
+        );
+    } else {
+        let copy_svg = svg(Icon::Copy, 11);
+        let regen_svg = svg(Icon::Reload, 11);
+        let spark_mini = svg(Icon::Sparkles, 11);
+        let msg_count = state.messages.len();
+        let last_assistant = state
+            .messages
+            .iter()
+            .rposition(|m| m.role == crate::chat::ChatRole::Assistant);
+        for (idx, msg) in state.messages.iter().enumerate() {
+            let enter_ms = state.motion.msg.filter(|(i, _)| *i == idx).map(|(_, ms)| ms);
+            let (enter_cls, enter_style) = enter_attrs(enter_ms, ENTER_WINDOW_MS);
+            match msg.role {
+                crate::chat::ChatRole::User => {
+                    let ctx_badge = msg
+                        .page_title
+                        .as_deref()
+                        .map(|t| {
+                            format!(
+                                r#"<div class="msg-u-ctx"><span class="sb-page-dot"></span>페이지 포함 · {}</div>"#,
+                                html_escape(&truncate_chars(t, 28))
+                            )
+                        })
+                        .unwrap_or_default();
+                    let _ = write!(
+                        h,
+                        r#"<div class="msg-u-wrap{enter_cls}"{enter_style}>{ctx_badge}<div class="msg-u">{}</div></div>"#,
+                        html_escape(&msg.text),
+                    );
+                }
+                crate::chat::ChatRole::Assistant => {
+                    let typing = state.reveal.filter(|(i, _)| *i == idx).map(|(_, n)| n);
+                    let body_html = match typing {
+                        Some(n) => {
+                            let partial: String = msg.text.chars().take(n).collect();
+                            with_type_caret(crate::chat::render_markdown_to_html(&partial, &mut code_blocks))
+                        }
+                        None => crate::chat::render_markdown_to_html(&msg.text, &mut code_blocks),
+                    };
+                    let footer = if typing.is_some() {
+                        String::new()
+                    } else {
+                        let regen = if Some(idx) == last_assistant && !state.is_loading {
+                            format!(
+                                r#"<span class="chat-copy" data-action="chat-regen" title="이 답변 다시 생성">{regen_svg}<span>다시 생성</span></span>"#
+                            )
+                        } else {
+                            String::new()
+                        };
+                        let hint = if Some(idx) == last_assistant {
+                            r#"<span class="sel-hint">드래그해서 일부만 선택 → Ctrl+C</span>"#
+                        } else {
+                            ""
+                        };
+                        format!(
+                            r#"<div class="msg-a-ftr"><span class="chat-copy" data-action="chat-copy-msg:{idx}" title="답변 전체 복사">{copy_svg}<span>복사</span></span>{regen}{hint}</div>"#
+                        )
+                    };
+                    let tag = msg.provider_label.as_deref().unwrap_or("AI");
+                    // A typing reply is its own entrance; don't stack a slide on top of it.
+                    let (enter_cls, enter_style) = if typing.is_some() {
+                        ("", String::new())
+                    } else {
+                        (enter_cls, enter_style)
+                    };
+                    let _ = write!(
+                        h,
+                        r#"<div class="msg-a{enter_cls}"{enter_style}><div class="msg-a-hdr"><span class="msg-a-ico">{spark_mini}</span><span class="msg-a-tag">{tag}</span></div><div class="msg-body">{body_html}</div>{footer}</div>"#,
+                        tag = html_escape(tag),
+                    );
+                }
+                crate::chat::ChatRole::Error => {
+                    let tag = msg.provider_label.as_deref().unwrap_or("안내");
+                    let show_retry = state.can_retry && idx + 1 == msg_count;
+                    let show_login = state.provider.is_cli();
+                    let mut acts_html = String::new();
+                    if show_retry || show_login {
+                        acts_html.push_str(r#"<div class="err-acts">"#);
+                        if show_retry {
+                            let _ = write!(
+                                acts_html,
+                                r#"<div class="err-retry" data-action="chat-retry">{}<span>다시 시도</span></div>"#,
+                                svg(Icon::Reload, 11)
+                            );
+                        }
+                        if show_login {
+                            acts_html.push_str(
+                                r#"<div class="err-retry" data-action="chat-open-login"><span>로그인 열기</span></div>"#,
+                            );
+                        }
+                        acts_html.push_str("</div>");
+                    }
+                    let _ = write!(
+                        h,
+                        r#"<div class="msg-a err{enter_cls}"{enter_style}><div class="msg-a-hdr"><span class="msg-a-tag">{tag}</span></div><div>{}</div>{acts_html}</div>"#,
+                        html_escape(&msg.text),
+                        tag = html_escape(tag),
+                    );
+                }
+            }
+        }
+    }
+
+    if state.is_loading && !state.show_history {
+        let loading_lbl = match state.agent_status {
+            Some(st) => st.to_string(),
+            None => format!("{} 생각 중…", state.provider.short_label()),
+        };
+        // Skeleton answer instead of a spinner: the reply's shape is already on screen.
+        let _ = write!(
+            h,
+            r#"<div class="msg-a rb-in"><div class="msg-a-hdr"><span class="msg-a-ico">{spark}</span><span class="msg-a-tag">{lbl}</span><span class="chat-copy sk-stop" data-action="chat-stop">중지</span></div><div class="sk-msg"><div class="sk-line w1"></div><div class="sk-line w2"></div><div class="sk-line w3"></div></div></div>"#,
+            spark = svg(Icon::Sparkles, 11),
+            lbl = html_escape(&loading_lbl),
+        );
+        if let Some((desc, host)) = state.agent_confirm {
+            let _ = write!(
+                h,
+                r#"<div class="agent-confirm"><div class="ac-t">새 사이트로 이동 요청</div><div>AI가 <b>{host}</b>(으)로 이동하려고 합니다. 웹페이지에 숨겨진 지시일 수 있으니 요청한 작업이 맞는지 확인하세요.</div><div class="ac-d">{desc}</div><div class="ac-btns"><div class="sbtn" data-action="agent-confirm:deny">중단</div><div class="sbtn primary" data-action="agent-confirm:allow">허용</div></div></div>"#,
+                host = html_escape(host),
+                desc = html_escape(desc),
+            );
+        }
+        if !state.agent_log.is_empty() {
+            h.push_str(r#"<div class="sb-agent-log">"#);
+            let start = state.agent_log.len().saturating_sub(6);
+            for entry in &state.agent_log[start..] {
+                let is_err = entry.starts_with("ERR:");
+                let cls = if is_err { "sb-agent-step err" } else { "sb-agent-step" };
+                let marker = if is_err { "!" } else { "✓" };
+                let body = entry
+                    .strip_prefix("OK: ")
+                    .or_else(|| entry.strip_prefix("ERR: "))
+                    .unwrap_or(entry);
+                let _ = write!(
+                    h,
+                    r#"<div class="{cls}">{marker} {}</div>"#,
+                    html_escape(&truncate_chars(body, 56)),
+                );
+            }
+            h.push_str("</div>");
+        }
+    }
+    h.push_str("</div>");
+
+    match state.picker_open {
+        SidebarPicker::Provider => {
+            let chk = svg(Icon::Check, 13);
+            let (enter_cls, enter_style) = enter_attrs(state.motion.panel_ms, ENTER_WINDOW_MS);
+            let _ = write!(
+                h,
+                r#"<div class="sb-sheet{enter_cls}"{enter_style}><div class="sheet-hdr"><span>에이전트 / API 선택</span></div><div class="sheet-list"><div class="sheet-sec">로컬 로그인 에이전트</div>"#
+            );
+            for &prov in crate::chat::ChatProvider::ALL {
+                if prov == crate::chat::ChatProvider::Gemini {
+                    continue;
+                }
+                if prov == crate::chat::ChatProvider::OpenAiApi {
+                    h.push_str(r#"<div class="sheet-sec">직접 API / 로컬 LLM</div>"#);
+                }
+                let is_act = prov == state.provider;
+                let row_cls = if is_act { "sheet-row active" } else { "sheet-row" };
+                let dot = if prov.is_cli() {
+                    let dc = if state.avail.is_available(prov) {
+                        "pdot ok"
+                    } else {
+                        "pdot off"
+                    };
+                    format!(r#"<span class="{dc}"></span>"#)
+                } else {
+                    String::new()
+                };
+                let right = if is_act {
+                    format!(r#"<span class="sheet-chk">{chk}</span>"#)
+                } else if prov.is_cli() && !state.avail.is_available(prov) {
+                    r#"<span class="sheet-tag">미설치</span>"#.to_string()
+                } else {
+                    String::new()
+                };
+                let _ = write!(
+                    h,
+                    r#"<div class="{row_cls}" data-action="chat-provider:{id}"><div class="sheet-row-l">{dot}<span class="sheet-name">{lbl}</span></div>{right}</div>"#,
+                    id = prov.id(),
+                    lbl = html_escape(prov.label()),
+                );
+            }
+            h.push_str("</div></div>");
+        }
+        SidebarPicker::Model => {
+            let chk = svg(Icon::Check, 13);
+            let refresh_btn = if state.provider == crate::chat::ChatProvider::Agy {
+                if state.agy_models_loading {
+                    r#"<span class="sheet-tag">불러오는 중…</span>"#.to_string()
+                } else {
+                    format!(
+                        r#"<div class="sheet-act" data-action="chat-refresh-models">{}<span>새로고침</span></div>"#,
+                        svg(Icon::Reload, 11)
+                    )
+                }
+            } else {
+                String::new()
+            };
+            let (enter_cls, enter_style) = enter_attrs(state.motion.panel_ms, ENTER_WINDOW_MS);
+            let _ = write!(
+                h,
+                r#"<div class="sb-sheet{enter_cls}"{enter_style}><div class="sheet-hdr"><span>{} 모델 선택</span>{refresh_btn}</div><div class="sheet-list">"#,
+                html_escape(state.provider.short_label()),
+            );
+            for opt in state.model_options {
+                let is_act = opt.id == state.active_model_id;
+                let row_cls = if is_act { "sheet-row active" } else { "sheet-row" };
+                let sub = if !opt.id.is_empty() && opt.id != opt.label {
+                    format!(r#"<span class="sheet-sub">{}</span>"#, html_escape(&opt.id))
+                } else {
+                    String::new()
+                };
+                let right = if is_act {
+                    format!(r#"<span class="sheet-chk">{chk}</span>"#)
+                } else {
+                    String::new()
+                };
+                let _ = write!(
+                    h,
+                    r#"<div class="{row_cls}" data-action="chat-model:{id}"><div class="sheet-row-l"><div class="sheet-row-txt"><span class="sheet-name">{lbl}</span>{sub}</div></div>{right}</div>"#,
+                    id = html_escape(&opt.id),
+                    lbl = html_escape(&opt.label),
+                );
+            }
+            let _ = write!(
+                h,
+                r#"</div><div class="sheet-ftr" data-action="chat-toggle-settings"><span>직접 모델명 입력</span>{}</div></div>"#,
+                svg(Icon::ChevronRight, 12),
+            );
+        }
+        SidebarPicker::None => {}
+    }
+
+    let prov_pill_cls = if state.picker_open == SidebarPicker::Provider {
+        "cpill on"
+    } else {
+        "cpill"
+    };
+    let mod_pill_cls = if state.picker_open == SidebarPicker::Model {
+        "cpill mod on"
+    } else {
+        "cpill mod"
+    };
+    let prov_dot = if state.provider.is_cli() {
+        let cls = if state.avail.is_available(state.provider) {
+            "pdot ok"
+        } else {
+            "pdot off"
+        };
+        format!(r#"<span class="{cls}"></span>"#)
+    } else {
+        String::new()
+    };
+    let ctx_cls = if state.include_page && !is_internal {
+        "cpill ctx on"
+    } else {
+        "cpill ctx"
+    };
+    // No page title here: a title change (unread counters…) would rebuild the whole sidebar.
+    let ctx_tip = if is_internal {
+        "내부 페이지 (컨텍스트 없음)"
+    } else if state.include_page {
+        "현재 페이지 본문을 함께 보냄 (끄려면 클릭)"
+    } else {
+        "현재 페이지 본문 포함 켜기"
+    };
+    let ctrl_cls = if state.agent_control {
+        "cpill ctrl on"
+    } else {
+        "cpill ctrl"
+    };
+    let chev = svg(Icon::ChevronDown, 10);
+    let send_btn = if state.is_loading {
+        format!(
+            r#"<div class="send-btn stop" data-action="chat-stop" title="생성 중지">{}</div>"#,
+            svg(Icon::Stop, 12)
+        )
+    } else {
+        format!(
+            r#"<div class="send-btn" data-action="chat-send" title="전송 (Enter)">{}</div>"#,
+            svg(Icon::Send, 13)
+        )
+    };
+    let input_h = chat_input_height(state.draft.split('\n').count());
+    let _ = write!(
+        h,
+        r#"<div class="sb-comp">
+  <div class="composer">
+    <textarea id="chat-input" rows="1" style="height:{input_h}px" placeholder="무엇이든 물어보세요…">{draft}</textarea>
+    <div class="comp-bar">
+      <div class="comp-left">
+        <div class="{prov_pill_cls}" data-action="chat-picker:provider" title="에이전트 / API 전환">{prov_dot}<span class="cpill-txt">{prov_lbl}</span><span class="cpill-chev">{chev}</span></div>
+        <div class="{mod_pill_cls}" data-action="chat-picker:model" title="사용할 모델 변경"><span class="cpill-txt">{mod_lbl}</span><span class="cpill-chev">{chev}</span></div>
+        <div class="{ctx_cls}" data-action="chat-toggle-page" title="{ctx_tip}"><span class="cpill-dot"></span><span class="cpill-txt">페이지</span></div>
+        <div class="{ctrl_cls}" data-action="chat-toggle-control" title="AI 에이전트 브라우저 화면 제어 (클릭·입력·이동)"><span class="cpill-dot"></span><span class="cpill-txt">제어</span></div>
+      </div>
+      {send_btn}
+    </div>
+  </div>
+  <div class="comp-hint">Enter 전송 · Shift+Enter 줄바꿈</div>
+</div>
+</div></body></html>"#,
+        draft = html_escape(state.draft),
+        prov_lbl = html_escape(state.provider.short_label()),
+        mod_lbl = html_escape(&truncate_chars(state.active_model_label, 15)),
+    );
+
+    (h, code_blocks)
+}

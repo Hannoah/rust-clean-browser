@@ -165,17 +165,10 @@ impl History {
         let Some(path) = &self.path else {
             return;
         };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
         let Ok(json) = serde_json::to_string(&self.visits) else {
             return;
         };
-        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
-        if std::fs::write(&tmp, json).is_err() {
-            return;
-        }
-        if std::fs::rename(&tmp, path).is_ok() {
+        if crate::net::atomic_write_private(path, json.as_bytes()).is_ok() {
             self.unsaved = 0;
         }
     }
@@ -263,8 +256,9 @@ impl History {
     }
 
     pub fn remove_url(&mut self, url: &str) -> bool {
+        let clean = url.split('#').next().unwrap_or(url);
         let before = self.visits.len();
-        self.visits.retain(|v| v.url != url);
+        self.visits.retain(|v| v.url != clean);
         if self.visits.len() != before {
             self.unsaved += 1;
             self.save();

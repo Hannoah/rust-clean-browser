@@ -64,6 +64,8 @@ pub(super) fn enable_window_ime(window: &dyn Window) {
 
 pub(super) struct BrowserShellProvider {
     pub(super) window: Arc<dyn Window>,
+    /// `(offset_x_logical, offset_y_logical, scale)` mapping Blitz document coordinates to window logical coordinates.
+    pub(super) ime_transform: Arc<std::sync::Mutex<(f32, f32, f32)>>,
 }
 
 impl ShellProvider for BrowserShellProvider {
@@ -92,12 +94,13 @@ impl ShellProvider for BrowserShellProvider {
 
     fn set_ime_cursor_area(&self, x: f32, y: f32, width: f32, height: f32) {
         use winit::window::{ImeRequest, ImeRequestData};
-        enable_window_ime(&*self.window);
+        let (ox, oy, scale) = *self.ime_transform.lock().unwrap_or_else(|e| e.into_inner());
+        let scale = scale.max(0.1);
         let _ = self
             .window
             .request_ime_update(ImeRequest::Update(ImeRequestData::default().with_cursor_area(
-                LogicalPosition::new(x, y).into(),
-                LogicalSize::new(width.max(1.0), height.max(1.0)).into(),
+                LogicalPosition::new(ox + x * scale, oy + y * scale).into(),
+                LogicalSize::new((width * scale).max(1.0), (height * scale).max(1.0)).into(),
             )));
     }
 
@@ -171,11 +174,12 @@ impl EventHandler for ChromeEventHandler {
 }
 
 /// AI Assistant sidebar: clicks on `data-action` elements post `AppEvent::SidebarAction`.
-pub(super) struct SidebarEventHandler {
+pub(super) struct SidebarEventHandler<'a> {
     pub(super) bus: AppBus,
+    pub(super) handled: &'a mut bool,
 }
 
-impl EventHandler for SidebarEventHandler {
+impl EventHandler for SidebarEventHandler<'_> {
     fn handle_event(
         &mut self,
         chain: &[NodeId],
@@ -185,10 +189,28 @@ impl EventHandler for SidebarEventHandler {
     ) {
         if let DomEventData::Click(click) = &event.data
             && click.button == MouseEventButton::Main
-            && let Some(action) = find_action(chain, doc)
         {
-            self.bus.send(AppEvent::SidebarAction(action));
-            event_state.stop_propagation();
+            if let Some(action) = find_action(chain, doc) {
+                *self.handled = true;
+                self.bus.send(AppEvent::SidebarAction(action));
+                event_state.stop_propagation();
+            } else {
+                let inner = doc.inner();
+                if let Some(href) = chain.iter().find_map(|&id| {
+                    let el = inner.get_node(id)?.element_data()?;
+                    if (*el.name.local).eq_ignore_ascii_case("a") {
+                        let href = el.attr(LocalName::from("href"))?.trim();
+                        if super::helpers::is_web_http_url(href) {
+                            return Some(href.to_string());
+                        }
+                    }
+                    None
+                }) {
+                    *self.handled = true;
+                    self.bus.send(AppEvent::OpenInNewTab(href));
+                    event_state.stop_propagation();
+                }
+            }
         }
     }
 }

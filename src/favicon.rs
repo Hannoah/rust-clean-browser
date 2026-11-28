@@ -123,10 +123,12 @@ fn cache_key(page: &Url) -> Option<String> {
         return None;
     }
     let host = page.host_str()?.to_ascii_lowercase();
-    let host = host.strip_prefix("www.").unwrap_or(&host);
-    if !host
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+    let host = host.strip_prefix("www.").unwrap_or(&host).trim_matches('.');
+    if host.is_empty()
+        || host == ".."
+        || !host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
     {
         return None;
     }
@@ -137,10 +139,47 @@ fn cache_key(page: &Url) -> Option<String> {
         .path_segments()
         .and_then(|mut s| s.next())
         .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
-    Some(match segment {
+    let mut key = match segment {
         Some(seg) if multi => format!("{host}~{seg}"),
         _ => host.to_string(),
-    })
+    };
+    let reserved = matches!(
+        key.as_str(),
+        "con"
+            | "prn"
+            | "aux"
+            | "nul"
+            | "com1"
+            | "com2"
+            | "com3"
+            | "com4"
+            | "com5"
+            | "com6"
+            | "com7"
+            | "com8"
+            | "com9"
+            | "lpt1"
+            | "lpt2"
+            | "lpt3"
+            | "lpt4"
+            | "lpt5"
+            | "lpt6"
+            | "lpt7"
+            | "lpt8"
+            | "lpt9"
+    );
+    if reserved {
+        key.insert(0, '_');
+    }
+    if key.len() > 80 {
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        for b in key.as_bytes() {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        key = format!("{}~{h:016x}", &key[..60]);
+    }
+    Some(key)
 }
 
 /// `file://` URL of the cached icon for this page, if any.
@@ -258,6 +297,9 @@ fn same_site(a: &Url, b: &Url) -> bool {
     // ponytail: heuristic registrable domain (2-letter ccTLD + short SLD like `co.kr` keeps 3 labels);
     // swap for a public-suffix list if icons ever pick the wrong site.
     fn site(u: &Url) -> String {
+        if matches!(u.host(), Some(url::Host::Ipv4(_) | url::Host::Ipv6(_))) {
+            return u.host_str().unwrap_or("").to_string();
+        }
         let host = u.host_str().unwrap_or("");
         let labels: Vec<&str> = host.rsplit('.').collect();
         let n = match labels.as_slice() {
@@ -411,9 +453,17 @@ fn store(key: &str, bytes: &[u8]) -> Option<bool> {
             return None;
         }
         let text = std::str::from_utf8(bytes).ok()?;
-        (crate::cleaner::strip_scripts_and_bloat(text, true).into_bytes(), "svg")
+        (crate::cleaner::sanitize_svg(text).into_bytes(), "svg")
     } else {
-        let img = image::load_from_memory(bytes).ok()?;
+        let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .ok()?;
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(2048);
+        limits.max_image_height = Some(2048);
+        limits.max_alloc = Some(16 * 1024 * 1024);
+        reader.limits(limits);
+        let img = reader.decode().ok()?;
         let img = if img.width() > ICON_PX || img.height() > ICON_PX {
             img.resize(ICON_PX, ICON_PX, image::imageops::FilterType::Triangle)
         } else {
@@ -423,21 +473,22 @@ fn store(key: &str, bytes: &[u8]) -> Option<bool> {
         img.write_to(&mut png, image::ImageFormat::Png).ok()?;
         (png.into_inner(), "png")
     };
-    let mut st = state().lock().ok()?;
-    let dir = st.dir.clone()?;
+    let (dir, already_cached) = {
+        let st = state().lock().ok()?;
+        (st.dir.clone()?, st.ready.get(key) == Some(&ext))
+    };
     let path = dir.join(format!("{key}.{ext}"));
-    if st.ready.get(key) == Some(&ext) && std::fs::read(&path).is_ok_and(|old| old == data) {
+    if already_cached && std::fs::read(&path).is_ok_and(|old| old == data) {
         return Some(false);
     }
-    let _ = std::fs::create_dir_all(&dir);
-    let tmp = dir.join(format!("{key}.{ext}.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, &data).ok()?;
-    std::fs::rename(&tmp, &path).ok()?;
+    crate::net::atomic_write_private(&path, &data).ok()?;
     let other = if ext == "svg" { "png" } else { "svg" };
     let _ = std::fs::remove_file(dir.join(format!("{key}.{other}")));
     let _ = std::fs::remove_file(dir.join(format!("{key}.none")));
-    st.failed.remove(key);
-    st.ready.insert(key.to_string(), ext);
+    if let Ok(mut st) = state().lock() {
+        st.failed.remove(key);
+        st.ready.insert(key.to_string(), ext);
+    }
     Some(true)
 }
 
@@ -473,6 +524,10 @@ mod tests {
         );
         assert_eq!(cache_key(&url("rust://home")), None);
         assert_eq!(cache_key(&url("file:///C:/x.html")), None);
+        assert_eq!(cache_key(&url("https://www./")), None);
+        assert_eq!(cache_key(&url("https://con/")), Some("_con".into()));
+        let long = format!("https://{}.example.com/", "a".repeat(90));
+        assert!(cache_key(&url(&long)).unwrap().len() <= 80);
     }
 
     #[test]
@@ -559,6 +614,7 @@ mod tests {
         assert!(looks_like_svg(
             br#"<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" ""><svg/>"#
         ));
+        assert!(!same_site(&url("http://192.168.1.1/"), &url("http://10.0.1.1/")));
     }
 
     #[test]

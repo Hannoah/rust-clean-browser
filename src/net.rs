@@ -3,7 +3,7 @@ use blitz_traits::net::{AbortSignal, Bytes, NetHandler, NetProvider, NetWaker, R
 use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use url::Url;
 
@@ -69,6 +69,7 @@ pub fn is_blocked_url(url: &Url) -> bool {
     let Some(host) = url.host_str() else {
         return false;
     };
+    let host = host.trim_end_matches('.');
     // `Url` already lowercases hosts; compare suffixes without allocating per domain.
     BLOCKED_TRACKER_DOMAINS.iter().any(|domain| {
         host.strip_suffix(domain)
@@ -93,10 +94,16 @@ pub(crate) mod seal {
         }
     }
 
-    pub fn seal(json: Vec<u8>) -> Vec<u8> {
-        match os::protect(&json) {
-            Some(blob) => [MAGIC, &blob].concat(),
-            None => json,
+    pub fn seal(json: Vec<u8>) -> Result<Vec<u8>, &'static str> {
+        #[cfg(windows)]
+        {
+            os::protect(&json)
+                .map(|blob| [MAGIC, &blob].concat())
+                .ok_or("DPAPI CryptProtectData failed")
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(json)
         }
     }
 
@@ -200,12 +207,33 @@ pub(crate) fn write_private(path: &std::path::Path, buf: &[u8]) -> std::io::Resu
     file.write_all(buf)
 }
 
+/// Writes `buf` atomically to `path` via a unique temp file + rename, owner-only (0600) on Unix.
+pub(crate) fn atomic_write_private(path: &std::path::Path, buf: &[u8]) -> std::io::Result<()> {
+    static NEXT_TMP: AtomicU64 = AtomicU64::new(1);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    let seq = NEXT_TMP.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_file_name(format!("{name}.{}.{seq}.tmp", std::process::id()));
+    if let Err(e) = write_private(&tmp, buf) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
 /// Cookie jar persisted to disk so logins survive restarts (session cookies included,
 /// like a browser's "continue where you left off"). Stored as JSON in the app data dir.
 pub struct PersistentCookieJar {
     store: Mutex<cookie_store::CookieStore>,
     path: Option<PathBuf>,
-    dirty: AtomicBool,
+    dirty_gen: AtomicU64,
+    saved_gen: AtomicU64,
 }
 
 impl PersistentCookieJar {
@@ -219,7 +247,8 @@ impl PersistentCookieJar {
         Self {
             store: Mutex::new(store),
             path,
-            dirty: AtomicBool::new(false),
+            dirty_gen: AtomicU64::new(0),
+            saved_gen: AtomicU64::new(0),
         }
     }
 
@@ -228,27 +257,24 @@ impl PersistentCookieJar {
         let Some(path) = &self.path else {
             return;
         };
-        if !self.dirty.load(Ordering::Acquire) {
+        if self.dirty_gen.load(Ordering::Acquire) == self.saved_gen.load(Ordering::Acquire) {
             return;
         }
         let mut buf = Vec::new();
-        if let Ok(store) = self.store.lock() {
+        let snap_gen = if let Ok(store) = self.store.lock() {
             if cookie_store::serde::json::save_incl_expired_and_nonpersistent(&store, &mut buf).is_err() {
                 return;
             }
+            self.dirty_gen.load(Ordering::Acquire)
         } else {
             return;
-        }
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
-        if write_private(&tmp, &seal::seal(buf)).is_err() {
+        };
+        let Ok(sealed) = seal::seal(buf) else {
             return;
-        }
-        if std::fs::rename(&tmp, path).is_ok() {
-            // Only clear dirty after the data actually reached disk.
-            self.dirty.store(false, Ordering::Release);
+        };
+        if atomic_write_private(path, &sealed).is_ok() {
+            // Only advance saved_gen to the snapshot we actually serialized and wrote.
+            self.saved_gen.store(snap_gen, Ordering::Release);
         }
     }
 }
@@ -264,7 +290,7 @@ impl reqwest::cookie::CookieStore for PersistentCookieJar {
         }
         if let Ok(mut store) = self.store.lock() {
             store.store_response_cookies(cookies, url);
-            self.dirty.store(true, Ordering::Release);
+            self.dirty_gen.fetch_add(1, Ordering::Release);
         }
     }
 
@@ -282,14 +308,7 @@ impl reqwest::cookie::CookieStore for PersistentCookieJar {
         if pairs.is_empty() {
             return None;
         }
-        let mut header = pairs.join("; ");
-        // Last-resort sanitization: strip non-visible-ASCII rather than dropping all cookies.
-        if http::HeaderValue::from_str(&header).is_err() {
-            header = header
-                .chars()
-                .filter(|c| matches!(*c, '\x20'..='\x7E') && *c != '\x7F')
-                .collect();
-        }
+        let header = pairs.join("; ");
         http::HeaderValue::from_str(&header).ok()
     }
 }
@@ -354,6 +373,7 @@ impl CleanNetProvider {
 /// preventing `blitz-dom`'s `pending_critical_resources` from permanently blocking page paint.
 struct SafeSubresourceHandler {
     url: String,
+    signal: Option<AbortSignal>,
     inner: Option<Box<dyn NetHandler>>,
     masked_failures: Arc<AtomicUsize>,
 }
@@ -370,8 +390,11 @@ impl Drop for SafeSubresourceHandler {
     fn drop(&mut self) {
         if let Some(h) = self.inner.take() {
             // A subresource that never resolved (error/timeout/tracker-block):
-            // counted so the UI can show degraded loads instead of failing silently.
-            self.masked_failures.fetch_add(1, Ordering::Relaxed);
+            // counted so the UI can show degraded loads instead of failing silently,
+            // except when the navigation itself was aborted.
+            if !self.signal.as_ref().is_some_and(|s| s.aborted()) {
+                self.masked_failures.fetch_add(1, Ordering::Relaxed);
+            }
             h.bytes(std::mem::take(&mut self.url), Bytes::new());
         }
     }
@@ -393,11 +416,13 @@ impl NetProvider for CleanNetProvider {
             handler.bytes(url_str, Bytes::new());
             return;
         }
+        let signal = request.signal.clone();
         self.inner.fetch(
             doc_id,
             request,
             Box::new(SafeSubresourceHandler {
                 url: url_str,
+                signal,
                 inner: Some(handler),
                 masked_failures: Arc::clone(&self.masked_failures),
             }),
@@ -467,7 +492,10 @@ mod tests {
         // Empty Set-Cookie iteration must not mark the jar dirty.
         let jar2 = PersistentCookieJar::load(Some(path.clone()));
         jar2.set_cookies(&mut std::iter::empty(), &url);
-        assert!(!jar2.dirty.load(Ordering::Acquire));
+        assert_eq!(
+            jar2.dirty_gen.load(Ordering::Acquire),
+            jar2.saved_gen.load(Ordering::Acquire)
+        );
         let _ = std::fs::remove_file(path);
     }
 
@@ -491,12 +519,14 @@ mod tests {
     #[test]
     fn blocks_known_trackers_and_allows_content_hosts() {
         let tracker = Url::parse("https://www.google-analytics.com/analytics.js").unwrap();
+        let fqdn_tracker = Url::parse("https://www.google-analytics.com./analytics.js").unwrap();
         let sub_tracker = Url::parse("https://ad.doubleclick.net/pixel").unwrap();
         let normal = Url::parse("https://en.wikipedia.org/wiki/Rust").unwrap();
         let lookalike = Url::parse("https://notdoubleclick.net/").unwrap();
         assert!(!is_blocked_url(&lookalike));
 
         assert!(is_blocked_url(&tracker));
+        assert!(is_blocked_url(&fqdn_tracker));
         assert!(is_blocked_url(&sub_tracker));
         assert!(!is_blocked_url(&normal));
     }

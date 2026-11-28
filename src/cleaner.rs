@@ -21,13 +21,116 @@ pub fn strip_scripts_and_bloat(html: &str, strip_iframes: bool) -> String {
     } else {
         &["script"]
     };
-    sanitize_dangerous_attrs(&strip_large_comments(&strip_tag_blocks(html, tags), 256))
+    let no_comments = strip_large_comments(html, 256);
+    let stripped = strip_tag_blocks_fixed_point(&no_comments, tags);
+    sanitize_dangerous_attrs(&stripped)
+}
+
+/// Sanitize untrusted remote SVG favicons: strip DTD/ENTITY declarations, dangerous/beacon
+/// elements (`script`, `foreignObject`, `style`, `animate`, `feImage`, etc.), event handlers,
+/// and external `href`/`xlink:href`/`src` URLs (keeping local `#id` references only).
+pub fn sanitize_svg(svg: &str) -> String {
+    let no_dtd = strip_dtd_declarations(svg);
+    let stripped = strip_tag_blocks_fixed_point(
+        &no_dtd,
+        &[
+            "script",
+            "iframe",
+            "foreignobject",
+            "style",
+            "animate",
+            "set",
+            "feimage",
+            "handler",
+        ],
+    );
+    sanitize_attrs_with_policy(&stripped, true)
+}
+
+fn strip_tag_blocks_fixed_point(html: &str, tags: &[&str]) -> String {
+    let mut cur = strip_tag_blocks(html, tags);
+    for _ in 0..3 {
+        let next = strip_tag_blocks(&cur, tags);
+        if next == cur {
+            break;
+        }
+        cur = next;
+    }
+    cur
+}
+
+fn strip_dtd_declarations(input: &str) -> String {
+    let lower = input.to_ascii_lowercase();
+    let b = lower.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut cursor = 0;
+    let mut scan = 0;
+    while let Some(rel) = lower[scan..].find("<!") {
+        let start = scan + rel;
+        if lower[start..].starts_with("<!--") {
+            scan = comment_end(&lower, start);
+            continue;
+        }
+        if lower[start..].starts_with("<!doctype") || lower[start..].starts_with("<!entity") {
+            out.push_str(&input[cursor..start]);
+            let mut i = start + 2;
+            let mut bracket_depth = 0usize;
+            let mut quote = 0u8;
+            while i < b.len() {
+                let c = b[i];
+                if quote != 0 {
+                    if c == quote {
+                        quote = 0;
+                    }
+                } else if c == b'"' || c == b'\'' {
+                    quote = c;
+                } else if c == b'[' {
+                    bracket_depth += 1;
+                } else if c == b']' {
+                    bracket_depth = bracket_depth.saturating_sub(1);
+                } else if c == b'>' && bracket_depth == 0 {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            cursor = i;
+            scan = i;
+            continue;
+        }
+        scan = start + 2;
+    }
+    if cursor < input.len() {
+        out.push_str(&input[cursor..]);
+    }
+    out
+}
+
+pub(crate) fn comment_end(html: &str, start: usize) -> usize {
+    let rest = &html[start..];
+    if rest.starts_with("<!-->") {
+        return start + 5;
+    }
+    if rest.starts_with("<!--->") {
+        return start + 6;
+    }
+    let body = &html[start + 4..];
+    let a = body.find("-->").map(|p| start + 4 + p + 3);
+    let b = body.find("--!>").map(|p| start + 4 + p + 4);
+    match (a, b) {
+        (Some(x), Some(y)) => x.min(y),
+        (x, y) => x.or(y).unwrap_or(html.len()),
+    }
 }
 
 /// Removes inline event-handler attributes (`on*`) and `javascript:` URLs from
 /// `href`/`src`/`action`/`xlink:href`, while leaving the rest of the markup intact.
 /// Tag-name stripping alone leaves `onerror`/`javascript:` payloads executable.
 pub fn sanitize_dangerous_attrs(html: &str) -> String {
+    sanitize_attrs_with_policy(html, false)
+}
+
+fn sanitize_attrs_with_policy(html: &str, svg_local_refs_only: bool) -> String {
     let bytes = html.as_bytes();
     let mut out = String::with_capacity(html.len());
     let mut i = 0;
@@ -43,7 +146,7 @@ pub fn sanitize_dangerous_attrs(html: &str) -> String {
             continue;
         }
         if html[i..].starts_with("<!--") {
-            let end = html[i + 4..].find("-->").map_or(html.len(), |p| i + 4 + p + 3);
+            let end = comment_end(html, i);
             out.push_str(&html[i..end]);
             i = end;
         } else if bytes
@@ -55,7 +158,7 @@ pub fn sanitize_dangerous_attrs(html: &str) -> String {
                 // EOF inside a tag: HTML parsers drop it, so drop the rest instead of passing it unsanitized.
                 break;
             };
-            out.push_str(&sanitize_tag(&html[i..=end]));
+            out.push_str(&sanitize_tag(&html[i..=end], svg_local_refs_only));
             i = end + 1;
         } else {
             // `a < b`: a lone `<` is text, not a tag.
@@ -66,28 +169,90 @@ pub fn sanitize_dangerous_attrs(html: &str) -> String {
     out
 }
 
-/// Index of the `>` closing the tag whose body starts at `from`, honouring quoted attribute values.
+/// Index of the `>` closing the tag whose body starts at `from`, following HTML5 attribute quote rules.
 pub(crate) fn tag_end(b: &[u8], from: usize) -> Option<usize> {
+    scan_tag_end(b, from, false)
+}
+
+fn scan_tag_end(b: &[u8], from: usize, stop_on_unquoted_lt: bool) -> Option<usize> {
+    if matches!(b.get(from), Some(b'!' | b'?')) {
+        return b[from..].iter().position(|&c| c == b'>').map(|r| from + r);
+    }
     let mut quote = 0u8;
+    let mut in_tag_name = true;
+    let mut after_eq = false;
     for (i, &c) in b.iter().enumerate().skip(from) {
-        match (quote, c) {
-            (0, b'"' | b'\'') => quote = c,
-            (0, b'>') => return Some(i),
-            (q, c) if q == c => quote = 0,
-            _ => {}
+        if quote != 0 {
+            if c == quote {
+                quote = 0;
+                after_eq = false;
+            }
+            continue;
+        }
+        if stop_on_unquoted_lt && c == b'<' {
+            return None;
+        }
+        if c == b'>' {
+            return Some(i);
+        }
+        if in_tag_name {
+            if c.is_ascii_whitespace() || c == b'/' {
+                in_tag_name = false;
+            }
+            continue;
+        }
+        if c == b'=' {
+            after_eq = true;
+        } else if c.is_ascii_whitespace() {
+            // Keep `after_eq` across whitespace between `=` and the attribute value quote.
+        } else if after_eq && (c == b'"' || c == b'\'') {
+            quote = c;
+            after_eq = false;
+        } else {
+            after_eq = false;
         }
     }
     None
 }
 
-/// `javascript:` / `data:text/html` URL, tolerating the tricks browsers accept: leading or embedded
-/// tab/newline/control chars (`java<TAB>script:`) and numeric / `&Tab;` / `&colon;` entities.
+/// `javascript:` / `vbscript:` / `data:text/html` / `rust:` URL, tolerating the tricks browsers
+/// accept: leading or embedded tab/newline/control chars and numeric (even semicolon-less /
+/// zero-padded) or named entities.
 fn is_script_url(v: &str) -> bool {
     let mut s = String::with_capacity(v.len());
     let mut rest = v;
     while let Some(p) = rest.find('&') {
         s.push_str(&rest[..p]);
         rest = &rest[p..];
+        if let Some(after_hash) = rest.strip_prefix("&#") {
+            let (hex, digits_src) = match after_hash.strip_prefix(['x', 'X']) {
+                Some(h) => (true, h),
+                None => (false, after_hash),
+            };
+            let digit_len = digits_src
+                .bytes()
+                .take_while(|b| if hex { b.is_ascii_hexdigit() } else { b.is_ascii_digit() })
+                .count();
+            if digit_len > 0 {
+                let raw_digits = &digits_src[..digit_len];
+                let trimmed = raw_digits.trim_start_matches('0');
+                let code = if trimmed.is_empty() {
+                    Some(0u32)
+                } else if trimmed.len() <= 8 {
+                    u32::from_str_radix(trimmed, if hex { 16 } else { 10 }).ok()
+                } else {
+                    None
+                };
+                let consumed = (if hex { 3 } else { 2 })
+                    + digit_len
+                    + usize::from(digits_src.as_bytes().get(digit_len) == Some(&b';'));
+                if let Some(ch) = code.and_then(char::from_u32) {
+                    s.push(ch);
+                }
+                rest = &rest[consumed..];
+                continue;
+            }
+        }
         let Some(semi) = rest.find(';').filter(|&e| e <= 10) else {
             s.push('&');
             rest = &rest[1..];
@@ -97,13 +262,7 @@ fn is_script_url(v: &str) -> bool {
         match name.as_str() {
             "colon" => s.push(':'),
             "tab" | "newline" => {}
-            n => match n.strip_prefix('#').and_then(|d| match d.strip_prefix('x') {
-                Some(h) => u32::from_str_radix(h, 16).ok(),
-                None => d.parse().ok(),
-            }) {
-                Some(c) => s.extend(char::from_u32(c)),
-                None => s.push_str(&rest[..=semi]),
-            },
+            _ => s.push_str(&rest[..=semi]),
         }
         rest = &rest[semi + 1..];
     }
@@ -113,10 +272,18 @@ fn is_script_url(v: &str) -> bool {
         .filter(|c| !c.is_ascii_control() && !c.is_whitespace())
         .collect::<String>()
         .to_ascii_lowercase();
-    s.starts_with("javascript:") || s.starts_with("data:text/html") || s.starts_with("rust:")
+    s.starts_with("javascript:")
+        || s.starts_with("vbscript:")
+        || s.starts_with("data:text/html")
+        || s.starts_with("data:image/svg+xml")
+        || s.starts_with("data:application/xhtml+xml")
+        || s.starts_with("rust:")
 }
 
-fn sanitize_tag(tag: &str) -> String {
+fn sanitize_tag(tag: &str, svg_local_refs_only: bool) -> String {
+    if tag.starts_with("</") || tag.starts_with("<!") || tag.starts_with("<?") {
+        return tag.to_string();
+    }
     let bytes = tag.as_bytes();
     let mut out = String::with_capacity(tag.len());
     let mut i = 0;
@@ -133,9 +300,19 @@ fn sanitize_tag(tag: &str) -> String {
             i += 1;
         }
         out.push_str(&tag[ws_start..i]);
-        if i >= bytes.len() || bytes[i] == b'>' || bytes[i] == b'/' {
+        if i >= bytes.len() || bytes[i] == b'>' {
             out.push_str(&tag[i..]);
             break;
+        }
+        if bytes[i] == b'/' {
+            // Only `/>` or trailing `/` closes the tag; `/` mid-tag acts as an attribute separator in HTML5.
+            if i + 1 >= bytes.len() || bytes[i + 1] == b'>' {
+                out.push_str(&tag[i..]);
+                break;
+            }
+            i += 1;
+            out.push(' ');
+            continue;
         }
         // Parse attribute name.
         let name_start = i;
@@ -184,16 +361,29 @@ fn sanitize_tag(tag: &str) -> String {
                 raw_attr.push_str(&tag[v_start..i]);
             }
         }
-        // Drop event handlers entirely.
-        if name.starts_with("on") && name.len() > 2 {
+        // Drop event handlers and inline frame documents entirely.
+        if (name.starts_with("on") && name.len() > 2) || name == "srcdoc" {
             continue;
         }
-        // Neutralize javascript:/data:-text/html URLs.
-        if matches!(name.as_str(), "href" | "src" | "action" | "xlink:href" | "formaction")
-            && let Some(v) = &value
-            && is_script_url(v)
+        if name == "http-equiv"
+            && value
+                .as_deref()
+                .is_some_and(|v| v.trim().eq_ignore_ascii_case("refresh"))
         {
             continue;
+        }
+        // Neutralize dangerous URLs (and external resource beacons inside untrusted SVGs).
+        if matches!(
+            name.as_str(),
+            "href" | "src" | "action" | "xlink:href" | "formaction" | "data" | "poster"
+        ) && let Some(v) = &value
+        {
+            if is_script_url(v) {
+                continue;
+            }
+            if svg_local_refs_only && !v.trim().starts_with('#') {
+                continue;
+            }
         }
         out.push_str(&raw_attr);
     }
@@ -446,27 +636,34 @@ fn is_tag_boundary(b: Option<&u8>) -> bool {
 fn find_open_tag_end(bytes: &[u8], from: usize) -> Option<(usize, bool)> {
     let mut i = from;
     let mut quote: Option<u8> = None;
+    let mut after_eq = false;
     while i < bytes.len() {
         let b = bytes[i];
-        match quote {
-            Some(q) if b == q => quote = None,
-            Some(_) => {}
-            None if b == b'"' || b == b'\'' => quote = Some(b),
-            None if b == b'>' => {
-                // Trim whitespace before `>` to see if a `/` closes the tag; ignore `/` that ends
-                // an unquoted attribute token (e.g. `data-url=https://a.test/>`).
-                let mut end = i;
-                while end > from && bytes[end - 1].is_ascii_whitespace() {
-                    end -= 1;
-                }
-                let self_close = end > from
-                    && bytes[end - 1] == b'/'
-                    && (end - 1 == from
-                        || bytes[end - 2].is_ascii_whitespace()
-                        || matches!(bytes[end - 2], b'"' | b'\''));
-                return Some((i, self_close));
+        if let Some(q) = quote {
+            if b == q {
+                quote = None;
+                after_eq = false;
             }
-            None => {}
+        } else if b == b'=' {
+            after_eq = true;
+        } else if b.is_ascii_whitespace() {
+            // Preserve `after_eq` across whitespace.
+        } else if after_eq && (b == b'"' || b == b'\'') {
+            quote = Some(b);
+            after_eq = false;
+        } else if b == b'>' {
+            // Trim whitespace before `>` to see if a `/` closes the tag; ignore `/` that ends
+            // an unquoted attribute token (e.g. `data-url=https://a.test/>`).
+            let mut end = i;
+            while end > from && bytes[end - 1].is_ascii_whitespace() {
+                end -= 1;
+            }
+            let self_close = end > from
+                && bytes[end - 1] == b'/'
+                && (end - 1 == from || bytes[end - 2].is_ascii_whitespace() || matches!(bytes[end - 2], b'"' | b'\''));
+            return Some((i, self_close));
+        } else {
+            after_eq = false;
         }
         i += 1;
     }
@@ -474,7 +671,7 @@ fn find_open_tag_end(bytes: &[u8], from: usize) -> Option<(usize, bool)> {
 }
 
 fn find_matching_close_tag(lower: &str, lb: &[u8], tag: &str, from: usize) -> usize {
-    let raw_text = matches!(tag, "script" | "style" | "noscript");
+    let raw_text = matches!(tag, "script" | "style" | "noscript" | "iframe");
     let open_pat = format!("<{tag}");
     let close_pat = format!("</{tag}");
     let mut scan = from;
@@ -482,6 +679,10 @@ fn find_matching_close_tag(lower: &str, lb: &[u8], tag: &str, from: usize) -> us
 
     while let Some(rel) = lower[scan..].find('<') {
         let pos = scan + rel;
+        if !raw_text && lower[pos..].starts_with("<!--") {
+            scan = comment_end(lower, pos);
+            continue;
+        }
         if lower[pos..].starts_with(&close_pat) && is_tag_boundary(lb.get(pos + close_pat.len())) {
             let gt = lower[pos + close_pat.len()..]
                 .find('>')
@@ -504,6 +705,15 @@ fn find_matching_close_tag(lower: &str, lb: &[u8], tag: &str, from: usize) -> us
             }
             return lower.len();
         }
+        if !raw_text
+            && lb
+                .get(pos + 1)
+                .is_some_and(|b| b.is_ascii_alphabetic() || matches!(b, b'/' | b'!' | b'?'))
+            && let Some(te) = scan_tag_end(lb, pos + 1, true)
+        {
+            scan = te + 1;
+            continue;
+        }
         scan = pos + 1;
     }
     lower.len()
@@ -519,11 +729,22 @@ pub(crate) fn strip_tag_blocks(input: &str, tags: &[&str]) -> String {
 
     while let Some(rel) = lower[scan..].find('<') {
         let start = scan + rel;
+        if lower[start..].starts_with("<!--") {
+            scan = comment_end(&lower, start);
+            continue;
+        }
         scan = start + 1;
         let Some(tag) = tags.iter().find(|t| {
             let after = start + 1 + t.len();
             lower[start + 1..].starts_with(**t) && is_tag_boundary(lb.get(after))
         }) else {
+            if lb
+                .get(start + 1)
+                .is_some_and(|b| b.is_ascii_alphabetic() || matches!(b, b'/' | b'!' | b'?'))
+                && let Some(te) = scan_tag_end(lb, start + 1, true)
+            {
+                scan = te + 1;
+            }
             continue;
         };
         let after_tag = start + 1 + tag.len();
@@ -556,14 +777,12 @@ fn strip_large_comments(input: &str, max_keep: usize) -> String {
     while let Some(rel_start) = input[cursor..].find("<!--") {
         let start = cursor + rel_start;
         out.push_str(&input[cursor..start]);
-        if let Some(rel_end) = input[start + 4..].find("-->") {
-            let end = start + 4 + rel_end + 3;
-            if end - start <= max_keep {
-                out.push_str(&input[start..end]);
-            }
-            cursor = end;
-        } else {
-            cursor = input.len();
+        let end = comment_end(input, start);
+        if end - start <= max_keep {
+            out.push_str(&input[start..end]);
+        }
+        cursor = end;
+        if cursor >= input.len() {
             break;
         }
     }
@@ -653,12 +872,12 @@ pub fn extract_title(html: &str) -> Option<String> {
 }
 
 pub(crate) fn decode_basic_entities(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
+    s.replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
 }
 
 /// Produce a distraction-free Reader Mode HTML document with default options (used by tests).
@@ -716,7 +935,7 @@ impl Default for ReaderOptions {
 
 pub fn build_reader_html_with_options(raw_html: &str, url: &str, opts: ReaderOptions, os_dark: bool) -> String {
     let title = extract_title(raw_html).unwrap_or_else(|| url.to_string());
-    let cleaned = strip_tag_blocks(
+    let cleaned = strip_tag_blocks_fixed_point(
         raw_html,
         &[
             "script", "style", "noscript", "nav", "aside", "footer", "header", "iframe",
@@ -725,7 +944,10 @@ pub fn build_reader_html_with_options(raw_html: &str, url: &str, opts: ReaderOpt
 
     // Extract the primary content container before stripping `<form>` so outer wrapper forms
     // (e.g. ASP.NET WebForms) do not wipe out `<article>`/`<main>`.
-    let body_fragment = sanitize_dangerous_attrs(&strip_tag_blocks(extract_primary_fragment(&cleaned), &["form"]));
+    let body_fragment = sanitize_dangerous_attrs(&strip_tag_blocks_fixed_point(
+        extract_primary_fragment(&cleaned),
+        &["form"],
+    ));
     let visible_chars = count_visible_text_chars(&body_fragment);
     let minutes = (visible_chars / 750).max(1);
     let host = url
@@ -1218,5 +1440,67 @@ mod tests {
             process_fetched_document(b"PK\x03\x04...", "https://a.test/archive", true).unwrap_err(),
             NOT_HTML_ERR
         );
+    }
+
+    #[test]
+    fn closes_slash_separator_quote_differential_and_tag_reconstruction_bypasses() {
+        // `/` mid-tag acts as an attribute separator in HTML5.
+        let slash = strip_scripts_and_bloat(
+            r#"<img/onerror="alert(1)" src="x"><img src="x"/onerror="alert(1)"><a/href="rust://history?clear=1">x</a>"#,
+            true,
+        );
+        assert!(!slash.contains("onerror"), "{slash}");
+        assert!(!slash.contains("rust://"), "{slash}");
+
+        // Quote inside an unquoted attribute must not desync `tag_end` vs `sanitize_tag`.
+        let qdiff = sanitize_dangerous_attrs(r#"<a x=a"><img src=x onerror="alert(1)">"#);
+        assert!(!qdiff.contains("onerror"), "{qdiff}");
+
+        // Nested/comment-split tags cannot reassemble `<script>` or `<style>`.
+        let nested = strip_scripts_and_bloat("<scr<script></script>ipt>alert(1)</script>", true);
+        assert!(!nested.to_ascii_lowercase().contains("<script"), "{nested}");
+        let big_comment = format!("<scr<!-- {} -->ipt>alert(1)</script>", "x".repeat(300));
+        let split_comment = strip_scripts_and_bloat(&big_comment, true);
+        assert!(
+            !split_comment.to_ascii_lowercase().contains("<script"),
+            "{split_comment}"
+        );
+        let reader_style = build_reader_html(
+            "<article><st<style></style>yle>body{}</style><p>hi</p></article>",
+            "https://a.test",
+        );
+        assert!(!reader_style.contains("body{}"), "{reader_style}");
+
+        // HTML5 comment closures `<!-->` and `--!>`, plus semicolon-less & zero-padded entities.
+        let comments = sanitize_dangerous_attrs("<!--><img src=x onerror=1><!-- a --!><img src=y onclick=2>");
+        assert!(
+            !comments.contains("onerror") && !comments.contains("onclick"),
+            "{comments}"
+        );
+        for bad in [
+            "&#106avascript:alert(1)",
+            "&#000000000106;avascript:alert(1)",
+            "vbscript:msgbox(1)",
+            "data:image/svg+xml,<svg onload=1>",
+        ] {
+            let out = sanitize_dangerous_attrs(&format!(r#"<a href="{bad}">x</a>"#));
+            assert!(!out.contains("href"), "{bad} -> {out}");
+        }
+
+        // `decode_basic_entities` must not double-unescape `&amp;lt;`.
+        assert_eq!(decode_basic_entities("&amp;lt;b&amp;gt;"), "&lt;b&gt;");
+
+        // `sanitize_svg` strips DTD/ENTITY, `<foreignObject>`, and external beacon refs while keeping `#id`.
+        let evil_svg = r##"<!DOCTYPE svg [<!ENTITY xxe "bad">]><svg><defs><linearGradient id="g"/></defs><use href="#g"/><image href="https://tracker.test/p.png"/><foreignObject><div onclick="x()">hi</div></foreignObject></svg>"##;
+        let clean_svg = sanitize_svg(evil_svg);
+        assert!(
+            !clean_svg.contains("DOCTYPE") && !clean_svg.contains("ENTITY"),
+            "{clean_svg}"
+        );
+        assert!(
+            !clean_svg.contains("foreignObject") && !clean_svg.contains("tracker.test"),
+            "{clean_svg}"
+        );
+        assert!(clean_svg.contains(r##"href="#g""##), "{clean_svg}");
     }
 }

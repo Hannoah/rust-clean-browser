@@ -8,6 +8,7 @@ use crate::favicon;
 use blitz_dom::Document;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use url::Url;
 use winit::event_loop::ActiveEventLoop;
 
 impl BrowserApp {
@@ -29,9 +30,9 @@ impl BrowserApp {
         let Some(raw) = tab
             .raw_html
             .clone()
-            .filter(|_| !tab.js_mode && !tab.url.starts_with("rust://"))
+            .filter(|_| !tab.js_mode && !tab.url.starts_with("rust://") && !tab.url.starts_with("file://"))
         else {
-            self.set_status_note("번역은 Clean 모드의 웹 페이지에서만 가능 (JS 모드 제외)");
+            self.set_status_note("번역은 Clean 모드의 http(s) 웹 페이지에서만 가능 (JS/로컬 파일 제외)");
             return self.rebuild_chrome();
         };
         let segs = crate::translate::segments(&raw);
@@ -131,7 +132,6 @@ impl BrowserApp {
                     self.rebuild_chrome();
                 }
                 "translate" => self.toggle_translate(),
-                "pdf-editor" => self.toggle_pdf_editor(),
                 "toggle-js" => self.toggle_js_mode(),
                 "toggle-reader" => self.toggle_reader_mode(),
                 "toggle-filter" => {
@@ -160,7 +160,8 @@ impl BrowserApp {
                 "chat-summarize-page" => self.open_sidebar_and_summarize(),
                 "trim-memory" => {
                     crate::memory::trim_process_working_set();
-                    let mb = crate::memory::working_set_mb();
+                    self.cached_ram_at = None;
+                    let mb = self.cached_working_set_mb();
                     #[cfg(any(target_os = "windows", target_os = "macos"))]
                     let msg = format!("메모리 정리됨 · {mb:.0} MB");
                     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -371,7 +372,7 @@ impl BrowserApp {
                         }
                         self.tabs[idx].url = url;
                         self.tabs[idx].is_loading = false;
-                        self.set_status_note("WebView2 뷰어로 열기");
+                        self.set_status_note("PDF 필기 모드로 열기");
                         self.mount_or_navigate_webview(idx);
                         self.rebuild_chrome();
                         continue;
@@ -408,10 +409,9 @@ impl BrowserApp {
                         .is_some_and(|d| d.id() == source_doc_id);
                     if from_active {
                         let url_str = url.as_str();
-                        // Page-initiated `file://` navigation outside our app-data dir is
-                        // blocked (local-file exfiltration lure). Typed address-bar
-                        // input still allows local files via `navigate_current`.
-                        if url.scheme() == "file" && !crate::net::is_app_data_file_url(&url) {
+                        // Page-initiated `file://` navigation is restricted to our app-data dir
+                        // or files inside/under the current `file://` page's directory.
+                        if url.scheme() == "file" && !is_page_file_nav_allowed(&self.tabs[self.active_tab].url, &url) {
                             self.set_status_note("차단됨: 페이지의 로컬 파일 접근");
                             self.rebuild_chrome();
                             continue;
@@ -529,9 +529,17 @@ impl BrowserApp {
                         self.rebuild_chrome();
                     }
                 }
-                // A denied `about:blank` popup has nothing to show; never open it as a blank tab.
+                // A denied `about:blank` popup has nothing to show; untrusted JS pages must never
+                // open `rust://` or `file://` tabs via `window.open` / `target="_blank"`.
                 AppEvent::OpenInNewTab(url) if url == "about:blank" => {}
-                AppEvent::OpenInNewTab(url) => self.open_new_tab_inheriting_js(&url),
+                AppEvent::OpenInNewTab(url) => {
+                    if super::helpers::is_web_http_url(&url) {
+                        self.open_new_tab_inheriting_js(&url);
+                    } else {
+                        self.set_status_note("차단됨: 허용되지 않은 새 탭 주소");
+                        self.rebuild_chrome();
+                    }
+                }
                 AppEvent::ZoomBy(notches) => self.zoom_by_notches(notches),
                 AppEvent::ZoomWheelPx(dy) => {
                     let zoom = self.tabs[self.active_tab].zoom;
@@ -558,10 +566,6 @@ impl BrowserApp {
                     {
                         continue;
                     }
-                    let size_bytes = path
-                        .as_deref()
-                        .filter(|_| success)
-                        .and_then(|p| std::fs::metadata(p).ok().map(|m| m.len()));
                     let existing = self.downloads.iter_mut().find(|d| {
                         d.status == DownloadStatus::InProgress && ((path.is_some() && d.path == path) || d.url == url)
                     });
@@ -575,9 +579,17 @@ impl BrowserApp {
                         } else {
                             DownloadStatus::Failed
                         };
-                        item.size_bytes = size_bytes;
+                        item.size_bytes = item
+                            .path
+                            .as_deref()
+                            .filter(|_| success)
+                            .and_then(|p| std::fs::metadata(p).ok().map(|m| m.len()));
                         item.filename.clone()
                     } else {
+                        let size_bytes = path
+                            .as_deref()
+                            .filter(|_| success)
+                            .and_then(|p| std::fs::metadata(p).ok().map(|m| m.len()));
                         let filename = super::helpers::download_display_name(path.as_deref(), &url);
                         let status = if success {
                             DownloadStatus::Completed
@@ -608,11 +620,35 @@ impl BrowserApp {
                 AppEvent::ChromeAction(action) => self.handle_chrome_action(&action, event_loop),
                 AppEvent::SidebarAction(action) => self.handle_sidebar_action(&action),
                 AppEvent::ChatPageContext { req_id, prompt, page } => self.start_chat_task(req_id, prompt, page),
+                AppEvent::ChatPdfDetected {
+                    req_id,
+                    prompt,
+                    title,
+                    url,
+                } => {
+                    if let Some(tab) = self.tabs.get_mut(self.active_tab)
+                        && tab.url == url
+                    {
+                        tab.pdf_hint = Some(url.clone());
+                    }
+                    self.spawn_pdf_context_extraction(req_id, prompt, title, url);
+                }
+                AppEvent::AgentPdfSnapshot {
+                    req_id,
+                    title,
+                    url,
+                    extracted,
+                } => self.on_agent_pdf_snapshot(req_id, title, url, extracted),
                 AppEvent::ChatFinished {
                     req_id,
                     provider_label,
                     result,
                 } => self.on_chat_finished(req_id, provider_label, result),
+                AppEvent::ChatStreamChunk {
+                    req_id,
+                    provider_label,
+                    delta,
+                } => self.on_chat_stream_chunk(req_id, provider_label, delta),
                 AppEvent::AgentStepReady { req_id } => self.on_agent_step_ready(req_id),
                 AppEvent::AgentLoadSettled { req_id, wait_gen } => self.on_agent_load_settled(req_id, wait_gen),
                 AppEvent::AgentWaitCheck {
@@ -636,8 +672,12 @@ impl BrowserApp {
                     copy,
                 } => self.on_agent_extract_done(req_id, ok, summary, extracted, copy),
                 AppEvent::AgyModelsLoaded(models) => self.on_agy_models_loaded(models),
-                AppEvent::ChatRevealTick => self.on_chat_reveal_tick(),
-                AppEvent::RefreshChrome => self.rebuild_chrome(),
+                AppEvent::ChatRevealTick(reveal_gen) => self.on_chat_reveal_tick(reveal_gen),
+                AppEvent::ChatScriptTimeout { req_id, script_seq } => self.on_chat_script_timeout(req_id, script_seq),
+                AppEvent::RefreshChrome => {
+                    self.chrome_motion_timer_armed = false;
+                    self.rebuild_chrome();
+                }
                 AppEvent::OpenBookmarkPopup {
                     key,
                     root,
@@ -682,9 +722,76 @@ fn is_page_rust_nav_allowed(page_url: &str, is_error_page: bool, reader_mode: bo
     reader_mode && target.starts_with("rust://reader-opt")
 }
 
+pub(super) fn is_page_file_nav_allowed(current_page_url: &str, target: &Url) -> bool {
+    if crate::net::is_app_data_file_url(target) {
+        return true;
+    }
+    let Ok(cur) = Url::parse(current_page_url) else {
+        return false;
+    };
+    if cur.scheme() != "file" || target.scheme() != "file" {
+        return false;
+    }
+    if target.path().split('/').any(|s| s == "..") {
+        return false;
+    }
+    let (Ok(cur_path), Ok(target_path)) = (cur.to_file_path(), target.to_file_path()) else {
+        return false;
+    };
+    if target_path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return false;
+    }
+    let Some(base_dir) = cur_path.parent() else {
+        return false;
+    };
+    let (Ok(canon_base), Ok(canon_target)) = (std::fs::canonicalize(base_dir), std::fs::canonicalize(&target_path))
+    else {
+        return false;
+    };
+    canon_target.starts_with(&canon_base)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn page_file_navigation_allows_only_same_or_subdir_files() {
+        let root = std::env::temp_dir().join(format!("rcb_file_nav_{}", std::process::id()));
+        let sub = root.join("sub");
+        let deep = sub.join("nested");
+        let _ = std::fs::create_dir_all(&deep);
+        let cur_sub = sub.join("index.html");
+        let sibling = sub.join("next.html");
+        let child = deep.join("detail.html");
+        let outside = root.join("secret.txt");
+        for p in [&cur_sub, &sibling, &child, &outside] {
+            let _ = std::fs::write(p, b"ok");
+        }
+        let cur_url = Url::from_file_path(&cur_sub).unwrap().to_string();
+        assert!(is_page_file_nav_allowed(
+            &cur_url,
+            &Url::from_file_path(&sibling).unwrap()
+        ));
+        assert!(is_page_file_nav_allowed(
+            &cur_url,
+            &Url::from_file_path(&child).unwrap()
+        ));
+        assert!(!is_page_file_nav_allowed(
+            &cur_url,
+            &Url::from_file_path(&outside).unwrap()
+        ));
+        assert!(!is_page_file_nav_allowed(
+            "https://example.com/",
+            &Url::from_file_path(&sibling).unwrap()
+        ));
+        let traversal = Url::parse(&format!("{}../secret.txt", Url::from_directory_path(&sub).unwrap())).unwrap();
+        assert!(!is_page_file_nav_allowed(&cur_url, &traversal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn auto_js_prefers_requested_url_for_get_redirects() {

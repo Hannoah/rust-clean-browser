@@ -89,11 +89,10 @@ pub fn working_set_mb() -> f64 {
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 unsafe fn libc_page_size() -> i64 {
-    const SC_PAGESIZE: i32 = 30; // _SC_PAGESIZE on Linux
     unsafe extern "C" {
-        fn sysconf(name: i32) -> i64;
+        fn getpagesize() -> i32;
     }
-    unsafe { sysconf(SC_PAGESIZE) }
+    i64::from(unsafe { getpagesize() })
 }
 
 /// Ask Windows to reclaim freed heap pages from the process working set immediately
@@ -118,3 +117,15 @@ pub fn trim_process_working_set() {
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn trim_process_working_set() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reports_positive_working_set_and_trims_safely() {
+        let mb = working_set_mb();
+        assert!(mb > 0.0 && mb.is_finite(), "working_set_mb={mb}");
+        trim_process_working_set();
+    }
+}

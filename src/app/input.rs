@@ -31,11 +31,13 @@ impl BrowserApp {
             WindowEvent::CloseRequested => self.exit_app(event_loop),
             WindowEvent::Focused(false) => {
                 self.buttons = MouseEventButtons::None;
+                self.sidebar_pressed_action = None;
                 let mut need_chrome = false;
-                if let Some(tdrag) = self.tab_drag.take()
-                    && (tdrag.active || tdrag.detaching)
-                {
-                    need_chrome = true;
+                if let Some(tdrag) = self.tab_drag.take() {
+                    super::helpers::release_mouse_capture();
+                    if tdrag.active || tdrag.detaching {
+                        need_chrome = true;
+                    }
                 }
                 if self.sidebar_drag {
                     self.sidebar_drag = false;
@@ -47,12 +49,14 @@ impl BrowserApp {
                 if self.focus_region == UiRegion::Chrome {
                     self.focus_region = UiRegion::Content;
                     self.chrome_doc.clear_focus();
+                    self.sync_ime_transform();
                     self.request_redraw();
                 } else if self.focus_region == UiRegion::Sidebar {
                     self.focus_region = UiRegion::Content;
                     if let Some(sdoc) = &mut self.sidebar_doc {
                         sdoc.clear_focus();
                     }
+                    self.sync_ime_transform();
                     self.request_redraw();
                 }
                 if let Some(drag) = self.bm_drag.take()
@@ -88,6 +92,7 @@ impl BrowserApp {
                     self.renderer.set_size(size.width.max(1), size.height.max(1));
                 }
                 self.sync_viewports();
+                self.reposition_popup();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 self.hidpi_scale = scale_factor as f32;
@@ -95,10 +100,17 @@ impl BrowserApp {
             }
             WindowEvent::ModifiersChanged(mods) => self.keyboard_modifiers = mods,
             WindowEvent::Ime(ime_ev) => {
+                let ime_done = matches!(ime_ev, winit::event::Ime::Commit(_) | winit::event::Ime::Disabled);
                 let ev = UiEvent::Ime(winit_ime_to_blitz(ime_ev));
                 self.dispatch_focused(ev);
                 if self.focus_region == UiRegion::Chrome {
                     self.update_suggestions(event_loop);
+                } else if self.focus_region == UiRegion::Sidebar {
+                    self.sync_chat_input_height();
+                }
+                if ime_done && self.sidebar_dirty {
+                    let scroll = self.sidebar_dirty_scroll;
+                    self.rebuild_sidebar(scroll);
                 }
                 self.request_redraw();
             }
@@ -129,6 +141,7 @@ impl BrowserApp {
                 kind,
                 ..
             } => {
+                self.sidebar_pressed_action = None;
                 let id = pointer_kind_to_blitz(&kind);
                 let pos = position.unwrap_or(self.pointer_pos);
                 self.send_pointer_leave(id, primary, pos, UiRegion::Chrome);
@@ -150,10 +163,11 @@ impl BrowserApp {
                 {
                     self.buttons &= !MouseEventButtons::from(MouseEventButton::Main);
                     let mut need_chrome = false;
-                    if let Some(tdrag) = self.tab_drag.take()
-                        && (tdrag.active || tdrag.detaching)
-                    {
-                        need_chrome = true;
+                    if let Some(tdrag) = self.tab_drag.take() {
+                        super::helpers::release_mouse_capture();
+                        if tdrag.active || tdrag.detaching {
+                            need_chrome = true;
+                        }
                     }
                     if let Some(drag) = self.bm_drag.take()
                         && drag.active
@@ -317,6 +331,7 @@ impl BrowserApp {
                     } else {
                         UiRegion::Content
                     };
+                    self.sync_ime_transform();
                     if in_chrome {
                         self.last_chrome_click_x_logical = (position.x / (self.hidpi_scale.max(1.0) as f64)) as f32;
                     }
@@ -325,6 +340,11 @@ impl BrowserApp {
                         super::bus::enable_window_ime(&**win);
                     }
                     if btn == MouseEventButton::Main {
+                        self.sidebar_pressed_action = if region == UiRegion::Sidebar {
+                            self.sidebar_action_at(position).map(|a| (a, position))
+                        } else {
+                            None
+                        };
                         if hit_url_bar && !was_url_focused {
                             self.sync_suggest_query_to_url_bar();
                             self.url_bar_select_all_on_click = Some(position);
@@ -365,6 +385,7 @@ impl BrowserApp {
                     if let Some(tdrag) = self.tab_drag.take()
                         && tdrag.active
                     {
+                        super::helpers::release_mouse_capture();
                         if tdrag.detaching {
                             self.bm_drag = None;
                             if let Some(win) = &self.window {
@@ -404,13 +425,32 @@ impl BrowserApp {
                     self.mods(),
                     PointerDetails::default(),
                 );
-                self.dispatch_to_region(
-                    region,
-                    match state {
-                        ElementState::Pressed => UiEvent::PointerDown(pev),
-                        ElementState::Released => UiEvent::PointerUp(pev),
-                    },
-                );
+                if state == ElementState::Released && btn == MouseEventButton::Main {
+                    if region == UiRegion::Sidebar {
+                        let handled = self.dispatch_sidebar_ui(UiEvent::PointerUp(pev));
+                        if handled {
+                            self.sidebar_pressed_action = None;
+                        } else if let Some((act, press_pos)) = self.sidebar_pressed_action.take() {
+                            let same = self.sidebar_action_at(position).as_deref() == Some(act.as_str());
+                            let close = (position.x - press_pos.x).hypot(position.y - press_pos.y)
+                                <= 8.0 * (self.hidpi_scale.max(1.0) as f64);
+                            if same || close {
+                                self.bus.send(super::AppEvent::SidebarAction(act));
+                            }
+                        }
+                    } else {
+                        self.sidebar_pressed_action = None;
+                        self.dispatch_to_region(region, UiEvent::PointerUp(pev));
+                    }
+                } else {
+                    self.dispatch_to_region(
+                        region,
+                        match state {
+                            ElementState::Pressed => UiEvent::PointerDown(pev),
+                            ElementState::Released => UiEvent::PointerUp(pev),
+                        },
+                    );
+                }
                 if force_url_caret_at_pos {
                     self.place_url_bar_caret_at(position);
                 }
@@ -519,14 +559,49 @@ impl BrowserApp {
         true
     }
 
+    fn is_any_text_input_focused(&self) -> bool {
+        if self.url_bar_focused() {
+            return true;
+        }
+        if self.focus_region == UiRegion::Sidebar
+            && let Some(doc) = &self.sidebar_doc
+            && let Some(fid) = doc.get_focussed_node_id()
+            && doc
+                .get_node(fid)
+                .and_then(|n| n.element_data())
+                .is_some_and(|el| el.text_input_data().is_some())
+        {
+            return true;
+        }
+        if self.focus_region == UiRegion::Content
+            && let Some(doc) = self.tabs.get(self.active_tab).and_then(|t| t.doc.as_ref())
+            && let Some(fid) = doc.get_focussed_node_id()
+            && doc
+                .get_node(fid)
+                .and_then(|n| n.element_data())
+                .is_some_and(|el| el.text_input_data().is_some())
+        {
+            return true;
+        }
+        false
+    }
+
     fn alt_shortcut(&mut self, code: KeyCode) -> bool {
+        // Windows AltGr reports Ctrl+Alt; macOS Option+letter produces diacritics/symbols in inputs.
+        let state = self.keyboard_modifiers.state();
+        if state.control_key()
+            || (cfg!(target_os = "macos")
+                && matches!(code, KeyCode::KeyD | KeyCode::KeyR | KeyCode::KeyT | KeyCode::KeyE)
+                && self.is_any_text_input_focused())
+        {
+            return false;
+        }
         match code {
             KeyCode::ArrowLeft => self.history_step(false),
             KeyCode::ArrowRight => self.history_step(true),
             KeyCode::KeyD => self.focus_url_bar(),
             KeyCode::KeyR => self.toggle_reader_mode(),
             KeyCode::KeyT => self.toggle_translate(),
-            KeyCode::KeyE => self.toggle_pdf_editor(),
             KeyCode::Home => self.navigate_current("rust://home"),
             KeyCode::Enter | KeyCode::NumpadEnter if self.url_bar_focused() => {
                 if !self.suggest_open_new_tab()
@@ -556,7 +631,11 @@ impl BrowserApp {
             return true;
         }
         if code == KeyCode::Escape {
-            if self.tab_drag.take().is_some() || self.bm_drag.take().is_some() {
+            let had_tab_drag = self.tab_drag.take().is_some();
+            if had_tab_drag {
+                super::helpers::release_mouse_capture();
+            }
+            if had_tab_drag || self.bm_drag.take().is_some() {
                 if let Some(win) = &self.window {
                     win.set_cursor(Cursor::Icon(CursorIcon::Default));
                 }
@@ -700,10 +779,16 @@ impl BrowserApp {
             KeyCode::Space if shift => -page_h * 0.88,
             KeyCode::Space => page_h * 0.88,
             KeyCode::Home => -doc.viewport_scroll().y,
-            // Overshoot is clamped by Blitz; the animator stops once the viewport stops moving.
-            KeyCode::End => 1.0e7,
+            KeyCode::End => {
+                let root_l = doc.root_element().final_layout();
+                let doc_h = root_l.size.height.max(root_l.scrollable_overflow_rect.bottom) as f64;
+                (doc_h - page_h - doc.viewport_scroll().y).max(0.0)
+            }
             _ => return false,
         };
+        if dy == 0.0 {
+            return true;
+        }
         // Blitz uses wheel-style deltas: negative scrolls the page down.
         self.queue_smooth_scroll(UiRegion::Content, true, 0.0, -dy);
         true
@@ -728,12 +813,14 @@ impl BrowserApp {
             Some(s) if s.region == region && s.viewport == viewport && s.tab_id == tab_id => {
                 s.rem_x = accumulate_scroll(s.rem_x, dx);
                 s.rem_y = accumulate_scroll(s.rem_y, dy);
+                s.origin_pos = self.pointer_pos;
             }
             _ => {
                 self.smooth_scroll = Some(SmoothScroll {
                     region,
                     viewport,
                     tab_id,
+                    origin_pos: self.pointer_pos,
                     rem_x: dx,
                     rem_y: dy,
                     last: Instant::now(),
@@ -767,7 +854,7 @@ impl BrowserApp {
         } else {
             let ev = UiEvent::Wheel(BlitzWheelEvent {
                 delta: BlitzWheelDelta::Pixels(px, py),
-                coords: self.coords_for_region(self.pointer_pos, s.region),
+                coords: self.coords_for_region(s.origin_pos, s.region),
                 buttons: self.buttons,
                 mods: self.mods(),
                 element: Default::default(),
@@ -864,7 +951,7 @@ impl BrowserApp {
         }
     }
 
-    fn coords_for_region(&self, pos: PhysicalPosition<f64>, region: UiRegion) -> PointerCoords {
+    pub(super) fn coords_for_region(&self, pos: PhysicalPosition<f64>, region: UiRegion) -> PointerCoords {
         match region {
             UiRegion::Chrome => {
                 let l: LogicalPosition<f32> = pos.to_logical(self.hidpi_scale as f64);
@@ -872,14 +959,15 @@ impl BrowserApp {
             }
             UiRegion::Content => self.content_coords(pos),
             UiRegion::Sidebar => {
-                let l: LogicalPosition<f32> = pos.to_logical(self.hidpi_scale as f64);
+                let (ox, oy) = self.sidebar_origin_phys();
+                let scale = self.hidpi_scale.max(1.0) as f64;
                 let scroll = self
                     .sidebar_doc
                     .as_ref()
                     .map_or(blitz_dom::Point { x: 0.0, y: 0.0 }, |d| d.viewport_scroll());
                 super::helpers::plain_coords(
-                    l.x - self.sidebar_left_logical(),
-                    l.y - self.chrome_height() as f32,
+                    ((pos.x - ox as f64) / scale) as f32,
+                    ((pos.y - oy as f64) / scale) as f32,
                     scroll.x as f32,
                     scroll.y as f32,
                 )
@@ -908,7 +996,9 @@ impl BrowserApp {
     fn dispatch_to_region(&mut self, region: UiRegion, ev: UiEvent) {
         match region {
             UiRegion::Chrome => self.dispatch_chrome_ui(ev),
-            UiRegion::Sidebar => self.dispatch_sidebar_ui(ev),
+            UiRegion::Sidebar => {
+                self.dispatch_sidebar_ui(ev);
+            }
             UiRegion::Content => {
                 if self.active_tab < self.tabs.len()
                     && let Some(doc) = &mut self.tabs[self.active_tab].doc
@@ -921,6 +1011,7 @@ impl BrowserApp {
 
     /// Keyboard / IME events go to whichever region has focus.
     fn dispatch_focused(&mut self, ev: UiEvent) {
+        self.sync_ime_transform();
         self.dispatch_to_region(self.focus_region, ev);
     }
 
@@ -1045,6 +1136,7 @@ impl BrowserApp {
         if !drag.active && (dx * dx + dy * dy) < threshold * threshold {
             return false;
         }
+        let was_active = drag.active;
         let scale = self.hidpi_scale.max(1.0) as f64;
         let lx = pos.x / scale;
         let ly = pos.y / scale;
@@ -1056,6 +1148,9 @@ impl BrowserApp {
             if let Some(d) = self.tab_drag.as_mut() {
                 d.active = true;
                 d.detaching = false;
+            }
+            if !was_active && let Some(win) = &self.window {
+                super::helpers::capture_mouse(&**win);
             }
             if was_detaching {
                 self.rebuild_chrome();
@@ -1069,6 +1164,7 @@ impl BrowserApp {
                 self.tab_drag = None;
                 self.bm_drag = None;
                 self.buttons = MouseEventButtons::None;
+                super::helpers::release_mouse_capture();
                 if let Some(win) = &self.window {
                     win.set_cursor(Cursor::Icon(CursorIcon::Default));
                     let _ = win.drag_window();
@@ -1080,6 +1176,9 @@ impl BrowserApp {
             if let Some(d) = self.tab_drag.as_mut() {
                 d.active = true;
                 d.detaching = true;
+            }
+            if !was_active && let Some(win) = &self.window {
+                super::helpers::capture_mouse(&**win);
             }
             if let Some(win) = &self.window {
                 win.set_cursor(Cursor::Icon(CursorIcon::Move));
@@ -1100,6 +1199,9 @@ impl BrowserApp {
         if let Some(d) = self.tab_drag.as_mut() {
             d.active = true;
             d.detaching = false;
+        }
+        if !was_active && let Some(win) = &self.window {
+            super::helpers::capture_mouse(&**win);
         }
         let bm_had_hover = self.bm_drag.as_mut().is_some_and(|b| b.hover_folder.take().is_some());
         if was_detaching || bm_had_hover {
@@ -1306,6 +1408,8 @@ pub(super) struct SmoothScroll {
     viewport: bool,
     /// Content glides belong to one tab and stop if the user switches away.
     tab_id: Option<u64>,
+    /// Pointer position where the wheel glide started, so moving the cursor mid-glide does not retarget it.
+    origin_pos: PhysicalPosition<f64>,
     rem_x: f64,
     rem_y: f64,
     last: Instant,

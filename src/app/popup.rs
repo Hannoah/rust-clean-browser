@@ -72,6 +72,7 @@ pub(super) struct Popup {
     hidpi_scale: f32,
     pointer_pos: PhysicalPosition<f64>,
     buttons: MouseEventButtons,
+    pub(super) next_anim_frame: Option<Instant>,
 }
 
 impl Popup {
@@ -153,6 +154,7 @@ impl BrowserApp {
     fn popup_doc(&self, html: &str, window: &Arc<dyn Window>, w: u32, h: u32, scale: f32) -> HtmlDocument {
         let shell: Arc<dyn ShellProvider> = Arc::new(BrowserShellProvider {
             window: Arc::clone(window),
+            ime_transform: Arc::new(std::sync::Mutex::new((0.0, 0.0, 1.0))),
         });
         let vp = Viewport::new(w, h, scale, self.color_scheme);
         let mut doc = HtmlDocument::from_html(html, self.doc_config(vp, Some(shell)));
@@ -268,7 +270,59 @@ impl BrowserApp {
             hidpi_scale: popup_scale,
             pointer_pos: PhysicalPosition::new(0.0, 0.0),
             buttons: MouseEventButtons::None,
+            next_anim_frame: None,
         });
+    }
+
+    /// Repositions the active popup relative to the main window after a resize, or closes
+    /// click-anchored bookmark popups whose trigger chip may have moved.
+    pub(super) fn reposition_popup(&mut self) {
+        let url_rect = self.url_bar_rect();
+        let chrome_h = self.chrome_height() as f64;
+        let scale = self.hidpi_scale.max(1.0) as f64;
+        let win_w = self.win_size.width as f64 / scale;
+        let Some(main_win) = &self.window else {
+            return;
+        };
+        let surf_pos = super::helpers::client_origin_on_screen(&**main_win);
+        let Some(popup) = &self.popup else {
+            return;
+        };
+        let (x, y) = match &popup.kind {
+            PopupKind::Bookmarks { .. } => {
+                self.close_popup();
+                return;
+            }
+            PopupKind::Downloads => (
+                (win_w.max(DOWNLOADS_POPUP_WIDTH as f64 + 16.0) - DOWNLOADS_POPUP_WIDTH as f64 - 14.0).max(8.0),
+                chrome_h + 2.0,
+            ),
+            PopupKind::FindBar { .. } => (
+                (win_w.max(crate::chrome_ui::FIND_BAR_WIDTH as f64 + 16.0)
+                    - crate::chrome_ui::FIND_BAR_WIDTH as f64
+                    - 14.0)
+                    .max(8.0),
+                chrome_h + 8.0,
+            ),
+            PopupKind::CommandPalette { .. } => (
+                ((win_w.max(336.0) - popup.width as f64) * 0.5).max(8.0),
+                crate::chrome_ui::TITLEBAR_HEIGHT as f64 + 12.0,
+            ),
+            PopupKind::Suggest { .. } => match url_rect {
+                Some((ux, uy, _)) => (ux, uy + 4.0),
+                None => {
+                    self.close_popup();
+                    return;
+                }
+            },
+        };
+        popup.window.set_outer_position(
+            PhysicalPosition::new(
+                surf_pos.x + (x * scale).round() as i32,
+                surf_pos.y + (y * scale).round() as i32,
+            )
+            .into(),
+        );
     }
 
     pub(super) fn resize_popup_height(&mut self, logical_h: u32) {
@@ -583,9 +637,7 @@ impl BrowserApp {
         popup.renderer.render(|scene| {
             paint_scene(scene, doc_inner, scale, w, h, 0, 0);
         });
-        if animating {
-            popup.window.request_redraw();
-        }
+        popup.next_anim_frame = animating.then(|| Instant::now() + std::time::Duration::from_millis(16));
     }
 
     fn bookmark_popup_key(&mut self, code: KeyCode) -> bool {

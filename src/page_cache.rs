@@ -3,7 +3,6 @@
 //! the background. Files live in `<app data>/pages/<hash>.html`; the first line is the final
 //! URL. Bounded by age and total size (oldest files evicted first).
 
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -35,9 +34,12 @@ impl DiskPageCache {
     }
 
     fn path_for(&self, url: &str) -> Option<PathBuf> {
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        Self::cache_key(url).hash(&mut h);
-        Some(self.dir.as_ref()?.join(format!("{:016x}.html", h.finish())))
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        for b in Self::cache_key(url).as_bytes() {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        Some(self.dir.as_ref()?.join(format!("{h:016x}.html")))
     }
 
     pub fn get(&self, url: &str) -> Option<CachedDoc> {
@@ -76,32 +78,29 @@ impl DiskPageCache {
     }
 
     pub fn put(&mut self, url: &str, final_url: &str, html: &str) {
-        if html.len() > MAX_PAGE_BYTES || final_url.contains('\n') {
+        if html.len() > MAX_PAGE_BYTES || final_url.contains(['\r', '\n']) {
             return;
         }
-        if url::Url::parse(final_url).map_or(true, |u| u.cannot_be_a_base()) {
+        let Ok(parsed) = url::Url::parse(final_url) else {
+            return;
+        };
+        if parsed.cannot_be_a_base() || parsed.scheme() == "file" {
             return;
         }
         let req_key = Self::cache_key(url);
-        if req_key.contains('\n') {
+        if req_key.contains(['\r', '\n']) {
             return;
         }
         let Some(path) = self.path_for(url) else {
             return;
         };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
         let mut buf = String::with_capacity(req_key.len() + final_url.len() + 2 + html.len());
         buf.push_str(&req_key);
         buf.push('\n');
         buf.push_str(final_url);
         buf.push('\n');
         buf.push_str(html);
-        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
-        if std::fs::write(&tmp, &buf).is_ok() {
-            let _ = std::fs::rename(&tmp, &path);
-        }
+        let _ = crate::net::atomic_write_private(&path, buf.as_bytes());
         self.writes_since_prune += 1;
         if self.writes_since_prune >= 25 {
             self.writes_since_prune = 0;
@@ -133,9 +132,13 @@ impl DiskPageCache {
         files.sort_by_key(|f| std::cmp::Reverse(f.0)); // newest first
         let mut total = 0u64;
         for (modified, len, path) in files {
-            total += len;
             let expired = modified.elapsed().unwrap_or_default() > MAX_AGE;
-            if expired || total > MAX_TOTAL_BYTES {
+            if expired {
+                let _ = std::fs::remove_file(path);
+                continue;
+            }
+            total += len;
+            if total > MAX_TOTAL_BYTES {
                 let _ = std::fs::remove_file(path);
             }
         }

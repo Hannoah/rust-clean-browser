@@ -225,7 +225,7 @@ impl BrowserApp {
         }
 
         // 2. Commands
-        let mut commands: Vec<(
+        let commands: Vec<(
             String,
             &'static str,
             &'static str,
@@ -356,7 +356,7 @@ impl BrowserApp {
                 } else {
                     "AI 어시스턴트 사이드바 열기"
                 },
-                "AGY · Claude · Gemini · Codex · API 챗봇 패널",
+                "Gemini · Claude · Codex · API 챗봇 패널",
                 if is_mac { "⌘⇧I" } else { "Ctrl+Shift+I" },
                 PaletteIcon::Zap,
                 "ai chat copilot assistant claude agy gemini codex 사이드바 챗봇",
@@ -466,24 +466,6 @@ impl BrowserApp {
                 "zoom reset",
             ),
         ];
-
-        if active.is_pdf() {
-            commands.insert(
-                0,
-                (
-                    "pdf-editor".into(),
-                    if active.editing_pdf() {
-                        "PDF 필기 모드 끄기 (기본 뷰어)"
-                    } else {
-                        "PDF 필기 모드 (형광펜·그리기·메모)"
-                    },
-                    "형광펜, 손글씨, 텍스트 메모, 이미지 삽입 후 주석 포함 저장",
-                    "Alt+E",
-                    PaletteIcon::Book,
-                    "pdf 필기 메모 밑줄 형광펜 주석 annotate highlight draw note edit",
-                ),
-            );
-        }
 
         for (action, title, subtitle, shortcut, icon_kind, keywords) in commands {
             if !q.is_empty()

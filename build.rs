@@ -25,10 +25,11 @@ fn embed_pdfjs(out_path: &Path) {
         .join("pdfjs");
     let mut files = Vec::new();
     collect(&root, &root, &mut files);
-    // LICENSE ships with the source tree, not in the served app.
-    files.retain(|(rel, _)| rel != "LICENSE");
+    // LICENSE ships with the source tree, not in the served app; exclude quickjs-eval so PDF JS cannot run.
+    files.retain(|(rel, _)| rel != "LICENSE" && !rel.contains("quickjs-eval"));
     let mut code = String::from("pub static FILES: &[(&str, &[u8])] = &[\n");
     for (i, (rel, path)) in files.iter().enumerate() {
+        println!("cargo:rerun-if-changed=vendor/pdfjs/{rel}");
         let Ok(data) = fs::read(path) else { continue };
         let z = out_path.join(format!("pdfjs_{i}.z"));
         if fs::write(&z, miniz_oxide::deflate::compress_to_vec(&data, 9)).is_ok() {

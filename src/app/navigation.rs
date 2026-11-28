@@ -6,7 +6,7 @@ use crate::chrome_ui::{
     parse_query_param, render_bookmarks_page, render_error_page, render_history_page, render_home_page,
 };
 use crate::cleaner::{ReaderFont, ReaderTheme, ReaderWidth, process_fetched_document};
-use crate::memory::{trim_process_working_set, working_set_mb};
+use crate::memory::trim_process_working_set;
 use crate::tabs::{HistoryEntry, Tab, short_title_for_url};
 use blitz_traits::net::{AbortController, Request};
 use blitz_traits::shell::ColorScheme;
@@ -97,7 +97,7 @@ fn eviction_index(media_active: impl Iterator<Item = bool> + Clone) -> usize {
 /// are off, so these are forwarded to the app, which owns the per-tab zoom (address-bar label, restore on tab
 /// switch). The PDF annotator (pdf.js) has its own zoom and is left alone.
 const ZOOM_SCRIPT: &str = r#"(function () {
-  if (location.hostname === 'rcbpdf.localhost') return;
+  if (location.hostname === 'rcbpdf.localhost' || location.protocol === 'rcbpdf:') return;
   // `window.ipc` is installed by wry after the page's init scripts ran, so look it up per message.
   var post = function (m) { try { window.ipc.postMessage(m); } catch (e) {} };
   addEventListener('wheel', function (e) {
@@ -226,6 +226,11 @@ impl BrowserApp {
             return;
         }
         let tab_id = self.tabs[tab_idx].id;
+        // PDFs always open in the pdf.js annotator (there is no separate plain-viewer
+        // mode): enable it for any PDF-ish URL before choosing what to load.
+        if crate::pdfjs::is_pdf_url(&url) || self.tabs[tab_idx].pdf_hint.as_deref() == Some(&url) {
+            self.tabs[tab_idx].pdf_editor = Some(url.clone());
+        }
         // The annotator is addressed by its own viewer URL; `tab.url` stays the PDF's real URL.
         let load = if self.tabs[tab_idx].editing_pdf() {
             self.pdf_sources.editor_url(&url)
@@ -331,7 +336,7 @@ impl BrowserApp {
             .with_new_window_req_handler({
                 let budget = std::cell::Cell::new((std::time::Instant::now(), 0u32));
                 move |target_url, features| {
-                    let wanted = cfg!(windows)
+                    let wanted = cfg!(any(target_os = "windows", target_os = "macos"))
                         && super::helpers::wants_native_popup(
                             &target_url,
                             features.size.is_some() || features.position.is_some(),
@@ -346,7 +351,9 @@ impl BrowserApp {
                         });
                         return NewWindowResponse::Allow;
                     }
-                    bus_new.send(AppEvent::OpenInNewTab(target_url));
+                    if target_url != "about:blank" {
+                        bus_new.send(AppEvent::OpenInNewTab(target_url));
+                    }
                     NewWindowResponse::Deny
                 }
             })
@@ -465,11 +472,12 @@ impl BrowserApp {
                 }
                 render_history_page(&self.history, &self.tabs[idx].url)
             } else {
-                let unloaded = self.tabs.iter().filter(|t| !t.is_loaded()).count();
+                let unloaded = self.tabs.iter().filter(|t| !t.is_loaded() && !t.js_mode).count();
+                let ram_mb = self.cached_working_set_mb();
                 render_home_page(
                     &self.bookmarks,
                     &self.history,
-                    working_set_mb(),
+                    ram_mb,
                     self.tabs.len(),
                     unloaded,
                     self.net_provider.blocked_total(),
@@ -1057,26 +1065,6 @@ impl BrowserApp {
         }
     }
 
-    /// PDF tab: switch between WebView2's viewer and the pdf.js annotator (highlight/draw/text/save).
-    pub(super) fn toggle_pdf_editor(&mut self) {
-        self.ensure_active_valid();
-        let idx = self.active_tab;
-        let tab = &mut self.tabs[idx];
-        if !tab.is_pdf() {
-            self.set_status_note("PDF 문서에서만 사용할 수 있음");
-            return self.rebuild_chrome();
-        }
-        tab.pdf_editor = if tab.editing_pdf() { None } else { Some(tab.url.clone()) };
-        let on = tab.editing_pdf();
-        self.set_status_note(if on {
-            "PDF 필기 모드 · 상단 도구로 형광펜·그리기·텍스트 추가, 저장 버튼으로 주석 포함 저장"
-        } else {
-            "기본 PDF 뷰어로 전환"
-        });
-        self.mount_or_navigate_webview(idx);
-        self.rebuild_chrome();
-    }
-
     pub(super) fn toggle_reader_mode(&mut self) {
         let idx = self.active_tab;
         if self.tabs[idx].js_mode {
@@ -1117,6 +1105,7 @@ impl BrowserApp {
         if let Some(wv) = &self.active_webview {
             let _ = wv.zoom(zoom as f64);
         }
+        self.sync_ime_transform();
         self.rebuild_chrome();
         self.request_redraw();
     }

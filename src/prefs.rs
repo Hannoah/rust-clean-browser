@@ -114,14 +114,27 @@ impl UiPrefs {
         let Some(path) = Self::path() else {
             return;
         };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
         if let Ok(json) = serde_json::to_string_pretty(self) {
-            let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
-            if std::fs::write(&tmp, json).is_ok() {
-                let _ = std::fs::rename(&tmp, &path);
-            }
+            let _ = crate::net::atomic_write_private(&path, json.as_bytes());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn js_hosts_remember_forget_and_ignore_non_http() {
+        let mut prefs = UiPrefs::default();
+        assert!(!prefs.host_prefers_js("https://Example.COM/a"));
+        assert_eq!(
+            UiPrefs::host_key("https://Example.COM/a").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(UiPrefs::host_key("file:///C:/a.html"), None);
+        assert_eq!(UiPrefs::host_key("rust://home"), None);
+        prefs.js_hosts.insert("example.com".into());
+        assert!(prefs.host_prefers_js("https://EXAMPLE.COM/b"));
     }
 }

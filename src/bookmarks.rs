@@ -174,7 +174,7 @@ impl BookmarkStore {
     }
 
     pub fn search(&self, query: &str) -> Vec<BookmarkItem> {
-        let q = query.trim().to_ascii_lowercase();
+        let q = query.trim().to_lowercase();
         let mut out: Vec<BookmarkItem> = self.custom.iter().filter(|i| item_matches(i, &q)).cloned().collect();
         collect_matching(&self.bar, &q, &mut out);
         collect_matching(&self.other, &q, &mut out);
@@ -255,6 +255,9 @@ impl BookmarkStore {
             .ok_or_else(|| "대상 폴더를 찾을 수 없습니다.".to_string())?;
 
         if let Some(url) = src_spec.strip_prefix("url:") {
+            if !is_allowed_bookmark_url(url) {
+                return Err("허용되지 않은 북마크 주소 형식입니다.".to_string());
+            }
             let clean_title = if fallback_title.trim().is_empty() {
                 url
             } else {
@@ -369,9 +372,6 @@ impl BookmarkStore {
         let Some(path) = Self::custom_file_path() else {
             return;
         };
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
         let persisted = PersistedBookmarks::Tree {
             source_label: self.source_label.clone(),
             bar: self.bar.clone(),
@@ -379,10 +379,7 @@ impl BookmarkStore {
             custom: self.custom.clone(),
         };
         if let Ok(json) = serde_json::to_string_pretty(&persisted) {
-            let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
-            if fs::write(&tmp, json).is_ok() {
-                let _ = fs::rename(&tmp, &path);
-            }
+            let _ = crate::net::atomic_write_private(&path, json.as_bytes());
         }
     }
 }
@@ -559,13 +556,20 @@ fn parse_chrome_bookmarks(path: &Path) -> Result<(Vec<BookmarkNode>, Vec<Bookmar
     Ok((bar, other))
 }
 
+fn is_allowed_bookmark_url(url: &str) -> bool {
+    let trimmed = url.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    (lower.starts_with("http://") || lower.starts_with("https://"))
+        && url::Url::parse(trimmed).is_ok_and(|u| u.host_str().is_some())
+}
+
 fn convert_chrome_children(nodes: &[ChromeNode]) -> Vec<BookmarkNode> {
     let mut out = Vec::with_capacity(nodes.len());
     for node in nodes {
         match node.node_type.as_str() {
             "url" => {
                 if let Some(url) = &node.url
-                    && !url.is_empty()
+                    && is_allowed_bookmark_url(url)
                 {
                     out.push(BookmarkNode::Url(BookmarkItem {
                         title: if node.name.trim().is_empty() {
@@ -614,9 +618,7 @@ fn tree_contains_url(nodes: &[BookmarkNode], target: &str) -> bool {
 }
 
 fn item_matches(item: &BookmarkItem, q_lower: &str) -> bool {
-    q_lower.is_empty()
-        || item.title.to_ascii_lowercase().contains(q_lower)
-        || item.url.to_ascii_lowercase().contains(q_lower)
+    q_lower.is_empty() || item.title.to_lowercase().contains(q_lower) || item.url.to_lowercase().contains(q_lower)
 }
 
 fn collect_matching(nodes: &[BookmarkNode], q_lower: &str, out: &mut Vec<BookmarkItem>) {
@@ -691,5 +693,25 @@ mod tests {
         assert_eq!(folder_t2, "Docs");
         let (_, docs_nodes2) = store.resolve_folder(BookmarkRootKind::Bar, &[0]).unwrap();
         assert_eq!(docs_nodes2.len(), 3);
+
+        // Chrome import filters out non-http(s) schemes (e.g., rust://, javascript:, file://).
+        let mixed = r#"{
+            "roots": {
+                "bookmark_bar": {
+                    "type": "folder",
+                    "name": "Bar",
+                    "children": [
+                        { "type": "url", "name": "Clear", "url": "rust://history?clear=1" },
+                        { "type": "url", "name": "XSS", "url": "javascript:alert(1)" },
+                        { "type": "url", "name": "Local", "url": "file:///C:/Windows/win.ini" },
+                        { "type": "url", "name": "Safe", "url": "https://example.org/" }
+                    ]
+                }
+            }
+        }"#;
+        let parsed_mixed: ChromeBookmarksFile = serde_json::from_str(mixed).unwrap();
+        let filtered = convert_chrome_children(&parsed_mixed.roots.bookmark_bar.unwrap().children);
+        assert_eq!(count_urls(&filtered), 1);
+        assert!(tree_contains_url(&filtered, "https://example.org/"));
     }
 }

@@ -148,10 +148,31 @@ pub enum AppEvent {
         prompt: String,
         page: Option<crate::chat::PageContext>,
     },
+    /// Active JS tab had empty `innerText` and reported `application/pdf` (`contentType`/`<embed>`).
+    ChatPdfDetected {
+        req_id: u64,
+        prompt: String,
+        title: String,
+        url: String,
+    },
+    AgentPdfSnapshot {
+        req_id: u64,
+        title: String,
+        url: String,
+        extracted: String,
+    },
     ChatFinished {
         req_id: u64,
         provider_label: String,
         result: Result<String, String>,
+    },
+    /// One streamed text delta from an in-flight API reply. The matching in-flight
+    /// request appends it to a pending assistant message; the final `ChatFinished`
+    /// replaces that draft with the authoritative full text.
+    ChatStreamChunk {
+        req_id: u64,
+        provider_label: String,
+        delta: String,
     },
     AgentStepReady {
         req_id: u64,
@@ -179,8 +200,13 @@ pub enum AppEvent {
         copy: bool,
     },
     AgyModelsLoaded(Vec<crate::chat::ModelOption>),
-    /// Typing-effect frame for the newest assistant reply.
-    ChatRevealTick,
+    /// Typing-effect frame for the newest assistant reply (`reveal_gen`).
+    ChatRevealTick(u64),
+    /// Guards `evaluate_script_with_callback` against silent WebView detachment/tab switches.
+    ChatScriptTimeout {
+        req_id: u64,
+        script_seq: u64,
+    },
     /// Re-render the chrome (end of a timed animation such as the progress bar's finish sweep).
     RefreshChrome,
     OpenBookmarkPopup {
@@ -414,6 +440,9 @@ pub struct BrowserApp {
     sidebar_doc: Option<HtmlDocument>,
     last_sidebar_html: String,
     sidebar_drag: bool,
+    /// Tracks a button `PointerDown` inside the sidebar so minor jitter / `:active` layout shifts
+    /// cannot silently drop the click on `PointerUp`.
+    sidebar_pressed_action: Option<(String, PhysicalPosition<f64>)>,
     sidebar_code_blocks: Vec<String>,
     sidebar_picker: crate::chrome_ui::SidebarPicker,
     agy_models: Vec<crate::chat::ModelOption>,
@@ -433,6 +462,13 @@ pub struct BrowserApp {
     chat_show_history: bool,
     /// `(message index, chars shown)` while a reply is typing out.
     chat_reveal: Option<(usize, usize)>,
+    chat_reveal_gen: u64,
+    /// In-flight request whose API reply is streaming chunk by chunk into the last
+    /// assistant message (`None` once `ChatFinished` replaces it with final text).
+    chat_stream_req: Option<u64>,
+    chat_script_seq: u64,
+    sidebar_dirty: bool,
+    sidebar_dirty_scroll: bool,
     /// Next sidebar rebuild ignores the settings inputs' drafts (a chip changed the value).
     sidebar_reset_drafts: bool,
     chat_input_lines: usize,
@@ -457,6 +493,11 @@ pub struct BrowserApp {
     sidebar_panel_at: Option<Instant>,
     /// Wheel-notch / keyboard scroll currently gliding (Clean-mode pages and the sidebar).
     smooth_scroll: Option<input::SmoothScroll>,
+    /// Shared `(offset_x, offset_y, scale)` transform applied to IME candidate cursor updates.
+    ime_transform: Arc<std::sync::Mutex<(f32, f32, f32)>>,
+    cached_ram_mb: f64,
+    cached_ram_at: Option<Instant>,
+    chrome_motion_timer_armed: bool,
 }
 
 const FRESH_TAB_MS: u64 = 130;
@@ -576,6 +617,7 @@ impl BrowserApp {
             sidebar_doc: None,
             last_sidebar_html: String::new(),
             sidebar_drag: false,
+            sidebar_pressed_action: None,
             sidebar_code_blocks: Vec::new(),
             sidebar_picker: crate::chrome_ui::SidebarPicker::None,
             agy_models: Vec::new(),
@@ -592,6 +634,11 @@ impl BrowserApp {
             chat_session_id: None,
             chat_show_history: false,
             chat_reveal: None,
+            chat_reveal_gen: 0,
+            chat_stream_req: None,
+            chat_script_seq: 0,
+            sidebar_dirty: false,
+            sidebar_dirty_scroll: false,
             sidebar_reset_drafts: false,
             chat_input_lines: 1,
             seen_tab_id: None,
@@ -607,6 +654,10 @@ impl BrowserApp {
             sidebar_panel_key: 0,
             sidebar_panel_at: None,
             smooth_scroll: None,
+            ime_transform: Arc::new(std::sync::Mutex::new((0.0, 0.0, 1.0))),
+            cached_ram_mb: 0.0,
+            cached_ram_at: None,
+            chrome_motion_timer_armed: false,
         };
 
         app.load_active_tab(false, None);
@@ -737,20 +788,23 @@ impl BrowserApp {
             self.progress_done_at = None;
         } else if self.loading_tab_seen.take() == Some(active.id) {
             self.progress_done_at = Some(now);
-            let bus = self.bus.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(PROGRESS_DONE_MS + 20)).await;
-                bus.send(AppEvent::RefreshChrome);
-            });
         }
         let progress_done_ms = self.progress_done_at.map(age).filter(|ms| *ms < PROGRESS_DONE_MS);
         if progress_done_ms.is_none() {
             self.progress_done_at = None;
         }
-        if !self.fresh_tabs.is_empty() {
+        let mut next_refresh_ms: Option<u64> = progress_done_ms.map(|ms| (PROGRESS_DONE_MS + 20).saturating_sub(ms));
+        for &(_, t) in &self.fresh_tabs {
+            let wait = (FRESH_TAB_MS + 20).saturating_sub(age(t));
+            next_refresh_ms = Some(next_refresh_ms.map_or(wait, |cur| cur.min(wait)));
+        }
+        if let Some(wait_ms) = next_refresh_ms
+            && !self.chrome_motion_timer_armed
+        {
+            self.chrome_motion_timer_armed = true;
             let bus = self.bus.clone();
             tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(FRESH_TAB_MS + 20)).await;
+                tokio::time::sleep(Duration::from_millis(wait_ms.max(16))).await;
                 bus.send(AppEvent::RefreshChrome);
             });
         }
@@ -789,6 +843,7 @@ impl BrowserApp {
     /// Re-applies size / scale / colour scheme to the chrome, the page and the WebView.
     fn sync_viewports(&mut self) {
         self.ensure_active_valid();
+        let anim_time = self.anim_time();
         let chrome_vp = self.chrome_viewport();
         self.chrome_doc.set_viewport(chrome_vp);
         let content_vp = self.content_viewport(self.tabs[self.active_tab].zoom);
@@ -798,6 +853,7 @@ impl BrowserApp {
         let sb_vp = self.sidebar_viewport();
         if let Some(sdoc) = &mut self.sidebar_doc {
             sdoc.set_viewport(sb_vp);
+            sdoc.resolve(anim_time);
         }
         let sk_vp = self.content_viewport(1.0);
         for sk in [&mut self.skeleton_doc, &mut self.skeleton_static]
@@ -809,7 +865,42 @@ impl BrowserApp {
         if let Some(wv) = &self.active_webview {
             let _ = wv.set_bounds(self.webview_bounds());
         }
+        self.sync_ime_transform();
         self.request_redraw();
+    }
+
+    /// Physical top-left origin `(x, y)` where `sidebar_doc` is painted and hit-tested.
+    pub(super) fn sidebar_origin_phys(&self) -> (u32, u32) {
+        let win_w = self.win_size.width.max(1);
+        let win_h = self.win_size.height.max(1);
+        let chrome_h_phys = self.chrome_phys_height().min(win_h);
+        let sidebar_w_phys = self.sidebar_phys_width().min(win_w.saturating_sub(1));
+        let content_w_phys = win_w.saturating_sub(sidebar_w_phys).max(1);
+        (content_w_phys, chrome_h_phys)
+    }
+
+    pub(super) fn cached_working_set_mb(&mut self) -> f64 {
+        if let Some(at) = self.cached_ram_at
+            && at.elapsed() < Duration::from_secs(2)
+        {
+            return self.cached_ram_mb;
+        }
+        self.cached_ram_mb = working_set_mb().round();
+        self.cached_ram_at = Some(Instant::now());
+        self.cached_ram_mb
+    }
+
+    pub(super) fn sync_ime_transform(&self) {
+        let next = match self.focus_region {
+            UiRegion::Chrome => (0.0, 0.0, 1.0),
+            UiRegion::Content => (
+                0.0,
+                self.chrome_height() as f32,
+                self.tabs.get(self.active_tab).map_or(1.0, |t| t.zoom.max(0.1)),
+            ),
+            UiRegion::Sidebar => (self.sidebar_left_logical(), self.chrome_height() as f32, 1.0),
+        };
+        *self.ime_transform.lock().unwrap_or_else(|e| e.into_inner()) = next;
     }
 
     /// Shared document setup: one font context, our net provider, single-threaded styling.
@@ -967,6 +1058,8 @@ impl BrowserApp {
             None
         };
         let motion = self.chrome_motion();
+        let working_set_mb = self.cached_working_set_mb();
+        let js_webview_count = self.tabs.iter().filter(|t| t.js_mode).count();
         let drop_target = self.bm_drag.as_ref().and_then(|d| d.hover_folder.as_deref());
         let detaching_tab_id = self
             .tab_drag
@@ -995,7 +1088,7 @@ impl BrowserApp {
             bookmarks: &self.bookmarks,
             can_back,
             can_forward,
-            working_set_mb: working_set_mb(),
+            working_set_mb,
             blocked_count: self.net_provider.blocked_total(),
             filter_enabled: self.net_provider.is_filter_enabled(),
             maximized: self.maximized,
@@ -1009,6 +1102,7 @@ impl BrowserApp {
             downloads_in_progress,
             downloads_unseen: self.unseen_downloads,
             sidebar_open: self.sidebar_open,
+            js_webview_count,
             motion,
         });
         self.update_window_title();
@@ -1133,6 +1227,7 @@ impl BrowserApp {
             abort.abort();
         }
         crate::chat::shutdown_cli_workers();
+        crate::single::cleanup();
         self.renderer.suspend();
         self.window = None;
         event_loop.exit();
@@ -1140,6 +1235,7 @@ impl BrowserApp {
 
     fn focus_url_bar(&mut self) {
         self.focus_region = UiRegion::Chrome;
+        self.sync_ime_transform();
         self.sync_suggest_query_to_url_bar();
         if let Some(doc) = &mut self.tabs[self.active_tab].doc {
             doc.clear_focus();
@@ -1314,10 +1410,9 @@ impl BrowserApp {
         let scale = self.hidpi_scale as f64;
         let win_w = self.win_size.width.max(1);
         let win_h = self.win_size.height.max(1);
-        let chrome_h_phys = self.chrome_phys_height().min(win_h);
+        let (content_w_phys, chrome_h_phys) = self.sidebar_origin_phys();
         let content_h_phys = win_h.saturating_sub(chrome_h_phys);
-        let sidebar_w_phys = self.sidebar_phys_width().min(win_w.saturating_sub(1));
-        let content_w_phys = win_w.saturating_sub(sidebar_w_phys).max(1);
+        let sidebar_w_phys = win_w.saturating_sub(content_w_phys);
 
         self.chrome_doc.poll(None);
         self.chrome_doc.resolve(anim_time);
@@ -1486,6 +1581,7 @@ impl ApplicationHandler for BrowserApp {
             self.color_scheme = self.effective_color_scheme();
             let shell: Arc<dyn ShellProvider> = Arc::new(BrowserShellProvider {
                 window: Arc::clone(&win),
+                ime_transform: Arc::clone(&self.ime_transform),
             });
             let chrome_vp = self.chrome_viewport();
             let content_vp = self.content_viewport(self.tabs[self.active_tab].zoom);
@@ -1545,24 +1641,26 @@ impl ApplicationHandler for BrowserApp {
             self.status_note_until = None;
             self.rebuild_chrome();
         }
-        let next_wakeup = match (self.next_anim_frame, self.status_note_until) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+        if self.next_anim_frame.is_some_and(|d| now >= d) {
+            self.next_anim_frame = None;
+            self.request_redraw();
+        }
+        if let Some(popup) = &mut self.popup
+            && popup.next_anim_frame.is_some_and(|d| now >= d)
+        {
+            popup.next_anim_frame = None;
+            popup.window.request_redraw();
+        }
+        let next_wakeup = [
+            self.next_anim_frame,
+            self.status_note_until,
+            self.popup.as_ref().and_then(|p| p.next_anim_frame),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         if let Some(deadline) = next_wakeup {
-            if now >= deadline {
-                if self.next_anim_frame.is_some_and(|d| now >= d) {
-                    self.next_anim_frame = None;
-                    self.request_redraw();
-                }
-                if let Some(until) = self.status_note_until {
-                    event_loop.set_control_flow(ControlFlow::WaitUntil(until));
-                } else {
-                    event_loop.set_control_flow(ControlFlow::Wait);
-                }
-            } else {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
-            }
+            event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
         } else {
             event_loop.set_control_flow(ControlFlow::Wait);
         }

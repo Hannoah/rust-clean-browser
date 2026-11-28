@@ -106,12 +106,12 @@ impl Tab {
         self.translated.clone().or_else(|| self.raw_html.clone())
     }
 
-    /// A PDF shown by WebView2 (viewer or annotator).
+    /// A PDF shown by WebView2 (always in the pdf.js annotator).
     pub fn is_pdf(&self) -> bool {
         self.js_mode && (crate::pdfjs::is_pdf_url(&self.url) || self.pdf_hint.as_deref() == Some(&self.url))
     }
 
-    /// Showing this tab's PDF in the pdf.js annotator.
+    /// Showing this tab's PDF in the pdf.js annotator (always true for PDF tabs).
     pub fn editing_pdf(&self) -> bool {
         self.pdf_editor.as_deref() == Some(&self.url)
     }

@@ -123,7 +123,7 @@ pub(super) fn main_window_has_keyboard_focus(win: &dyn winit::window::Window) ->
 
 /// Dangerous executable / script extensions that must never auto-download or auto-launch.
 pub(super) fn is_dangerous_download_ext(filename: &str) -> bool {
-    let trimmed = filename.trim().trim_end_matches('.');
+    let trimmed = filename.trim().trim_end_matches(['.', ' ', '\t']);
     let Some((_, ext)) = trimmed.rsplit_once('.') else {
         return false;
     };
@@ -153,6 +153,29 @@ pub(super) fn is_dangerous_download_ext(filename: &str) -> bool {
             | "app"
             | "command"
             | "sh"
+            | "dmg"
+            | "pkg"
+            | "mpkg"
+            | "mobileconfig"
+            | "terminal"
+            | "inetloc"
+            | "webloc"
+            | "scpt"
+            | "workflow"
+            | "action"
+            | "msc"
+            | "diagcab"
+            | "search-ms"
+            | "library-ms"
+            | "py"
+            | "pyw"
+            | "jnlp"
+            | "docm"
+            | "xlsm"
+            | "pptm"
+            | "mht"
+            | "mhtml"
+            | "website"
             // Packaged apps, disk images (bypass Mark-of-the-Web), and other shell-launchable formats.
             | "msix"
             | "msixbundle"
@@ -439,8 +462,16 @@ pub(super) fn resume_webview(wv: &WebView) {
     let _ = wv;
 }
 
+/// True for external web URLs (`http://` or `https://`).
+pub(super) fn is_web_http_url(url: &str) -> bool {
+    Url::parse(url)
+        .ok()
+        .is_some_and(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())
+}
+
 /// Should `window.open` get a real popup window (keeps `window.opener` / `window.close()`) instead
 /// of a new tab? Sign-in popups talk back to their opener, so a detached tab ends up blank.
+/// Never opens an unmanaged native popup for arbitrary URLs or executable downloads.
 pub(super) fn wants_native_popup(url: &str, has_window_features: bool) -> bool {
     const AUTH_HOSTS: &[&str] = &[
         "accounts.google.com",
@@ -451,22 +482,65 @@ pub(super) fn wants_native_popup(url: &str, has_window_features: bool) -> bool {
         "nid.naver.com",
         "api.twitter.com",
         "discord.com",
+        "login.salesforce.com",
     ];
-    if has_window_features || url == "about:blank" {
+    if url == "about:blank" {
         return true;
     }
-    let Some(host) = Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_owned)) else {
+    let Ok(parsed) = Url::parse(url) else {
         return false;
     };
-    AUTH_HOSTS.contains(&host.as_str())
-        || (host == "github.com" && url.contains("/login/oauth"))
-        || (host.ends_with("facebook.com") && url.contains("/dialog/"))
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return false;
+    }
+    if parsed
+        .path_segments()
+        .and_then(|mut s| s.next_back())
+        .is_some_and(is_dangerous_download_ext)
+    {
+        return false;
+    }
+    let Some(host) = parsed.host_str().map(str::to_ascii_lowercase) else {
+        return false;
+    };
+    let path_and_query = format!(
+        "{}?{}",
+        parsed.path().to_ascii_lowercase(),
+        parsed.query().unwrap_or("").to_ascii_lowercase()
+    );
+    if AUTH_HOSTS.contains(&host.as_str())
+        || (host == "github.com" && path_and_query.contains("/login/oauth"))
+        || ((host == "facebook.com" || host.ends_with(".facebook.com")) && path_and_query.contains("/dialog/"))
+        || host.ends_with(".okta.com")
+        || host.ends_with(".auth0.com")
+        || host.starts_with("sso.")
+        || host.starts_with("id.")
+        || host.starts_with("auth.")
+        || host.starts_with("login.")
+        || host.starts_with("accounts.")
+    {
+        return true;
+    }
+    has_window_features
+        && [
+            "/oauth",
+            "/authorize",
+            "/signin",
+            "/sign-in",
+            "/login",
+            "/sso",
+            "/saml",
+            "/openid",
+            "/auth/",
+        ]
+        .iter()
+        .any(|p| path_and_query.contains(p))
 }
 
 /// Hosts whose sign-in / app flows only work with a real JS engine and the Windows account SSO
 /// (Microsoft Entra Conditional Access checks device compliance via WebView2's OS-account SSO).
 pub(super) fn requires_js_engine(url: &str) -> bool {
-    // PDFs are shown by WebView2's built-in viewer (search, zoom, thumbnails, print, annotate).
+    // PDFs always open in the embedded pdf.js annotator (search, zoom, thumbnails, annotate, save).
     if crate::pdfjs::is_pdf_url(url) {
         return true;
     }
@@ -677,8 +751,9 @@ pub(super) fn normalize_url_input(raw: &str) -> String {
         }
     }
     if lower.starts_with("rust://") {
-        // Internal routes are matched case-sensitively; normalize the whole URL.
-        return lower;
+        // Internal routes are matched case-sensitively, while query/fragment params (URLs, paths) keep case.
+        let split = trimmed.find(['?', '#']).unwrap_or(trimmed.len());
+        return format!("{}{}", trimmed[..split].to_ascii_lowercase(), &trimmed[split..]);
     }
     // Dangerous or external-handler schemes never navigate directly:
     // route them to web search instead of fetching them as documents.
@@ -721,8 +796,18 @@ mod tests {
             false
         ));
         assert!(wants_native_popup("about:blank", false));
-        assert!(wants_native_popup("https://site.example/x", true));
+        assert!(wants_native_popup(
+            "https://site.example/oauth/authorize?client_id=1",
+            true
+        ));
+        assert!(!wants_native_popup("https://site.example/x", true));
+        assert!(!wants_native_popup("https://evil.example/payload.exe", true));
+        assert!(!wants_native_popup("https://accounts.google.com/payload.exe", true));
+        assert!(!wants_native_popup("rust://bookmarks", true));
         assert!(!wants_native_popup("https://site.example/x", false));
+        assert!(is_web_http_url("https://example.com/a"));
+        assert!(!is_web_http_url("rust://history?clear=1"));
+        assert!(!is_web_http_url("file:///C:/Windows/win.ini"));
     }
 
     #[test]
@@ -763,6 +848,14 @@ mod tests {
         );
         assert_eq!(normalize_url_input("RUST://BOOKMARKS"), "rust://bookmarks");
         assert_eq!(
+            normalize_url_input("RUST://BOOKMARKS?del=https://Example.COM/Path"),
+            "rust://bookmarks?del=https://Example.COM/Path"
+        );
+        assert_eq!(
+            normalize_url_input("rust://open-js?url=file:///C:/Users/Test/Page.html"),
+            "rust://open-js?url=file:///C:/Users/Test/Page.html"
+        );
+        assert_eq!(
             normalize_url_input("javascript:alert(1)"),
             "https://www.google.com/search?q=javascript%3Aalert%281%29"
         );
@@ -791,8 +884,14 @@ mod tests {
     #[test]
     fn dangerous_download_extensions_are_blocked_while_documents_are_allowed() {
         assert!(is_dangerous_download_ext("installer.exe"));
+        assert!(is_dangerous_download_ext("evil.exe ."));
+        assert!(is_dangerous_download_ext("evil.exe \t.. "));
         assert!(is_dangerous_download_ext("SETUP.MSI"));
         assert!(is_dangerous_download_ext("payload.bat."));
+        assert!(is_dangerous_download_ext("bundle.dmg"));
+        assert!(is_dangerous_download_ext("setup.pkg"));
+        assert!(is_dangerous_download_ext("tool.msc"));
+        assert!(is_dangerous_download_ext("script.py"));
         assert!(is_dangerous_download_ext("script.ps1"));
         assert!(is_dangerous_download_ext("macro.vbs"));
         assert!(is_dangerous_download_ext("shortcut.lnk"));

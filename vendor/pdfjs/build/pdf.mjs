@@ -4220,7 +4220,63 @@ class AnnotationEditorUIManager {
         boxes.push(rotator(x, y, width, height));
       }
     }
-    return boxes.length === 0 ? null : boxes;
+    if (boxes.length <= 1) {
+      return boxes.length === 0 ? null : boxes;
+    }
+    const rot = textLayer.getAttribute("data-main-rotation");
+    const isRot90 = rot === "90" || rot === "270";
+    const aspect = (isRot90 ? parentWidth / parentHeight : parentHeight / parentWidth) || 1;
+    const lines = [];
+    for (const b of boxes) {
+      const bBot = b.y + b.height;
+      const bMid = b.y + b.height * 0.5;
+      let target = null;
+      for (const line of lines) {
+        const minH = Math.min(line.h, b.height);
+        const maxH = Math.max(line.h, b.height);
+        if (maxH > minH * 2.5) {
+          continue;
+        }
+        const overlap = Math.min(line.bot, bBot) - Math.max(line.top, b.y);
+        const mid = (line.top + line.bot) * 0.5;
+        if (overlap > minH * 0.4 || Math.abs(mid - bMid) <= minH * 0.45) {
+          target = line;
+          break;
+        }
+      }
+      if (target) {
+        target.items.push(b);
+        target.top = Math.min(target.top, b.y);
+        target.bot = Math.max(target.bot, bBot);
+        target.h = target.bot - target.top;
+      } else {
+        lines.push({ top: b.y, bot: bBot, h: b.height, items: [b] });
+      }
+    }
+    const merged = [];
+    for (const line of lines) {
+      line.items.sort((a, b) => a.x - b.x);
+      let cur = { ...line.items[0] };
+      for (let i = 1; i < line.items.length; i++) {
+        const next = line.items[i];
+        const curRight = cur.x + cur.width;
+        const nextRight = next.x + next.width;
+        const refH = Math.max(cur.height, next.height);
+        if (next.x <= curRight + refH * aspect * 2.2) {
+          const top = Math.min(cur.y, next.y);
+          const bot = Math.max(cur.y + cur.height, next.y + next.height);
+          cur.x = Math.min(cur.x, next.x);
+          cur.y = top;
+          cur.width = Math.max(curRight, nextRight) - cur.x;
+          cur.height = bot - top;
+        } else {
+          merged.push(cur);
+          cur = { ...next };
+        }
+      }
+      merged.push(cur);
+    }
+    return merged;
   }
   addChangedExistingAnnotation({
     annotationElementId,

@@ -32,18 +32,20 @@ struct Info {
 
 /// Build the citation text for `style` (`ieee` | `apa` | `slide` | `mla`).
 pub fn citation(style: &str, title: &str, url: &str, html: Option<&str>) -> Option<String> {
+    let mut parsed = url::Url::parse(url).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = parsed.host_str()?.to_string();
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
     let mut info = Info {
         title: title.trim().to_string(),
-        url: url.to_string(),
+        url: parsed.to_string(),
         accessed: today(),
         ..Default::default()
     };
-    let host = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))?
-        .split(['/', '?', '#'])
-        .next()?;
-    info.site = host.strip_prefix("www.").unwrap_or(host).to_string();
+    info.site = host.strip_prefix("www.").unwrap_or(&host).to_string();
     if let Some(html) = html {
         if info.title.is_empty() {
             info.title = extract_title(html).unwrap_or_default();
@@ -139,13 +141,33 @@ impl Info {
 /// First `<meta name|property=KEY content=…>` hit, trying `keys` in order.
 fn meta(html: &str, keys: &[&str]) -> Option<String> {
     let lower = html.to_ascii_lowercase(); // ASCII lowercase keeps byte offsets aligned with `html`
-    let tags: Vec<(&str, &str)> = lower
-        .match_indices("<meta")
-        .filter_map(|(i, _)| {
-            let end = i + lower[i..].find('>')?;
-            Some((&lower[i..end], &html[i..end]))
-        })
-        .collect();
+    let lb = lower.as_bytes();
+    let mut tags: Vec<(&str, &str)> = Vec::new();
+    let mut scan = 0usize;
+    while let Some(rel) = lower[scan..].find('<') {
+        let start = scan + rel;
+        if lower[start..].starts_with("<!--") {
+            scan = crate::cleaner::comment_end(&lower, start);
+            continue;
+        }
+        if lower[start..].starts_with("<meta")
+            && lb.get(start + 5).is_some_and(|b| b.is_ascii_whitespace() || *b == b'/')
+            && let Some(end) = crate::cleaner::tag_end(lb, start + 1)
+        {
+            tags.push((&lower[start..end], &html[start..end]));
+            scan = end + 1;
+            continue;
+        }
+        if lb
+            .get(start + 1)
+            .is_some_and(|b| b.is_ascii_alphabetic() || matches!(b, b'/' | b'!' | b'?'))
+            && let Some(end) = crate::cleaner::tag_end(lb, start + 1)
+        {
+            scan = end + 1;
+            continue;
+        }
+        scan = start + 1;
+    }
     keys.iter().find_map(|key| {
         tags.iter().find_map(|(lo, orig)| {
             let id = attr(lo, lo, "name")
@@ -159,20 +181,59 @@ fn meta(html: &str, keys: &[&str]) -> Option<String> {
     })
 }
 
-/// Value of ` key=…` in a tag; `lo` is the lowercased tag (for matching), `src` supplies the value.
+/// Value of ` key=…` in a tag, respecting quotes so `key=val` inside another attribute's quoted
+/// value is ignored.
 fn attr(lo: &str, src: &str, key: &str) -> Option<String> {
-    let at = lo
-        .match_indices(key)
-        .find(|(i, _)| {
-            lo.as_bytes()[i.saturating_sub(1)].is_ascii_whitespace()
-                && lo[i + key.len()..].trim_start().starts_with('=')
-        })?
-        .0;
-    let rest = src[at + key.len()..].trim_start().strip_prefix('=')?.trim_start();
-    Some(match rest.chars().next()? {
-        q @ ('"' | '\'') => rest[1..].split(q).next()?.to_string(),
-        _ => rest.split(|c: char| c.is_whitespace() || c == '/').next()?.to_string(),
-    })
+    let b = lo.as_bytes();
+    let mut i = 0;
+    while i < b.len() && !b[i].is_ascii_whitespace() && b[i] != b'/' {
+        i += 1;
+    }
+    while i < b.len() {
+        while i < b.len() && (b[i].is_ascii_whitespace() || b[i] == b'/') {
+            i += 1;
+        }
+        if i >= b.len() {
+            break;
+        }
+        let name_start = i;
+        while i < b.len() && !b[i].is_ascii_whitespace() && b[i] != b'=' && b[i] != b'/' {
+            i += 1;
+        }
+        let name = &lo[name_start..i];
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let mut val: Option<&str> = None;
+        if i < b.len() && b[i] == b'=' {
+            i += 1;
+            while i < b.len() && b[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i < b.len() && (b[i] == b'"' || b[i] == b'\'') {
+                let q = b[i];
+                i += 1;
+                let vs = i;
+                while i < b.len() && b[i] != q {
+                    i += 1;
+                }
+                val = Some(&src[vs..i]);
+                if i < b.len() {
+                    i += 1;
+                }
+            } else {
+                let vs = i;
+                while i < b.len() && !b[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                val = Some(&src[vs..i]);
+            }
+        }
+        if name == key {
+            return val.map(str::to_string);
+        }
+    }
+    None
 }
 
 fn unescape(s: &str) -> String {
@@ -218,8 +279,15 @@ fn today() -> (i32, u32, u32) {
 #[cfg(target_os = "macos")]
 fn today() -> (i32, u32, u32) {
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&libc::time(std::ptr::null_mut()), &mut tm) };
-    (tm.tm_year + 1900, tm.tm_mon as u32 + 1, tm.tm_mday as u32)
+    let ptr = unsafe { libc::localtime_r(&libc::time(std::ptr::null_mut()), &mut tm) };
+    if ptr.is_null() {
+        return (1970, 1, 1);
+    }
+    (
+        tm.tm_year + 1900,
+        (tm.tm_mon + 1).max(1) as u32,
+        tm.tm_mday.max(1) as u32,
+    )
 }
 
 // ponytail: UTC on other platforms (the browser ships for Windows/macOS only).
@@ -274,5 +342,15 @@ mod tests {
         assert_eq!(parse_date("2024"), Some((2024, 0, 0)));
         assert_eq!(parse_date("2024-03"), Some((2024, 3, 0)));
         assert_eq!(parse_date("garbage"), None);
+    }
+
+    #[test]
+    fn meta_handles_quoted_gt_tricky_attr_and_strips_credentials() {
+        let tricky =
+            r#"<meta content="note name=author > x" name="description"><meta name="author" content="Real > Author">"#;
+        let c = citation("apa", "Title", "HTTPS://user:secret@www.example.com/p", Some(tricky)).unwrap();
+        assert!(c.starts_with("Real > Author."), "{c}");
+        assert!(!c.contains("user:secret"), "{c}");
+        assert!(c.contains("https://www.example.com/p"), "{c}");
     }
 }
