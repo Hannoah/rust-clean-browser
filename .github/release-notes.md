@@ -1,7 +1,11 @@
 초경량 순수 Rust 웹 브라우저 — 적은 메모리, 빠른 로딩, Chrome 북마크 연동.
 *Ultra-lightweight pure-Rust web browser — low memory, instant page loads, Chrome bookmark import.*
 
-## 이번 버전 (v0.5.12)
+## 이번 버전 (v0.5.13)
+
+- **페이지 위에 파일을 끌어다 놓아도 AI에 첨부(JS 모드 포함)**: JS 모드 페이지에 파일을 놓으면 WebView가 그 파일로 이동해 버리던 대신 AI 채팅에 첨부. AI 창이 닫혀 있으면 열림. Gmail처럼 페이지가 직접 받는 업로드 영역은 그대로 페이지로 감
+
+### v0.5.12
 
 - **파일을 AI 창으로 끌어다 놓아 첨부**: 탐색기에서 파일을 열린 AI 사이드바 위로 끌어다 놓으면 📎로 고른 것처럼 첨부됨(이미지·PDF·텍스트·코드 파일)
 

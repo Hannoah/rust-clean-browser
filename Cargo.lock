@@ -3572,7 +3572,7 @@ dependencies = [
 
 [[package]]
 name = "rust-browser"
-version = "0.5.12"
+version = "0.5.13"
 dependencies = [
  "anyrender",
  "anyrender_vello_cpu",
