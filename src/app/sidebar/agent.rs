@@ -556,7 +556,8 @@ impl BrowserApp {
         let Some(run) = self.agent_run.as_ref().filter(|r| r.req_id == req_id) else {
             return false;
         };
-        is_agent_host_trusted(host, &run.trusted_hosts, &run.goal)
+        // Only what the user typed names trusted sites, never the text of an attached file.
+        is_agent_host_trusted(host, &run.trusted_hosts, crate::chat::split_attachments(&run.goal).0)
     }
 
     pub(super) fn ask_agent_confirm(

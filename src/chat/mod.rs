@@ -4,6 +4,7 @@
 mod activity;
 mod agent;
 mod api;
+mod attach;
 mod cli;
 mod context;
 mod markdown;
@@ -17,6 +18,10 @@ pub use agent::{
     label_action_desc, parse_agent_response,
 };
 pub use api::{fetch_api_models, is_loopback_endpoint, test_api_connection};
+pub use attach::{
+    AttachKind, Attachment, MAX_IMAGES, embed as embed_attachments, from_rgba as attachment_from_rgba,
+    load_file as load_attachment, split_display as split_attachments,
+};
 pub use cli::{
     fetch_agy_models, reset_agy_worker, reset_all_cli_workers, reset_claude_worker, shutdown_cli_workers,
     warm_agy_worker, warm_claude_worker,
@@ -523,6 +528,19 @@ pub fn is_valid_effort(level: &str) -> bool {
     matches!(level, "low" | "medium" | "high")
 }
 
+/// Anthropic-style user content: images first, then the text (plain string when no images).
+pub(super) fn anthropic_user_content(text: &str, images: &[String]) -> serde_json::Value {
+    if images.is_empty() {
+        return serde_json::json!(text);
+    }
+    let mut content: Vec<serde_json::Value> = images
+        .iter()
+        .map(|b64| serde_json::json!({ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": b64 } }))
+        .collect();
+    content.push(serde_json::json!({ "type": "text", "text": text }));
+    serde_json::Value::Array(content)
+}
+
 #[allow(clippy::too_many_arguments)] // request plumbing; each argument is one piece of the turn
 pub async fn run_chat(
     config: ChatConfig,
@@ -530,6 +548,7 @@ pub async fn run_chat(
     user_text: String,
     page: Option<PageContext>,
     agent: Option<AgentContext>,
+    images: Vec<String>,
     cancel: Arc<AtomicBool>,
     stream_cb: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
     progress: Option<ProgressCb>,
@@ -537,6 +556,11 @@ pub async fn run_chat(
     if cancel.load(Ordering::Acquire) {
         return Err("요청이 취소되었습니다.".to_string());
     }
+    // Attached images plus the agent's screenshot (if this round has one), all PNG.
+    let images: Vec<String> = images
+        .into_iter()
+        .chain(agent.as_ref().and_then(|a| a.image_png_b64.clone()))
+        .collect();
     if config.provider == ChatProvider::Agy {
         let agent_mode = agent.is_some();
         let effort = config.effective_effort(ChatProvider::Agy, agent_mode);
@@ -553,6 +577,7 @@ pub async fn run_chat(
                 &user_text,
                 page.as_ref(),
                 agent.as_ref(),
+                &images,
                 &cancel,
                 progress.as_ref(),
             )
@@ -575,6 +600,7 @@ pub async fn run_chat(
                 &user_text,
                 page.as_ref(),
                 agent.as_ref(),
+                &images,
                 &cancel,
                 progress.as_ref(),
             )
@@ -590,12 +616,9 @@ pub async fn run_chat(
             config.selected_model(provider)
         };
         let effort = config.effective_effort(provider, agent.is_some());
-        let image = agent.as_ref().and_then(|a| a.image_png_b64.clone());
-        tokio::task::spawn_blocking(move || {
-            run_cli_agent(provider, &model, &effort, &prompt, image.as_deref(), &cancel)
-        })
-        .await
-        .map_err(|e| format!("에이전트 실행 오류: {e}"))?
+        tokio::task::spawn_blocking(move || run_cli_agent(provider, &model, &effort, &prompt, &images, &cancel))
+            .await
+            .map_err(|e| format!("에이전트 실행 오류: {e}"))?
     } else {
         let _ = progress; // API replies stream text; the app marks "응답 작성 중" on the first chunk.
         run_api_chat(
@@ -604,6 +627,7 @@ pub async fn run_chat(
             &user_text,
             page.as_ref(),
             agent.as_ref(),
+            &images,
             &cancel,
             stream_cb,
         )

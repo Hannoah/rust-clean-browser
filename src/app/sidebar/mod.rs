@@ -548,6 +548,7 @@ impl BrowserApp {
             && self.chat_messages.last().is_some_and(|m| m.role == ChatRole::Error)
             && self.chat_messages.iter().any(|m| m.role == ChatRole::User);
 
+        let attachment_names: Vec<String> = self.chat_attachments.iter().map(|a| a.name.clone()).collect();
         let (html, code_blocks) = render_sidebar_html(&SidebarRenderState {
             provider: self.chat_config.provider,
             avail: self.chat_cli_avail,
@@ -597,6 +598,7 @@ impl BrowserApp {
                 _ => None,
             },
             draft: &draft,
+            attachments: &attachment_names,
             font_size: self.prefs.chat_font_size.clamp(MIN_CHAT_FONT, MAX_CHAT_FONT),
             reveal: self.chat_reveal,
             show_history: self.chat_show_history,
@@ -1062,6 +1064,7 @@ mod tests {
             api_key_hint: "",
             api_conn: None,
             draft: "",
+            attachments: &[],
             font_size: 13,
             reveal: None,
             show_history: false,
@@ -1327,6 +1330,7 @@ line four",
             api_key_hint: "",
             api_conn: None,
             draft: "줄1\n줄2",
+            attachments: &[],
             font_size: 16,
             reveal,
             show_history: false,
@@ -1419,6 +1423,7 @@ line four",
             api_key_hint: "",
             api_conn: None,
             draft: "",
+            attachments: &[],
             font_size: 13,
             reveal: None,
             show_history: o.show_history,

@@ -45,6 +45,7 @@ pub enum Icon {
     Download,
     Sparkles,
     Send,
+    Paperclip,
     Copy,
     MoveHorizontal,
 }
@@ -129,6 +130,9 @@ impl Icon {
             }
             Icon::Sparkles => {
                 r#"<path d="M8 2.2l1.2 3.8L13 7.2l-3.8 1.2L8 12.2l-1.2-3.8L3 7.2l3.8-1.2L8 2.2z"/><path d="M12.8 10.6l.5 1.4 1.4.5-1.4.5-.5 1.4-.5-1.4-1.4-.5 1.4-.5.5-1.4z"/>"#
+            }
+            Icon::Paperclip => {
+                r#"<path d="M13 7.5l-5.2 5.2a3.2 3.2 0 0 1-4.5-4.5l5.6-5.6a2.1 2.1 0 0 1 3 3L6.3 11.2a1 1 0 0 1-1.5-1.5l5-5"/>"#
             }
             Icon::Send => r#"<path d="M8 12.5V3.5M4.2 7.3L8 3.5l3.8 3.8"/>"#,
             Icon::Copy => {

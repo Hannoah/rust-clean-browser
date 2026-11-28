@@ -483,6 +483,10 @@ pub struct BrowserApp {
     /// Shown for the active tab only; `sidebar_tabs` remembers which tabs have it open.
     sidebar_open: bool,
     sidebar_tabs: std::collections::HashSet<u64>,
+    /// Files picked or pasted into the chat box, sent with the next message.
+    chat_attachments: Vec<crate::chat::Attachment>,
+    /// Images of the last sent message (re-sent on 다시 생성).
+    chat_turn_images: Vec<String>,
     sidebar_doc: Option<HtmlDocument>,
     last_sidebar_html: String,
     sidebar_drag: bool,
@@ -693,6 +697,8 @@ impl BrowserApp {
             initial_size: launch.size.map(|(w, h)| LogicalSize::new(w as f64, h as f64)),
             sidebar_open: false,
             sidebar_tabs: std::collections::HashSet::new(),
+            chat_attachments: Vec::new(),
+            chat_turn_images: Vec::new(),
             sidebar_doc: None,
             last_sidebar_html: String::new(),
             sidebar_drag: false,

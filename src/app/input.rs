@@ -541,6 +541,8 @@ impl BrowserApp {
             KeyCode::KeyC if !shift && self.focus_region == UiRegion::Sidebar && self.sidebar_has_selection() => {
                 self.copy_sidebar_selection();
             }
+            // A screenshot on the clipboard pasted into the chat box becomes an attachment.
+            KeyCode::KeyV if !shift && self.focus_region == UiRegion::Sidebar && self.paste_chat_image() => {}
             KeyCode::KeyQ if cfg!(target_os = "macos") => self.exit_app(event_loop),
             KeyCode::BracketLeft => self.history_step(false),
             KeyCode::BracketRight => self.history_step(true),
