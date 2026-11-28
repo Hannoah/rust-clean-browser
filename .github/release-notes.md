@@ -1,7 +1,11 @@
 초경량 순수 Rust 웹 브라우저 — 적은 메모리, 빠른 로딩, Chrome 북마크 연동.
 *Ultra-lightweight pure-Rust web browser — low memory, instant page loads, Chrome bookmark import.*
 
-## 이번 버전 (v0.5.11)
+## 이번 버전 (v0.5.12)
+
+- **파일을 AI 창으로 끌어다 놓아 첨부**: 탐색기에서 파일을 열린 AI 사이드바 위로 끌어다 놓으면 📎로 고른 것처럼 첨부됨(이미지·PDF·텍스트·코드 파일)
+
+### v0.5.11
 
 - **AI 채팅에 파일 첨부**: 입력창 아래 📎 버튼으로 파일을 고르거나, 캡처한 이미지를 `Ctrl+V`로 붙여넣기. 첨부한 파일은 입력창 위에 칩으로 보이고 ×로 뺄 수 있음
   - 이미지(png·jpg·gif·webp·bmp, 한 번에 4개까지): 모든 제공자(API·Claude·Gemini·Codex·Muse)에 그림 그대로 전달
