@@ -788,7 +788,10 @@ impl BrowserApp {
                     req_id,
                     provider_label,
                     result,
-                } => self.on_chat_finished(req_id, provider_label, result),
+                } => {
+                    self.on_chat_finished(req_id, provider_label, result);
+                    self.finish_live(req_id);
+                }
                 AppEvent::ChatStreamChunk {
                     req_id,
                     provider_label,
@@ -821,6 +824,8 @@ impl BrowserApp {
                 } => self.on_agent_extract_done(req_id, ok, summary, extracted, copy),
                 AppEvent::AgyModelsLoaded(models) => self.on_agy_models_loaded(models),
                 AppEvent::ChatCompactDone(result) => self.on_chat_compact_done(result),
+                AppEvent::ChatProgress { req_id, progress } => self.on_chat_progress(req_id, progress),
+                AppEvent::ChatLiveTick(req_id) => self.on_chat_live_tick(req_id),
                 AppEvent::ApiModelsLoaded { provider, result } => self.on_api_models_loaded(provider, result),
                 AppEvent::ChatRevealTick(reveal_gen) => self.on_chat_reveal_tick(reveal_gen),
                 AppEvent::ChatScriptTimeout { req_id, script_seq } => self.on_chat_script_timeout(req_id, script_seq),

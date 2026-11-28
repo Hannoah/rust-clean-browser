@@ -1,6 +1,7 @@
 //! AI Assistant backend: local logged-in CLI agents (`agy` Gemini, `claude`, `codex`)
 //! and direct LLM APIs (OpenAI-compatible / Azure / Ollama, Anthropic, Google Gemini).
 
+mod activity;
 mod agent;
 mod api;
 mod cli;
@@ -9,6 +10,7 @@ mod markdown;
 mod prompt;
 mod storage;
 
+pub use activity::{ActivityStep, Progress, ProgressCb, apply_step};
 pub use agent::{
     AgentAction, build_agent_action_js, build_agent_extract_js, build_agent_text_check_js, parse_agent_response,
 };
@@ -495,6 +497,7 @@ pub fn is_valid_effort(level: &str) -> bool {
     matches!(level, "low" | "medium" | "high")
 }
 
+#[allow(clippy::too_many_arguments)] // request plumbing; each argument is one piece of the turn
 pub async fn run_chat(
     config: ChatConfig,
     history: Vec<ChatMessage>,
@@ -503,6 +506,7 @@ pub async fn run_chat(
     agent: Option<AgentContext>,
     cancel: Arc<AtomicBool>,
     stream_cb: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
+    progress: Option<ProgressCb>,
 ) -> Result<String, String> {
     if cancel.load(Ordering::Acquire) {
         return Err("요청이 취소되었습니다.".to_string());
@@ -524,6 +528,7 @@ pub async fn run_chat(
                 page.as_ref(),
                 agent.as_ref(),
                 &cancel,
+                progress.as_ref(),
             )
         })
         .await
@@ -545,6 +550,7 @@ pub async fn run_chat(
                 page.as_ref(),
                 agent.as_ref(),
                 &cancel,
+                progress.as_ref(),
             )
         })
         .await
@@ -562,6 +568,7 @@ pub async fn run_chat(
             .await
             .map_err(|e| format!("에이전트 실행 오류: {e}"))?
     } else {
+        let _ = progress; // API replies stream text; the app marks "응답 작성 중" on the first chunk.
         run_api_chat(
             &config,
             &history,
@@ -972,12 +979,16 @@ mod tests {
                 text: "이전 질문".into(),
                 page_title: None,
                 provider_label: None,
+                activity: Vec::new(),
+                elapsed_ms: None,
             },
             ChatMessage {
                 role: ChatRole::Assistant,
                 text: "이전 답변".into(),
                 page_title: None,
                 provider_label: None,
+                activity: Vec::new(),
+                elapsed_ms: None,
             },
         ];
         let agent = AgentContext {
@@ -1326,6 +1337,8 @@ mod tests {
             text: text.into(),
             page_title: None,
             provider_label: None,
+            activity: Vec::new(),
+            elapsed_ms: None,
         };
         let mut h = ChatHistory::default();
         h.upsert(

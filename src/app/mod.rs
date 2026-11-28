@@ -216,6 +216,13 @@ pub enum AppEvent {
     AgyModelsLoaded(Vec<crate::chat::ModelOption>),
     /// Conversation summary for 대화 압축 (`Ok` = summary text).
     ChatCompactDone(Result<String, String>),
+    /// What the agent is doing for request `req_id` (tool started/finished, reply text started).
+    ChatProgress {
+        req_id: u64,
+        progress: crate::chat::Progress,
+    },
+    /// Once a second while `req_id` runs: refresh the "생각 중 (Ns)…" line.
+    ChatLiveTick(u64),
     /// Model listing from the active API endpoint (`Err` = could not list; presets are shown).
     ApiModelsLoaded {
         provider: crate::chat::ChatProvider,
@@ -486,6 +493,10 @@ pub struct BrowserApp {
     /// 대화 압축 in flight: `(session id, message count)` when it started, so a summary
     /// never lands in a conversation that was cleared or switched meanwhile.
     chat_compacting: Option<(Option<u64>, usize)>,
+    /// Status of the request in flight (live line + steps), see `sidebar::live`.
+    chat_live: Option<sidebar::LiveActivity>,
+    /// Replies whose "도구 N개 사용" card list is expanded (message indices).
+    chat_activity_open: std::collections::HashSet<usize>,
     chat_show_history: bool,
     /// `(message index, chars shown)` while a reply is typing out.
     chat_reveal: Option<(usize, usize)>,
@@ -679,6 +690,8 @@ impl BrowserApp {
             chat_history: None,
             chat_session_id: None,
             chat_compacting: None,
+            chat_live: None,
+            chat_activity_open: std::collections::HashSet::new(),
             chat_show_history: false,
             chat_reveal: None,
             chat_reveal_gen: 0,

@@ -363,6 +363,12 @@ pub struct ChatMessage {
     pub page_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_label: Option<String>,
+    /// Tools / browser actions the agent ran for this reply (cards under "도구 N개 사용").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub activity: Vec<super::ActivityStep>,
+    /// How long the reply took.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
 }
 
 /// One saved conversation in the local chat history.

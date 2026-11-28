@@ -61,6 +61,28 @@ pub enum AgentAction {
 }
 
 impl AgentAction {
+    /// Short tool-style name for the activity cards (`click`, `type`, …).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Navigate { .. } => "navigate",
+            Self::Click { .. } | Self::ClickText { .. } => "click",
+            Self::Type { .. } => "type",
+            Self::Select { .. } => "select",
+            Self::Hover { .. } => "hover",
+            Self::Press { .. } => "press",
+            Self::Scroll { .. } => "scroll",
+            Self::OpenTab { .. } => "open_tab",
+            Self::SwitchTab { .. } => "switch_tab",
+            Self::CloseTab { .. } => "close_tab",
+            Self::Extract { .. } => "extract",
+            Self::Back => "back",
+            Self::Forward => "forward",
+            Self::Reload => "reload",
+            Self::Wait { .. } | Self::WaitFor { .. } => "wait",
+            Self::Done { .. } => "done",
+        }
+    }
+
     pub fn describe(&self) -> String {
         match self {
             Self::Navigate { url } => format!("이동 → {}", url.chars().take(42).collect::<String>()),

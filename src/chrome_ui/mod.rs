@@ -1410,18 +1410,24 @@ mod tests {
                 text: "이 페이지 요약해 줘".into(),
                 page_title: Some("Rust".into()),
                 provider_label: None,
+                activity: Vec::new(),
+                elapsed_ms: None,
             },
             crate::chat::ChatMessage {
                 role: crate::chat::ChatRole::Assistant,
                 text: "## 요약\n- **빠른** 브라우저\n\n```rust\nprintln!(\"hi\");\n```".into(),
                 page_title: None,
                 provider_label: Some("Claude · Claude Sonnet".into()),
+                activity: Vec::new(),
+                elapsed_ms: None,
             },
             crate::chat::ChatMessage {
                 role: crate::chat::ChatRole::Error,
                 text: "로그아웃되었습니다.".into(),
                 page_title: None,
                 provider_label: Some("Claude".into()),
+                activity: Vec::new(),
+                elapsed_ms: None,
             },
         ];
         let model_options = crate::chat::preset_models(crate::chat::ChatProvider::Claude, &[]);
@@ -1461,8 +1467,8 @@ mod tests {
             can_retry: true,
             include_page: true,
             agent_control: true,
-            agent_status: None,
-            agent_log: &[],
+            live: None,
+            activity_open: &Default::default(),
             sidebar_wide: false,
             show_settings: true,
             active_title: "Rust",
@@ -1522,6 +1528,26 @@ mod tests {
         let sz = doc.get_node(set).unwrap().final_layout().size;
         assert!(sz.width > 300.0 && sz.height > 400.0, "chat-settings={sz:?}");
 
+        let live_steps = [
+            crate::chat::ActivityStep {
+                name: "navigate".into(),
+                detail: "이동 완료".into(),
+                ok: true,
+                ms: 1200,
+                ..Default::default()
+            },
+            crate::chat::ActivityStep {
+                name: "type".into(),
+                detail: "요소를 찾지 못함".into(),
+                ..Default::default()
+            },
+            crate::chat::ActivityStep {
+                name: "click".into(),
+                detail: "검색 버튼".into(),
+                running: true,
+                ..Default::default()
+            },
+        ];
         let (loading_html, _) = render_sidebar_html(&SidebarRenderState {
             provider: crate::chat::ChatProvider::Claude,
             avail: crate::chat::CliAvailability::default(),
@@ -1546,8 +1572,8 @@ mod tests {
             can_retry: false,
             include_page: true,
             agent_control: true,
-            agent_status: Some("2/10단계 · 요소 [1] 클릭"),
-            agent_log: &["OK: 이동 완료".into(), "ERR: 요소 없음".into()],
+            live: Some(("@click 실행 중 · 검색 버튼 (4s)…".to_string(), &live_steps)),
+            activity_open: &Default::default(),
             sidebar_wide: false,
             show_settings: false,
             active_title: "Rust",
@@ -1563,9 +1589,9 @@ mod tests {
             agent_confirm: Some(("새 탭 열기 → https://evil.test/?d=x", "evil.test")),
             motion: Default::default(),
         });
-        assert!(loading_html.contains("sb-agent-log"));
-        assert!(loading_html.contains("이동 완료"));
-        assert!(loading_html.contains("sb-agent-step err"));
+        assert!(loading_html.contains(r#"id="act-live-txt""#) && loading_html.contains("@click 실행 중"));
+        assert!(loading_html.contains("이동 완료") && loading_html.contains("완료 · 1.2초"));
+        assert!(loading_html.contains("act-st err") && loading_html.contains("act-st run"));
         assert!(loading_html.contains("agent-confirm:allow") && loading_html.contains("evil.test"));
 
         // ChatRole::Error provider_label and bookmarks folder query must be HTML-escaped / canonicalized.
@@ -1574,6 +1600,8 @@ mod tests {
             text: "err".into(),
             page_title: None,
             provider_label: Some(r#"<span data-action="chat-del-all">bad</span>"#.into()),
+            activity: Vec::new(),
+            elapsed_ms: None,
         }];
         let (err_html, _) = render_sidebar_html(&SidebarRenderState {
             provider: crate::chat::ChatProvider::Claude,
@@ -1599,8 +1627,8 @@ mod tests {
             can_retry: false,
             include_page: false,
             agent_control: false,
-            agent_status: None,
-            agent_log: &[],
+            live: None,
+            activity_open: &Default::default(),
             sidebar_wide: false,
             show_settings: false,
             active_title: "t",
@@ -1766,8 +1794,8 @@ mod motion_tests {
                 can_retry: false,
                 include_page: true,
                 agent_control: false,
-                agent_status: None,
-                agent_log: &[],
+                live: None,
+                activity_open: &Default::default(),
                 sidebar_wide: false,
                 show_settings: true,
                 active_title: "t",
@@ -1831,8 +1859,8 @@ mod motion_tests {
                 can_retry: false,
                 include_page,
                 agent_control: false,
-                agent_status: None,
-                agent_log: &[],
+                live: None,
+                activity_open: &Default::default(),
                 sidebar_wide: false,
                 show_settings: false,
                 active_title: "t",

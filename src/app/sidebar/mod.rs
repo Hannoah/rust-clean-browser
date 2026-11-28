@@ -3,6 +3,9 @@
 
 mod actions;
 mod agent;
+mod live;
+
+pub(in crate::app) use live::LiveActivity;
 
 use super::bus::SidebarEventHandler;
 use super::{AppEvent, BrowserApp, UiRegion};
@@ -487,8 +490,13 @@ impl BrowserApp {
             can_retry,
             include_page: self.chat_config.include_page,
             agent_control: self.chat_config.agent_control,
-            agent_status: self.agent_run.as_ref().map(|r| r.status.as_str()),
-            agent_log: self.agent_run.as_ref().map_or(&[], |r| r.action_log.as_slice()),
+            live: self.chat_live.as_ref().map(|l| {
+                (
+                    live::live_label(l, self.agent_run.as_ref().map(|r| r.status.as_str())),
+                    l.steps.as_slice(),
+                )
+            }),
+            activity_open: &self.chat_activity_open,
             sidebar_wide: self.sidebar_logical_width() >= 520,
             show_settings: self.chat_show_settings,
             active_title: &active.title,
@@ -650,6 +658,7 @@ impl BrowserApp {
 
     pub(super) fn cancel_chat_inflight(&mut self, record_note: bool) {
         self.agent_run = None;
+        self.chat_live = None;
         self.chat_stream_req = None;
         self.finish_reveal();
         if let Some((_, cancel, abort)) = self.chat_inflight.take() {
@@ -661,6 +670,8 @@ impl BrowserApp {
                     text: "생성이 중지되었습니다.".to_string(),
                     page_title: None,
                     provider_label: None,
+                    activity: Vec::new(),
+                    elapsed_ms: None,
                 });
                 self.persist_chat();
                 self.last_sidebar_html.clear();
@@ -693,6 +704,7 @@ impl BrowserApp {
         self.cancel_chat_inflight(false);
         self.chat_messages = session.messages;
         self.chat_session_id = Some(id);
+        self.chat_activity_open.clear();
         self.chat_show_history = false;
         // The persistent Claude worker holds the previous conversation: start fresh so the
         // loaded history is sent with the next turn.
@@ -824,11 +836,11 @@ impl BrowserApp {
         // Visual lines from the editor's own layout, so soft-wrapped text grows the box
         // too (counting only '\n' left the first wrapped line scrolled out of view).
         doc.resolve(anim_time);
-        let wrapped = doc
-            .get_node(id)
-            .and_then(|n| n.element_data())
-            .and_then(|el| el.text_input_data())
-            .and_then(|ti| ti.editor.try_layout().map(|l| l.len()));
+        // `driver.layout()` re-lays out the editor first: right after a paste (applied inside the
+        // Ctrl+V keydown) the cached layout is still the pre-paste one, which kept the box short
+        // and scrolled the first line away until the next key event.
+        let mut wrapped = None;
+        doc.with_text_input(id, |mut driver| wrapped = Some(driver.layout().len()));
         let lines = wrapped
             .unwrap_or_else(|| text.split('\n').count())
             .clamp(1, MAX_INPUT_LINES);
@@ -913,8 +925,8 @@ mod tests {
             is_loading: false,
             include_page: true,
             agent_control: false,
-            agent_status: None,
-            agent_log: &[],
+            live: None,
+            activity_open: &Default::default(),
             sidebar_wide: false,
             show_settings,
             picker_open: SidebarPicker::None,
@@ -1015,6 +1027,20 @@ mod tests {
         );
     }
 
+    /// Regression: a pasted long line wraps, but the line count used to size the chat box came
+    /// from the pre-paste layout, so the first line scrolled away until the next key event.
+    #[test]
+    fn pasted_text_line_count_is_fresh() {
+        let mut doc = sidebar_doc(720, false, &[]);
+        let id = doc.get_element_by_id("chat-input").unwrap();
+        doc.set_focus_to(id);
+        let pasted = "a fairly long pasted sentence that has to wrap inside the narrow sidebar box ".repeat(3);
+        doc.with_text_input(id, |mut d| d.insert_or_replace_selection(&pasted));
+        let mut lines = 0;
+        doc.with_text_input(id, |mut d| lines = d.layout().len());
+        assert!(lines >= 2, "wrapped paste should count as several lines, got {lines}");
+    }
+
     /// Regression: Blitz hit-testing does not clip to a scroll container, so once the message
     /// list (or settings panel) was scrolled past the header's height, its scrolled-away content
     /// "covered" the header and 새 대화 / 기록 / 설정 / 닫기 stopped responding.
@@ -1030,6 +1056,8 @@ mod tests {
                 text: format!("message {i} with enough text to take up a couple of lines in the sidebar"),
                 page_title: None,
                 provider_label: None,
+                activity: Vec::new(),
+                elapsed_ms: None,
             })
             .collect();
         for (show_settings, scroller) in [(false, "chat-messages"), (true, "chat-settings")] {
@@ -1072,6 +1100,8 @@ mod tests {
             text: "Hello world, this is a long reply paragraph for selection.".into(),
             page_title: None,
             provider_label: None,
+            activity: Vec::new(),
+            elapsed_ms: None,
         }];
         let mut doc = sidebar_doc(720, false, &msgs);
         let id = doc.query_selector(".msg-body p").unwrap().unwrap();
@@ -1119,8 +1149,11 @@ mod tests {
             text: "첫 문장입니다. 두 번째 문장은 아직 안 보여야 합니다.".into(),
             page_title: None,
             provider_label: None,
+            activity: Vec::new(),
+            elapsed_ms: None,
         }];
         let opts = preset_models(ChatProvider::Claude, &[]);
+        let no_open = std::collections::HashSet::new();
         let state = |reveal| SidebarRenderState {
             provider: ChatProvider::Claude,
             avail: CliAvailability::default(),
@@ -1128,8 +1161,8 @@ mod tests {
             is_loading: false,
             include_page: false,
             agent_control: false,
-            agent_status: None,
-            agent_log: &[],
+            live: None,
+            activity_open: &no_open,
             sidebar_wide: false,
             show_settings: false,
             picker_open: SidebarPicker::None,
@@ -1213,8 +1246,8 @@ mod tests {
             is_loading: false,
             include_page: true,
             agent_control: o.agent_control,
-            agent_status: None,
-            agent_log: &[],
+            live: None,
+            activity_open: &Default::default(),
             sidebar_wide: o.width >= 520,
             show_settings: o.show_settings,
             picker_open: o.picker_open,
@@ -1365,6 +1398,8 @@ mod tests {
                 text: "hello".to_string(),
                 page_title: None,
                 provider_label: None,
+                activity: Vec::new(),
+                elapsed_ms: None,
             }],
         }];
         let mut hdoc = sidebar_doc_with_options(SidebarTestOpts {
