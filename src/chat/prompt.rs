@@ -6,7 +6,7 @@ const UNTRUSTED_STATE_TAG: &str = "untrusted_agent_state";
 pub(super) const AGENT_CONTROL_RULES: &str = "\
 Browser control agent. Use [INTERACTIVE ELEMENTS] IDs (`\"target\":ID`) and [OPEN TABS] indices.\n\
 Output rule (STRICT):\n\
-- If the request needs no browser actions (already answered by [PAGE TEXT]/[INTERACTIVE ELEMENTS]), answer concisely in Korean with NO JSON.\n\
+- If the request needs no browser actions (already answered by [PAGE TEXT]/[INTERACTIVE ELEMENTS], or a general-knowledge/opinion question you can answer yourself), answer concisely in Korean with NO JSON. Do not click around to look for an answer you already know.\n\
 - For intermediate steps (`done` omitted/false): output ONLY one minified ```browser-action JSON block with ZERO text before or after.\n\
 - For the final step, add `\"done\":true,\"summary\":\"한국어 요약\"` (or `{\"action\":\"done\",\"summary\":\"한국어 요약\"}`).\n\
 Batch up to 6 actions: `{\"actions\":[...],\"done\":true,\"summary\":\"...\"}` or single `{\"action\":\"click\",\"target\":ID}`.\n\
