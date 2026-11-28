@@ -692,9 +692,12 @@ impl BrowserApp {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(1, |d| d.as_millis() as u64)
         });
-        let history = self.chat_history.get_or_insert_with(ChatHistory::load);
+        // Re-read before writing: every browser window is its own process with its own copy, and
+        // saving a stale copy used to erase conversations another window had just saved.
+        let mut history = ChatHistory::load();
         history.upsert(id, &self.chat_messages);
         history.save();
+        self.chat_history = Some(history);
     }
 
     fn load_chat_session(&mut self, id: u64) {
@@ -715,12 +718,13 @@ impl BrowserApp {
 
     /// Deletes one saved conversation, or all of them with `None`.
     fn delete_chat_session(&mut self, id: Option<u64>) {
-        let history = self.chat_history.get_or_insert_with(ChatHistory::load);
+        let mut history = ChatHistory::load(); // fresh copy, see `persist_chat`
         match id {
             Some(id) => history.remove(id),
             None => history.sessions.clear(),
         }
         history.save();
+        self.chat_history = Some(history);
         if id.is_none() || id == self.chat_session_id {
             self.cancel_chat_inflight(false);
             self.chat_messages.clear();

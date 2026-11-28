@@ -263,7 +263,8 @@ impl BrowserApp {
                 self.chat_show_history = action == "chat-tab:history";
                 self.chat_show_settings = action == "chat-tab:settings";
                 self.sidebar_picker = SidebarPicker::None;
-                if self.chat_show_history && self.chat_history.is_none() {
+                if self.chat_show_history {
+                    // Re-read: other windows may have saved conversations since.
                     self.chat_history = Some(ChatHistory::load());
                 }
                 if self.chat_show_settings {
