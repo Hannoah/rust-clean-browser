@@ -488,9 +488,13 @@ impl BrowserApp {
         if let Some(win) = self.window.as_ref() {
             dialog = dialog.set_parent(win);
         }
-        let Some(paths) = dialog.pick_files() else {
-            return;
-        };
+        if let Some(paths) = dialog.pick_files() {
+            self.attach_chat_files(paths);
+        }
+    }
+
+    /// Picked or dropped files → chips above the chat box (errors as a status note).
+    pub(in crate::app) fn attach_chat_files(&mut self, paths: Vec<std::path::PathBuf>) {
         for path in paths {
             match crate::chat::load_attachment(&path) {
                 Ok(att) => self.add_chat_attachment(att),
