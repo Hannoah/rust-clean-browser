@@ -2,7 +2,7 @@
 //! the next round sees them as [EXTRACTED DATA] (same channel as `extract`).
 
 use crate::app::{AppEvent, BrowserApp};
-use crate::chat::{AgentAction, ChatProvider, extract_page_context_from_html};
+use crate::chat::{AgentAction, extract_page_context_from_html};
 use std::time::{Duration, Instant};
 
 fn parse_js_json(raw: &str) -> Option<serde_json::Value> {
@@ -225,15 +225,6 @@ impl BrowserApp {
 
     /// Captures the visible page area; the next round's model call carries it as an image.
     fn agent_screenshot(&mut self, req_id: u64, desc: String) {
-        if self.chat_config.provider == ChatProvider::Agy {
-            self.on_agent_action_done(
-                req_id,
-                false,
-                format!("{desc} (Gemini CLI는 이미지를 받을 수 없습니다: extract/find_in_page를 쓰세요)"),
-                0,
-            );
-            return;
-        }
         let Some(hwnd) = self
             .window
             .as_ref()

@@ -513,7 +513,23 @@ pub(super) fn run_agy_persistent(
         *guard = Some(AgyStreamWorker::spawn(model, effort)?);
     }
     let include_history = guard.as_ref().is_none_or(|w| w.turns == 0);
-    let prompt = build_cli_prompt(history, user_text, page, agent, include_history);
+    let mut prompt = build_cli_prompt(history, user_text, page, agent, include_history);
+    // agy has no image flag, but its sandboxed `read_file` reads images: drop the agent's
+    // screenshot into its working folder and point it there.
+    if let Some(bytes) = agent
+        .and_then(|a| a.image_png_b64.as_deref())
+        .and_then(super::decode_base64)
+    {
+        let file = empty_cwd("agy-cwd").join("agent-screenshot.png");
+        if std::fs::write(&file, bytes).is_ok() {
+            prompt.push_str(&format!(
+                "
+
+[SCREENSHOT] The visible page was captured to `{}`. Open it with read_file before answering.",
+                file.display()
+            ));
+        }
+    }
     let res = match guard.as_mut() {
         Some(w) => w.send_turn(&prompt, cancel, progress),
         None => return Err("Gemini CLI 워커 초기화 실패".to_string()),
