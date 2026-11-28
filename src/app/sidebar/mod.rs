@@ -410,12 +410,16 @@ impl BrowserApp {
         if active == self.chat_tab_id {
             return false;
         }
-        // A control-mode run moves between tabs on purpose: its conversation follows it.
-        // ponytail: a tab that already had its own conversation loses it from memory here
+        // A control-mode run that moved to another tab itself (switch/open/close_tab) takes its
+        // conversation along. The user switching tabs mid-run does not: that swap waits until
+        // the run ends, like a reply still arriving.
+        // ponytail: a tab the agent moves into loses its own conversation from memory here
         // (it stays in 기록, every message is saved).
-        if self.agent_run.is_some() {
-            self.tab_chats.remove(&active);
-            self.chat_tab_id = active;
+        if let Some(run) = &self.agent_run {
+            if run.target_tab_id == active {
+                self.tab_chats.remove(&active);
+                self.chat_tab_id = active;
+            }
             return false;
         }
         // A reply still arriving belongs to the tab that asked: swap once it has landed.

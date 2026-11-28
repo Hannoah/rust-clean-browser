@@ -106,7 +106,11 @@ impl ShellProvider for BrowserShellProvider {
 
     fn get_clipboard_text(&self) -> Result<String, ClipboardError> {
         let mut cb = arboard::Clipboard::new().map_err(|_| ClipboardError)?;
-        cb.get_text().map_err(|_| ClipboardError)
+        // Windows clipboard text uses CRLF; inputs must only ever hold LF (HTML normalizes
+        // newlines the same way), or pasted lines carry stray `\r`s into the box and the prompt.
+        cb.get_text()
+            .map(|t| t.replace("\r\n", "\n").replace('\r', "\n"))
+            .map_err(|_| ClipboardError)
     }
 
     fn set_clipboard_text(&self, text: String) -> Result<(), ClipboardError> {

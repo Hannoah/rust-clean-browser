@@ -886,9 +886,9 @@ impl BrowserApp {
         {
             let (cleaned, maybe_plan) = parse_agent_response(raw_reply);
             let Some(plan) = maybe_plan else {
-                let log = self.agent_run.take().map(|r| r.action_log).unwrap_or_default();
+                self.sync_chat_to_active_tab(); // re-home before the run is gone (see there)
+                self.agent_run = None;
                 self.chat_inflight = None;
-                let _ = log; // shown as activity cards instead (see `live`)
                 let text = format_agent_final_message(&cleaned, "", &[]);
                 self.chat_messages.push(ChatMessage {
                     role: ChatRole::Assistant,
