@@ -892,6 +892,7 @@ impl BrowserApp {
         let closed_id = self.tabs[idx].id;
         self.tabs.remove(idx);
         self.tab_chats.remove(&closed_id);
+        self.sidebar_tabs.remove(&closed_id);
         if had_doc {
             trim_process_working_set();
         }
