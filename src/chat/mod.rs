@@ -13,8 +13,8 @@ mod tools;
 
 pub use activity::{ActivityStep, Progress, ProgressCb, apply_step};
 pub use agent::{
-    AgentAction, build_agent_action_js, build_agent_extract_js, build_agent_text_check_js, label_action_desc,
-    parse_agent_response,
+    AgentAction, build_agent_action_js, build_agent_extract_js, build_agent_text_check_js, is_small_talk,
+    label_action_desc, parse_agent_response,
 };
 pub use api::{fetch_api_models, is_loopback_endpoint, test_api_connection};
 pub use cli::{

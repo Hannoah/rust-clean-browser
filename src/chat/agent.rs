@@ -97,6 +97,50 @@ pub enum AgentAction {
     Screenshot,
 }
 
+/// Short chit-chat with no task word: answered as plain chat even in control mode, so "하이"
+/// does not trigger a page snapshot. ponytail: length + keyword heuristic; the model still
+/// answers without actions for anything longer that needs none.
+pub fn is_small_talk(text: &str) -> bool {
+    const TASK: &[&str] = &[
+        "요약",
+        "정리",
+        "번역",
+        "찾",
+        "검색",
+        "열어",
+        "열기",
+        "눌러",
+        "클릭",
+        "이동",
+        "가줘",
+        "입력",
+        "써줘",
+        "채워",
+        "추출",
+        "복사",
+        "비교",
+        "읽어",
+        "스크롤",
+        "다운",
+        "저장",
+        "닫아",
+        "탭",
+        "페이지",
+        "pdf",
+        "표",
+        "링크",
+        "click",
+        "open",
+        "search",
+        "find",
+        "go ",
+        "summar",
+        "translate",
+    ];
+    let t = text.trim().to_lowercase();
+    t.chars().count() <= 12 && !TASK.iter().any(|k| t.contains(k))
+}
+
 /// `요소 [10] 클릭` + the element's visible label → `"다음 페이지" 클릭`, so the action log
 /// (shown to the user and fed back to the model) says what was actually clicked.
 pub fn label_action_desc(desc: &str, label: &str) -> String {
@@ -841,6 +885,23 @@ pub(super) fn parse_action_value(val: &Value) -> Option<AgentAction> {
 
 #[cfg(test)]
 mod label_tests {
+    #[test]
+    fn small_talk_skips_the_agent() {
+        use super::is_small_talk as s;
+        for t in ["하이", "안녕!", "고마워 ㅎㅎ", "hi", "ok", "ㅋㅋㅋ"] {
+            assert!(s(t), "{t}");
+        }
+        for t in [
+            "요약해줘",
+            "다음 눌러",
+            "이 표 추출",
+            "search rust",
+            "로그인 버튼 클릭해 줘 그리고 메일함 열어줘",
+        ] {
+            assert!(!s(t), "{t}");
+        }
+    }
+
     #[test]
     fn labels_replace_element_numbers() {
         use super::label_action_desc as l;

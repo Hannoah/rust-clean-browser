@@ -465,6 +465,15 @@ impl BrowserApp {
             return;
         }
 
+        // A data tool's result (or a screenshot) the model has not seen yet: one more round so the
+        // answer is built from it, even if the plan already said `done`.
+        if run.pending_actions.is_empty()
+            && run.finish_after_queue
+            && run.step < run.max_steps
+            && (run.extracted_data.is_some() || run.screenshot.is_some())
+        {
+            run.finish_after_queue = false;
+        }
         if run.pending_actions.is_empty() && (run.finish_after_queue || run.step >= run.max_steps) {
             let fallback_note = if !run.finish_after_queue && run.step >= run.max_steps {
                 Some(format!("최대 실행 라운드({}단계)에 도달했습니다.", run.max_steps))
@@ -497,7 +506,13 @@ impl BrowserApp {
         };
         self.chat_inflight = None;
         let summary = override_summary.unwrap_or(run.finish_summary);
-        let text = format_agent_final_message(&run.finish_cleaned, &summary, &[]);
+        let mut text = format_agent_final_message(&run.finish_cleaned, &summary, &[]);
+        // Out of rounds before the model read a tool's result: show it rather than drop it.
+        if let Some(data) = run.extracted_data.as_deref().filter(|d| !d.trim().is_empty()) {
+            text.push_str("\n\n**가져온 내용**\n\n```\n");
+            text.push_str(&data.chars().take(4000).collect::<String>());
+            text.push_str("\n```");
+        }
         let req_id = run.req_id;
         let provider_label = (!run.provider_label.is_empty()).then_some(run.provider_label);
         self.chat_messages.push(ChatMessage {

@@ -513,6 +513,10 @@ pub struct BrowserApp {
     chat_live: Option<sidebar::LiveActivity>,
     /// Replies whose "도구 N개 사용" card list is expanded (message indices).
     chat_activity_open: std::collections::HashSet<usize>,
+    /// Tab whose conversation `chat_messages` currently holds; other tabs' conversations wait
+    /// in `tab_chats` (see `sync_chat_to_active_tab`).
+    chat_tab_id: u64,
+    tab_chats: std::collections::HashMap<u64, sidebar::TabChat>,
     chat_show_history: bool,
     /// `(message index, chars shown)` while a reply is typing out.
     chat_reveal: Option<(usize, usize)>,
@@ -709,6 +713,8 @@ impl BrowserApp {
             chat_compacting: None,
             chat_live: None,
             chat_activity_open: std::collections::HashSet::new(),
+            chat_tab_id: u64::MAX,
+            tab_chats: std::collections::HashMap::new(),
             chat_show_history: false,
             chat_reveal: None,
             chat_reveal_gen: 0,
