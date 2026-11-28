@@ -431,6 +431,9 @@ pub struct BrowserApp {
     active_webview: Option<WebView>,
     /// Up to 5 background JS-mode WebViews kept alive (oldest first, MRU last; hidden + suspended).
     parked_webviews: VecDeque<(u64, WebView)>,
+    /// Clean-mode tabs (ids, oldest first) whose document is kept alive in the background so
+    /// switching back shows the page exactly as left. See `KEPT_CLEAN_DOCS`.
+    kept_docs: VecDeque<u64>,
     popup: Option<popup::Popup>,
     recently_closed_popup: Option<(String, Instant)>,
     last_chrome_click_x_logical: f32,
@@ -650,6 +653,7 @@ impl BrowserApp {
             web_context: None,
             active_webview: None,
             parked_webviews: VecDeque::new(),
+            kept_docs: VecDeque::new(),
             popup: None,
             recently_closed_popup: None,
             last_chrome_click_x_logical: 24.0,

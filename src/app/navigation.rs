@@ -19,6 +19,10 @@ use wry::{NewWindowResponse, PageLoadEvent, Rect as WryRect, WebContext, WebView
 
 /// Maximum number of background JS-mode WebViews kept alive (hidden + suspended) in LRU order.
 const MAX_PARKED_WEBVIEWS: usize = 5;
+/// Recently left Clean-mode tabs whose DOM stays in memory (switching back is instant and keeps
+/// scroll, expanded sections and typed input). Older ones are unloaded as before.
+/// ponytail: fixed count, not a memory budget; make it size-based if heavy pages bloat RAM.
+const KEPT_CLEAN_DOCS: usize = 3;
 
 /// Reports (via IPC `media:1` / `media:0`) whether the page holds a live camera/mic/screen track
 /// or is playing audible media, so a video call or music keeps running when its tab is left.
@@ -739,10 +743,32 @@ impl BrowserApp {
             .map_or(0.0, |d| d.viewport_scroll().y)
     }
 
-    /// Parks the leaving tab's WebView and drops its DOM, returning that memory to the OS.
+    /// Parks the leaving tab's WebView; a Clean-mode page keeps its DOM if it is among the
+    /// `KEPT_CLEAN_DOCS` most recent, otherwise (and for the oldest kept one) the DOM is dropped.
     fn unload_active(&mut self) {
         self.close_popup();
         self.park_active_webview();
+        let tab = &mut self.tabs[self.active_tab];
+        let keep = tab.doc.is_some() && !tab.js_mode && !tab.url.starts_with("rust://") && !tab.is_error_page;
+        if keep {
+            if let Some(doc) = &tab.doc {
+                tab.scroll_y = doc.viewport_scroll().y;
+            }
+            let id = tab.id;
+            self.kept_docs.retain(|k| *k != id);
+            self.kept_docs.push_back(id);
+            let mut freed = false;
+            while self.kept_docs.len() > KEPT_CLEAN_DOCS {
+                let old = self.kept_docs.pop_front();
+                if let Some(t) = self.tabs.iter_mut().find(|t| Some(t.id) == old) {
+                    freed |= t.unload();
+                }
+            }
+            if freed {
+                trim_process_working_set();
+            }
+            return;
+        }
         if self.tabs[self.active_tab].unload() {
             trim_process_working_set();
         }
@@ -756,6 +782,20 @@ impl BrowserApp {
         self.chrome_doc.clear_focus();
         self.unload_active();
         self.active_tab = target_idx;
+        // A kept Clean-mode page: show it exactly as it was left, no re-render.
+        let tab = &self.tabs[target_idx];
+        if tab.doc.is_some() && !tab.js_mode {
+            let id = tab.id;
+            self.kept_docs.retain(|k| *k != id);
+            self.hover_link_url = None;
+            self.link_preview_doc = None;
+            self.clear_find_matches();
+            self.sync_viewports();
+            self.sync_find_bar_after_doc_change();
+            self.rebuild_chrome();
+            self.rebuild_sidebar(false);
+            return;
+        }
         let restore_y = Some(self.tabs[target_idx].scroll_y);
         self.load_active_tab(false, restore_y);
     }
