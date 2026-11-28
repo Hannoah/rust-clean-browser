@@ -8,6 +8,60 @@ use crate::icons::{Icon, brand_emblem_svg, error_emblem_svg, svg};
 use std::fmt::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub(super) const WELCOME_CSS: &str = r#"
+body { background: var(--surface-2); padding: 72px 24px; }
+.wcard {
+  max-width: 560px; margin: 0 auto; padding: 36px 34px; text-align: center;
+  border-radius: 18px; background: var(--surface); border: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
+}
+.wemblem { display: flex; justify-content: center; margin-bottom: 16px; }
+.wcard h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.025em; margin-bottom: 10px; }
+.wcard p { color: var(--text-2); font-size: 13.5px; line-height: 1.65; margin-bottom: 22px; }
+.wsrcs { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.wbtn {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 40px; padding: 0 18px; border-radius: 999px;
+  font-size: 13px; font-weight: 600; text-decoration: none;
+  border: 1px solid var(--border); color: var(--text); background: var(--surface);
+}
+.wbtn:hover { background: var(--hover); border-color: var(--border-strong); }
+.wbtn.primary { background: var(--ink); border-color: var(--ink); color: var(--ink-fg); }
+.wbtn.primary:hover { opacity: 0.88; }
+.wskip { margin-top: 4px; font-size: 12px; color: var(--text-3); }
+.wskip a { color: var(--text-2); }
+"#;
+
+/// First-run welcome (`rust://welcome`): offers importing bookmarks from the
+/// detected browsers before the user starts browsing.
+pub fn render_welcome_page(sources: &[String], dark_mode: bool) -> String {
+    let mut buttons = String::new();
+    for (i, label) in sources.iter().enumerate() {
+        let _ = write!(
+            buttons,
+            r#"<a class="wbtn primary" href="rust://welcome?import={i}">{ico}<span>{lbl} 북마크 가져오기</span></a>"#,
+            ico = svg(Icon::Bookmark, 14),
+            lbl = html_escape(&truncate_chars(label, 40)),
+        );
+    }
+    let mut h = String::with_capacity(4096);
+    h.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>환영합니다</title><style>");
+    h.push_str(THEME_CSS);
+    h.push_str(WELCOME_CSS);
+    let _ = write!(
+        h,
+        r#"</style></head><body><div class="wcard">
+  <div class="wemblem">{emblem}</div>
+  <h1>빠르고 가벼운 브라우저에 오신 것을 환영합니다</h1>
+  <p>다른 브라우저의 북마크를 가져올까요? 지금 하지 않아도 나중에<br/>명령 팔레트에서 “Chrome 북마크 다시 동기화”로 가져올 수 있습니다.</p>
+  <div class="wsrcs">{buttons}</div>
+  <div class="wskip"><a href="rust://welcome?skip=1">건너뛰고 시작하기 →</a></div>
+</div></body></html>"#,
+        emblem = brand_emblem_svg(dark_mode),
+    );
+    h
+}
+
 // ── Built-in Page: Home Bento Dashboard (`rust://home`) ──
 
 pub(super) const HOME_CSS: &str = r#"

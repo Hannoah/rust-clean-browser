@@ -78,6 +78,16 @@ struct ChromeNode {
 
 impl BookmarkStore {
     pub fn load() -> Self {
+        Self::load_inner(true)
+    }
+
+    /// Loads saved bookmarks without touching other browsers: used on first run
+    /// so the welcome page can ask before importing anything.
+    pub fn load_without_auto_import() -> Self {
+        Self::load_inner(false)
+    }
+
+    fn load_inner(auto_import: bool) -> Self {
         if let Some(loaded) = Self::load_persisted_file() {
             match loaded {
                 PersistedBookmarks::Tree {
@@ -104,7 +114,9 @@ impl BookmarkStore {
                         other: Vec::new(),
                         custom,
                     };
-                    let _ = store.import_from_chrome();
+                    if auto_import {
+                        let _ = store.import_from_chrome();
+                    }
                     return store;
                 }
             }
@@ -115,8 +127,15 @@ impl BookmarkStore {
             other: Vec::new(),
             custom: Vec::new(),
         };
-        let _ = store.import_from_chrome();
+        if auto_import {
+            let _ = store.import_from_chrome();
+        }
         store
+    }
+
+    /// `true` once the user has their own `bookmarks.json` (imported or added before).
+    pub fn has_personal_bookmarks() -> bool {
+        Self::custom_file_path().is_some_and(|p| p.is_file())
     }
 
     pub fn import_from_chrome(&mut self) -> Result<usize, String> {
@@ -138,6 +157,23 @@ impl BookmarkStore {
             }
         }
         Err("Chrome 북마크 파일을 찾지 못했습니다.".to_string())
+    }
+
+    /// Imports one chosen browser bookmark file (first-run welcome page).
+    pub fn import_from_path(&mut self, path: &Path, label: &str) -> Result<usize, String> {
+        let (mut bar, mut other) =
+            parse_chrome_bookmarks(path).map_err(|_| format!("{label} 북마크를 읽지 못했습니다."))?;
+        let total = count_urls(&bar) + count_urls(&other);
+        if total == 0 {
+            return Err(format!("{label}에 가져올 북마크가 없습니다."));
+        }
+        merge_extra_urls(&self.bar, &mut bar);
+        merge_extra_urls(&self.other, &mut other);
+        self.bar = bar;
+        self.other = other;
+        self.source_label = label.to_string();
+        self.save_custom_file();
+        Ok(total)
     }
 
     pub fn total_count(&self) -> usize {
@@ -482,33 +518,44 @@ pub fn app_data_dir() -> Option<PathBuf> {
     Some(base.join("rust-browser"))
 }
 
-/// Chrome's "User Data" directory for the current platform.
-fn chrome_user_data_dir() -> Option<PathBuf> {
-    if cfg!(target_os = "windows") {
-        let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?;
-        Some(local.join("Google").join("Chrome").join("User Data"))
-    } else if cfg!(target_os = "macos") {
-        Some(std::env::home_dir()?.join("Library/Application Support/Google/Chrome"))
-    } else {
-        Some(std::env::home_dir()?.join(".config/google-chrome"))
+/// Chromium "User Data" directories per browser and platform.
+fn chromium_user_data_dirs() -> Vec<(&'static str, PathBuf)> {
+    let mut out = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+            out.push(("Chrome", local.join("Google/Chrome/User Data")));
+            out.push(("Edge", local.join("Microsoft/Edge/User Data")));
+            out.push(("Whale", local.join("Naver/Naver Whale/User Data")));
+        }
     }
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::home_dir() {
+            out.push(("Chrome", home.join("Library/Application Support/Google/Chrome")));
+            out.push(("Edge", home.join("Library/Application Support/Microsoft Edge")));
+            out.push(("Whale", home.join("Library/Application Support/Naver/Naver Whale")));
+        }
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        if let Some(home) = std::env::home_dir() {
+            out.push(("Chrome", home.join(".config/google-chrome")));
+            out.push(("Edge", home.join(".config/microsoft-edge")));
+            out.push(("Whale", home.join(".config/naver-whale")));
+        }
+    }
+    out.into_iter().filter(|(_, dir)| dir.is_dir()).collect()
 }
 
-fn find_chrome_bookmark_files() -> Vec<(String, PathBuf)> {
+/// Bookmark files inside one Chromium profile directory: Default + `Profile N`.
+fn scan_chromium_dir(user_data: &Path, label: &str) -> Vec<(String, PathBuf)> {
     let mut results = Vec::new();
-    let Some(chrome_user_data) = chrome_user_data_dir() else {
-        return results;
-    };
-    if !chrome_user_data.is_dir() {
-        return results;
-    }
-
-    let default_path = chrome_user_data.join("Default").join("Bookmarks");
+    let default_path = user_data.join("Default").join("Bookmarks");
     if default_path.is_file() {
-        results.push(("Default".to_string(), default_path));
+        results.push((format!("{label} (Default)"), default_path));
     }
-
-    if let Ok(entries) = fs::read_dir(&chrome_user_data) {
+    if let Ok(entries) = fs::read_dir(user_data) {
         let mut profiles: Vec<(String, PathBuf)> = entries
             .flatten()
             .filter_map(|entry| {
@@ -516,7 +563,7 @@ fn find_chrome_bookmark_files() -> Vec<(String, PathBuf)> {
                 if name.starts_with("Profile ") {
                     let bm = entry.path().join("Bookmarks");
                     if bm.is_file() {
-                        return Some((name, bm));
+                        return Some((format!("{label} ({name})"), bm));
                     }
                 }
                 None
@@ -525,8 +572,41 @@ fn find_chrome_bookmark_files() -> Vec<(String, PathBuf)> {
         profiles.sort_by(|a, b| a.0.cmp(&b.0));
         results.extend(profiles);
     }
-
     results
+}
+
+/// Chrome's "User Data" directory for the current platform.
+fn chrome_user_data_dir() -> Option<PathBuf> {
+    chromium_user_data_dirs()
+        .into_iter()
+        .find(|(label, _)| *label == "Chrome")
+        .map(|(_, dir)| dir)
+}
+
+/// Installed Chromium browsers with readable bookmark files: `(label, path)`,
+/// offered on the first-run welcome page.
+pub fn available_browser_sources() -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    for (label, dir) in chromium_user_data_dirs() {
+        out.extend(scan_chromium_dir(&dir, label));
+    }
+    out
+}
+
+fn find_chrome_bookmark_files() -> Vec<(String, PathBuf)> {
+    let Some(chrome_user_data) = chrome_user_data_dir() else {
+        return Vec::new();
+    };
+    scan_chromium_dir(&chrome_user_data, "Chrome")
+        .into_iter()
+        .map(|(label, path)| {
+            let profile = label
+                .strip_prefix("Chrome (")
+                .and_then(|s| s.strip_suffix(')'))
+                .unwrap_or("Default");
+            (profile.to_string(), path)
+        })
+        .collect()
 }
 
 fn parse_chrome_bookmarks(path: &Path) -> Result<(Vec<BookmarkNode>, Vec<BookmarkNode>), String> {
@@ -713,5 +793,51 @@ mod tests {
         let filtered = convert_chrome_children(&parsed_mixed.roots.bookmark_bar.unwrap().children);
         assert_eq!(count_urls(&filtered), 1);
         assert!(tree_contains_url(&filtered, "https://example.org/"));
+    }
+
+    #[test]
+    fn scans_chromium_profiles_and_imports_one_file() {
+        // Fake a Chromium "User Data" tree in the temp dir (no app-data writes).
+        let root = std::env::temp_dir().join(format!(
+            "rb-bm-src-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let write_bookmarks = |profile: &str, body: &str| {
+            let dir = root.join(profile);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("Bookmarks"), body).unwrap();
+        };
+        let sample = r#"{"roots": {
+            "bookmark_bar": {"type": "folder", "name": "Bar", "children": [
+                { "type": "url", "name": "Rust", "url": "https://www.rust-lang.org/" }
+            ]},
+            "other": {"type": "folder", "name": "Other", "children": []}
+        }}"#;
+        write_bookmarks("Default", sample);
+        write_bookmarks("Profile 1", sample);
+        std::fs::create_dir_all(root.join("ShaderCache")).unwrap();
+
+        let found = scan_chromium_dir(&root, "Edge");
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].0, "Edge (Default)");
+        assert_eq!(found[1].0, "Edge (Profile 1)");
+
+        // Parsing + merging work without touching the real bookmarks file.
+        let (bar, other) = parse_chrome_bookmarks(&found[0].1).unwrap();
+        assert_eq!(count_urls(&bar) + count_urls(&other), 1);
+        let mut store = BookmarkStore::default();
+        let mut bar = bar;
+        merge_extra_urls(&store.bar, &mut bar);
+        store.bar = bar;
+        assert!(tree_contains_url(&store.bar, "https://www.rust-lang.org/"));
+
+        // Error paths never reach the save step.
+        let mut empty = BookmarkStore::default();
+        assert!(empty.import_from_path(&root.join("ShaderCache"), "Edge").is_err());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

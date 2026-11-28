@@ -48,6 +48,12 @@ pub struct UiPrefs {
     pub js_hosts: BTreeSet<String>,
     /// AI assistant message font size (px).
     pub chat_font_size: u32,
+    /// Last automatic update check (Unix seconds, 0 = never).
+    pub update_last_check: u64,
+    /// Release tag the user chose to skip ("" = none).
+    pub update_skipped: String,
+    /// First-run welcome (browser import offer) was shown.
+    pub onboarded: bool,
 }
 
 pub const DEFAULT_CHAT_FONT: u32 = 13;
@@ -62,6 +68,9 @@ impl Default for UiPrefs {
             sidebar_width: 380,
             js_hosts: BTreeSet::new(),
             chat_font_size: DEFAULT_CHAT_FONT,
+            update_last_check: 0,
+            update_skipped: String::new(),
+            onboarded: false,
         }
     }
 }

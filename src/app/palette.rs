@@ -225,7 +225,7 @@ impl BrowserApp {
         }
 
         // 2. Commands
-        let commands: Vec<(
+        let mut commands: Vec<(
             String,
             &'static str,
             &'static str,
@@ -442,6 +442,14 @@ impl BrowserApp {
                 "memory ram trim gc",
             ),
             (
+                "check-updates".into(),
+                "업데이트 확인",
+                "새 버전이 있으면 상단에 설치 버튼 표시",
+                "",
+                PaletteIcon::Command,
+                "update upgrade version 최신",
+            ),
+            (
                 "reopen-tab".into(),
                 "닫은 탭 다시 열기",
                 "방금 닫은 페이지 복원",
@@ -466,6 +474,20 @@ impl BrowserApp {
                 "zoom reset",
             ),
         ];
+
+        if self.update_info.is_some() {
+            commands.insert(
+                0,
+                (
+                    "skip-update".into(),
+                    "이 업데이트 건너뛰기",
+                    "다음 버전이 나올 때까지 알림 숨기기",
+                    "",
+                    PaletteIcon::Command,
+                    "update skip later",
+                ),
+            );
+        }
 
         for (action, title, subtitle, shortcut, icon_kind, keywords) in commands {
             if !q.is_empty()

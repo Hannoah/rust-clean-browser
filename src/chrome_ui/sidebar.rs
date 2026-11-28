@@ -16,6 +16,8 @@ pub enum SidebarPicker {
 pub struct SidebarRenderState<'a> {
     pub provider: crate::chat::ChatProvider,
     pub avail: crate::chat::CliAvailability,
+    /// Provider entries to offer (pre-filtered to installed CLIs + connected APIs).
+    pub providers: &'a [crate::chat::ChatProvider],
     pub messages: &'a [crate::chat::ChatMessage],
     pub is_loading: bool,
     pub include_page: bool,
@@ -42,6 +44,8 @@ pub struct SidebarRenderState<'a> {
     pub draft: &'a str,
     /// Masked saved-key hint (`"••••••Ab12"`), never the secret itself.
     pub api_key_hint: &'a str,
+    /// Last connection test for the active API provider: `(ok, summary)`.
+    pub api_conn: Option<(bool, &'a str)>,
     /// Message text size in px.
     pub font_size: u32,
     /// `(message index, chars shown)` while a reply is typing out.
@@ -492,11 +496,7 @@ fn render_settings_card(h: &mut String, state: &SidebarRenderState<'_>) {
         r#"<div id="chat-settings" class="sb-settings{enter_cls}"{enter_style}>"#
     );
     h.push_str(r#"<div class="set-sec"><div class="set-lbl">AI 프로바이더</div><div class="set-chips">"#);
-    for &p in crate::chat::ChatProvider::ALL {
-        // The legacy `gemini` CLI entry was folded into the `agy` (Gemini) agent.
-        if p == crate::chat::ChatProvider::Gemini {
-            continue;
-        }
+    for &p in state.providers {
         let is_act = p == state.provider;
         let cli_missing = p.is_cli() && !state.avail.is_available(p);
         let cls = match (is_act, cli_missing) {
@@ -561,6 +561,17 @@ fn render_settings_card(h: &mut String, state: &SidebarRenderState<'_>) {
         } else {
             ""
         };
+        let conn_row = match state.api_conn {
+            Some((true, msg)) => format!(
+                r#"<div class="set-row"><span class="set-note"><span class="pdot ok"></span> {}</span></div>"#,
+                html_escape(msg),
+            ),
+            Some((false, msg)) => format!(
+                r#"<div class="set-row"><span class="set-note"><span class="pdot off"></span> {}</span></div>"#,
+                html_escape(msg),
+            ),
+            None => String::new(),
+        };
         let _ = write!(
             h,
             r#"<div class="set-sec">
@@ -569,15 +580,42 @@ fn render_settings_card(h: &mut String, state: &SidebarRenderState<'_>) {
   <div class="set-lbl">{key_lbl}</div><input id="chat-api-key" class="set-inp secret" type="password" value="" placeholder="{key_ph}" />
   <div class="set-row">
     <span class="set-note">{hint}</span>
-    <div class="set-btns">{clear_key_btn}<div class="sbtn primary" data-action="chat-save-settings">저장</div></div>
+    <div class="set-btns">{clear_key_btn}<div class="sbtn" data-action="chat-test-connection">연결 테스트</div><div class="sbtn primary" data-action="chat-save-settings">저장</div></div>
   </div>
-</div>"#,
+{conn_row}</div>"#,
             ep = html_escape(state.api_endpoint),
             model = html_escape(state.api_model),
             key_lbl = html_escape(&key_lbl),
             key_ph = html_escape(key_ph),
             hint = html_escape(state.provider.login_hint()),
+            conn_row = conn_row,
         );
+
+        // User-registered models sharing this endpoint: chips with × to remove,
+        // plus an input row to add another model ID.
+        let base_ids: std::collections::BTreeSet<String> = crate::chat::preset_models(state.provider, &[])
+            .into_iter()
+            .map(|o| o.id)
+            .collect();
+        let customs: Vec<&crate::chat::ModelOption> = state
+            .model_options
+            .iter()
+            .filter(|o| !o.id.is_empty() && !base_ids.contains(&o.id))
+            .collect();
+        h.push_str(r#"<div class="set-sec"><div class="set-lbl">직접 추가한 모델 (같은 endpoint에 여러 개)</div>"#);
+        if !customs.is_empty() {
+            h.push_str(r#"<div class="set-chips">"#);
+            for opt in &customs {
+                let _ = write!(
+                    h,
+                    r#"<div class="set-chip"><span>{lbl}</span><span style="margin-left:4px;opacity:0.7" data-action="chat-custom-model-del:{id}" title="삭제">×</span></div>"#,
+                    lbl = html_escape(&opt.label),
+                    id = html_escape(&opt.id),
+                );
+            }
+            h.push_str("</div>");
+        }
+        h.push_str(r#"<div style="display:flex;gap:5px;align-items:center"><input id="chat-custom-model" class="set-inp" style="flex:1" type="text" value="" placeholder="추가할 모델 ID (예: inkling-2-mini)" /><div class="sbtn" data-action="chat-custom-model-add">추가</div></div><div class="set-note">같은 endpoint에서 쓰는 모델을 여러 개 등록하고 모델 선택에서 고르세요.</div></div>"#);
     }
 
     let _ = write!(
@@ -984,10 +1022,7 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
                 h,
                 r#"<div class="sb-sheet{enter_cls}"{enter_style}><div class="sheet-hdr"><span>에이전트 / API 선택</span></div><div class="sheet-list"><div class="sheet-sec">로컬 로그인 에이전트</div>"#
             );
-            for &prov in crate::chat::ChatProvider::ALL {
-                if prov == crate::chat::ChatProvider::Gemini {
-                    continue;
-                }
+            for &prov in state.providers {
                 if prov == crate::chat::ChatProvider::OpenAiApi {
                     h.push_str(r#"<div class="sheet-sec">직접 API / 로컬 LLM</div>"#);
                 }
@@ -1088,18 +1123,27 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
     } else {
         String::new()
     };
-    let ctx_cls = if state.include_page && !is_internal {
-        "cpill ctx on"
-    } else {
-        "cpill ctx"
-    };
-    // No page title here: a title change (unread counters…) would rebuild the whole sidebar.
-    let ctx_tip = if is_internal {
-        "내부 페이지 (컨텍스트 없음)"
+    // Internal pages (new tab, history, …) have no page text to send: the pill
+    // renders visibly disabled and is not clickable, so it can never look stuck
+    // and a stray click can never silently flip the saved preference.
+    let (ctx_cls, ctx_action, ctx_tip) = if is_internal {
+        (
+            "cpill ctx",
+            String::new(),
+            "내부 페이지에서는 페이지 내용을 함께 보낼 수 없습니다".to_string(),
+        )
     } else if state.include_page {
-        "현재 페이지 본문을 함께 보냄 (끄려면 클릭)"
+        (
+            "cpill ctx on",
+            r#" data-action="chat-toggle-page""#.to_string(),
+            "현재 페이지 본문을 함께 보냄 (끄려면 클릭)".to_string(),
+        )
     } else {
-        "현재 페이지 본문 포함 켜기"
+        (
+            "cpill ctx",
+            r#" data-action="chat-toggle-page""#.to_string(),
+            "현재 페이지 본문 포함 켜기".to_string(),
+        )
     };
     let ctrl_cls = if state.agent_control {
         "cpill ctrl on"
@@ -1128,7 +1172,7 @@ pub fn render_sidebar_html(state: &SidebarRenderState<'_>) -> (String, Vec<Strin
       <div class="comp-left">
         <div class="{prov_pill_cls}" data-action="chat-picker:provider" title="에이전트 / API 전환">{prov_dot}<span class="cpill-txt">{prov_lbl}</span><span class="cpill-chev">{chev}</span></div>
         <div class="{mod_pill_cls}" data-action="chat-picker:model" title="사용할 모델 변경"><span class="cpill-txt">{mod_lbl}</span><span class="cpill-chev">{chev}</span></div>
-        <div class="{ctx_cls}" data-action="chat-toggle-page" title="{ctx_tip}"><span class="cpill-dot"></span><span class="cpill-txt">페이지</span></div>
+        <div class="{ctx_cls}"{ctx_action} title="{ctx_tip}"><span class="cpill-dot"></span><span class="cpill-txt">페이지</span></div>
         <div class="{ctrl_cls}" data-action="chat-toggle-control" title="AI 에이전트 브라우저 화면 제어 (클릭·입력·이동)"><span class="cpill-dot"></span><span class="cpill-txt">제어</span></div>
       </div>
       {send_btn}

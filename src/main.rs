@@ -18,6 +18,7 @@ mod prefs;
 mod single;
 mod tabs;
 mod translate;
+mod update;
 
 use app::{BrowserApp, LaunchOptions};
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -29,8 +30,17 @@ fn main() {
     if !launch.new_window && launch.initial_url.as_deref().is_some_and(single::forward) {
         return;
     }
+    // First run: ask before touching other browsers (welcome page), so skip the
+    // silent auto-import this once and let the user's choice drive it.
+    let ask_first_run = !prefs::UiPrefs::load().onboarded && !bookmarks::BookmarkStore::has_personal_bookmarks();
     // Parse Chrome's bookmark file while the runtime and window system initialise.
-    let bookmarks = std::thread::spawn(bookmarks::BookmarkStore::load);
+    let bookmarks = std::thread::spawn(move || {
+        if ask_first_run {
+            bookmarks::BookmarkStore::load_without_auto_import()
+        } else {
+            bookmarks::BookmarkStore::load()
+        }
+    });
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(2)
@@ -45,6 +55,6 @@ fn main() {
     event_loop.set_control_flow(ControlFlow::Wait);
 
     let proxy = event_loop.create_proxy();
-    let app = BrowserApp::new(proxy, launch, bookmarks);
+    let app = BrowserApp::new(proxy, launch, bookmarks, ask_first_run);
     event_loop.run_app(app).expect("event loop error");
 }

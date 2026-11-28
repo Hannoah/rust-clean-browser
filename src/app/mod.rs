@@ -166,6 +166,20 @@ pub enum AppEvent {
         provider_label: String,
         result: Result<String, String>,
     },
+    /// Automatic (daily) or manual update check finished: `Ok(Some(_))` carries a
+    /// newer release, `Ok(None)` means already current, `Err` is the failure.
+    UpdateCheckDone {
+        manual: bool,
+        outcome: Result<Option<crate::update::UpdateInfo>, String>,
+    },
+    /// Setup-exe download finished: `Ok(path)` is ready to launch, `Err` failed.
+    UpdateDownloadDone(Result<String, String>),
+    /// API connection test finished for `provider`: live end-to-end result.
+    ApiTestDone {
+        provider: String,
+        ok: bool,
+        detail: String,
+    },
     /// One streamed text delta from an in-flight API reply. The matching in-flight
     /// request appends it to a pending assistant message; the final `ChatFinished`
     /// replaces that draft with the authoritative full text.
@@ -472,6 +486,14 @@ pub struct BrowserApp {
     /// Next sidebar rebuild ignores the settings inputs' drafts (a chip changed the value).
     sidebar_reset_drafts: bool,
     chat_input_lines: usize,
+    /// Newer release found by the update check (toolbar pill offers one-click install).
+    update_info: Option<crate::update::UpdateInfo>,
+    /// An update check or installer download is running.
+    update_busy: bool,
+    /// Last API connection test result: `(provider id, ok, summary)`.
+    api_conn: Option<(String, bool, String)>,
+    /// An API connection test is running.
+    api_test_busy: bool,
 
     // ── Motion bookkeeping (entrance animations survive HTML rebuilds via negative delays) ──
     /// Highest tab id already shown; ids above it are new tabs that get an entrance animation.
@@ -508,6 +530,7 @@ impl BrowserApp {
         winit_proxy: EventLoopProxy,
         launch: LaunchOptions,
         bookmarks: std::thread::JoinHandle<BookmarkStore>,
+        ask_first_run: bool,
     ) -> Self {
         let (tx, rx) = channel();
         let bus = AppBus { tx, winit_proxy };
@@ -524,11 +547,20 @@ impl BrowserApp {
         let nav_provider = Arc::new(BrowserNavProvider { bus: bus.clone() });
         let bookmarks = bookmarks.join().unwrap_or_default();
 
+        let prefs = UiPrefs::load();
         let start_url = launch
             .initial_url
             // Local files (e.g. opened via the .html file association) become file:// URLs.
             .map(|u| arg_to_url(&u))
-            .unwrap_or_else(|| "rust://home".to_string());
+            .unwrap_or_else(|| {
+                // First run with importable browsers around: ask on a welcome page
+                // instead of silently copying anything.
+                if ask_first_run && !prefs.onboarded && !crate::bookmarks::available_browser_sources().is_empty() {
+                    "rust://welcome".to_string()
+                } else {
+                    "rust://home".to_string()
+                }
+            });
         let mut first_tab = Tab::new(1, start_url);
         if !first_tab.url.starts_with("rust://") {
             first_tab.js_mode = launch.js_mode;
@@ -547,7 +579,6 @@ impl BrowserApp {
             },
         );
 
-        let prefs = UiPrefs::load();
         let chat_cli_avail = crate::chat::CliAvailability::detect();
         let chat_config = crate::chat::ChatConfig::load_with_avail(chat_cli_avail);
         let initial_scheme = match prefs.theme {
@@ -641,6 +672,10 @@ impl BrowserApp {
             sidebar_dirty_scroll: false,
             sidebar_reset_drafts: false,
             chat_input_lines: 1,
+            update_info: None,
+            update_busy: false,
+            api_conn: None,
+            api_test_busy: false,
             seen_tab_id: None,
             fresh_tabs: Vec::new(),
             loading_tab_seen: None,
@@ -1103,6 +1138,7 @@ impl BrowserApp {
             downloads_unseen: self.unseen_downloads,
             sidebar_open: self.sidebar_open,
             js_webview_count,
+            update_version: self.update_info.as_ref().map(|i| i.version.as_str()),
             motion,
         });
         self.update_window_title();
@@ -1605,6 +1641,9 @@ impl ApplicationHandler for BrowserApp {
             self.mount_or_navigate_webview(self.active_tab);
         }
 
+        // Automatic update check (throttled to once a day) so a new release
+        // surfaces itself instead of users hunting for it.
+        self.maybe_check_for_updates(false);
         if let Some(win) = &self.window {
             let w = self.win_size.width.max(1);
             let h = self.win_size.height.max(1);

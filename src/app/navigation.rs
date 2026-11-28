@@ -4,6 +4,7 @@ use super::helpers::{RESIZE_EDGE, normalize_url_input, persist_session_cookies, 
 use super::{AppEvent, BrowserApp, ClosedTab};
 use crate::chrome_ui::{
     parse_query_param, render_bookmarks_page, render_error_page, render_history_page, render_home_page,
+    render_welcome_page,
 };
 use crate::cleaner::{ReaderFont, ReaderTheme, ReaderWidth, process_fetched_document};
 use crate::memory::trim_process_working_set;
@@ -471,6 +472,31 @@ impl BrowserApp {
                     self.tabs[idx].url = "rust://history".to_string();
                 }
                 render_history_page(&self.history, &self.tabs[idx].url)
+            } else if url.starts_with("rust://welcome") {
+                if let Some(choice) = parse_query_param(&url, "import")
+                    && let Ok(i) = choice.parse::<usize>()
+                    && let Some((label, path)) = crate::bookmarks::available_browser_sources().get(i)
+                {
+                    match self.bookmarks.import_from_path(path, label) {
+                        Ok(n) => self.set_status_note(&format!("{label} 북마크 {n}개 가져옴")),
+                        Err(e) => self.set_status_note(&e),
+                    }
+                    self.prefs.onboarded = true;
+                    self.prefs.save();
+                    self.tabs[idx].url = "rust://home".to_string();
+                    return self.load_active_tab(false, None);
+                }
+                if parse_query_param(&url, "skip").is_some() {
+                    self.prefs.onboarded = true;
+                    self.prefs.save();
+                    self.tabs[idx].url = "rust://home".to_string();
+                    return self.load_active_tab(false, None);
+                }
+                let labels: Vec<String> = crate::bookmarks::available_browser_sources()
+                    .into_iter()
+                    .map(|(label, _)| label)
+                    .collect();
+                render_welcome_page(&labels, dark)
             } else {
                 let unloaded = self.tabs.iter().filter(|t| !t.is_loaded() && !t.js_mode).count();
                 let ram_mb = self.cached_working_set_mb();

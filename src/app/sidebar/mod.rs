@@ -126,6 +126,7 @@ impl BrowserApp {
             || Self::is_input_composing(doc, "chat-api-endpoint")
             || Self::is_input_composing(doc, "chat-api-model")
             || Self::is_input_composing(doc, "chat-api-key")
+            || Self::is_input_composing(doc, "chat-custom-model")
             || Self::is_input_composing(doc, "chat-preset-title")
             || Self::is_input_composing(doc, "chat-preset-prompt")
     }
@@ -235,7 +236,18 @@ impl BrowserApp {
     }
 
     fn current_model_options(&self) -> Vec<ModelOption> {
-        preset_models(self.chat_config.provider, &self.agy_models)
+        let mut opts = preset_models(self.chat_config.provider, &self.agy_models);
+        if !self.chat_config.provider.is_cli() {
+            for id in self.chat_config.custom_models_for(self.chat_config.provider) {
+                if !opts.iter().any(|o| o.id == id) {
+                    opts.push(ModelOption {
+                        id: id.clone(),
+                        label: id,
+                    });
+                }
+            }
+        }
+        opts
     }
 
     pub(super) fn warm_cli_for_current_mode(&self) {
@@ -340,6 +352,7 @@ impl BrowserApp {
             "chat-api-endpoint",
             "chat-api-model",
             "chat-api-key",
+            "chat-custom-model",
             "chat-preset-title",
             "chat-preset-prompt",
         ]
@@ -354,6 +367,9 @@ impl BrowserApp {
         let key_draft = self
             .read_sidebar_input("chat-api-key")
             .filter(|s| !reset_drafts && !s.is_empty());
+        let custom_model_draft = self
+            .read_sidebar_input("chat-custom-model")
+            .filter(|s| !reset_drafts && !s.is_empty());
         let preset_title_draft = self
             .read_sidebar_input("chat-preset-title")
             .filter(|s| !reset_drafts && !s.is_empty());
@@ -364,6 +380,19 @@ impl BrowserApp {
         let model_options = self.current_model_options();
         let active_model_id = self.chat_config.selected_model(self.chat_config.provider);
         let active_model_label = display_model_label(self.chat_config.provider, &active_model_id, &self.agy_models);
+        // Offer only usable entries: installed CLI binaries, connected (key saved
+        // or loopback) API providers, and always the active one. The legacy
+        // `gemini` CLI entry was folded into the `agy` (Gemini) agent.
+        let visible_providers: Vec<ChatProvider> = ChatProvider::ALL
+            .iter()
+            .copied()
+            .filter(|&p| {
+                p != ChatProvider::Gemini
+                    && self
+                        .chat_config
+                        .is_usable(p, self.chat_config.provider, self.chat_cli_avail)
+            })
+            .collect();
         let api_endpoint = endpoint_draft
             .as_deref()
             .unwrap_or_else(|| self.chat_config.effective_endpoint());
@@ -375,6 +404,7 @@ impl BrowserApp {
         let (html, code_blocks) = render_sidebar_html(&SidebarRenderState {
             provider: self.chat_config.provider,
             avail: self.chat_cli_avail,
+            providers: &visible_providers,
             picker_open: self.sidebar_picker,
             active_model_id: &active_model_id,
             active_model_label: &active_model_label,
@@ -398,6 +428,10 @@ impl BrowserApp {
             api_model,
             has_api_key: !self.chat_config.effective_api_key().is_empty(),
             api_key_hint: &self.chat_config.masked_api_key_hint(),
+            api_conn: match &self.api_conn {
+                Some((pid, ok, msg)) if *pid == self.chat_config.provider.id() => Some((*ok, msg.as_str())),
+                _ => None,
+            },
             draft: &draft,
             font_size: self.prefs.chat_font_size.clamp(MIN_CHAT_FONT, MAX_CHAT_FONT),
             reveal: self.chat_reveal,
@@ -451,6 +485,7 @@ impl BrowserApp {
         if let Some(doc) = &mut self.sidebar_doc {
             for (input_id, val) in [
                 ("chat-api-key", key_draft),
+                ("chat-custom-model", custom_model_draft),
                 ("chat-preset-title", preset_title_draft),
                 ("chat-preset-prompt", preset_prompt_draft),
             ] {
@@ -714,7 +749,7 @@ mod tests {
     use super::agent::is_agent_host_trusted;
     use crate::chat::{ChatMessage, ChatProvider, ChatRole, CliAvailability, preset_models};
     use crate::chrome_ui::{SidebarPicker, SidebarRenderState, render_sidebar_html};
-    use blitz_dom::{Document, DocumentConfig, EventDriver, EventHandler, LocalName, NodeId};
+    use blitz_dom::{Document, DocumentConfig, EventDriver, EventHandler, LocalName, NodeId, ScrollBehavior};
     use blitz_html::HtmlDocument;
     use blitz_traits::events::{
         BlitzPointerEvent, BlitzPointerId, DomEvent, DomEventData, EventState, MouseEventButton, MouseEventButtons,
@@ -791,7 +826,16 @@ mod tests {
             api_endpoint: "https://api.openai.com/v1/chat/completions",
             api_model: "gpt-4o-mini",
             has_api_key: false,
+            providers: &[
+                ChatProvider::Agy,
+                ChatProvider::Claude,
+                ChatProvider::Codex,
+                ChatProvider::OpenAiApi,
+                ChatProvider::AnthropicApi,
+                ChatProvider::GeminiApi,
+            ],
             api_key_hint: "",
+            api_conn: None,
             draft: "",
             font_size: 13,
             reveal: None,
@@ -845,11 +889,17 @@ mod tests {
         for sel in [
             r#"[data-action="chat-provider:anthropic_api"]"#,
             r#"[data-action="chat-save-settings"]"#,
-            r#"[data-action="chat-font:inc"]"#,
         ] {
             let pos = center(&doc, sel);
             click(&mut doc, &rec, pos);
         }
+        // The card grows with more sections (custom models, connection status):
+        // scroll it to the font row first, like a user would.
+        let set_id = doc.get_element_by_id("chat-settings").unwrap();
+        doc.scroll_to(set_id, 0.0, 1.0e9, ScrollBehavior::Instant);
+        doc.resolve(0.05);
+        let pos = center(&doc, r#"[data-action="chat-font:inc"]"#);
+        click(&mut doc, &rec, pos);
         assert_eq!(
             *rec.borrow(),
             ["chat-provider:anthropic_api", "chat-save-settings", "chat-font:inc"]
@@ -939,7 +989,9 @@ mod tests {
             api_endpoint: "",
             api_model: "",
             has_api_key: false,
+            providers: &[ChatProvider::Claude],
             api_key_hint: "",
+            api_conn: None,
             draft: "줄1\n줄2",
             font_size: 16,
             reveal,
@@ -1018,7 +1070,16 @@ mod tests {
             api_endpoint: "https://api.openai.com/v1/chat/completions",
             api_model: "gpt-4o-mini",
             has_api_key: false,
+            providers: &[
+                ChatProvider::Agy,
+                ChatProvider::Claude,
+                ChatProvider::Codex,
+                ChatProvider::OpenAiApi,
+                ChatProvider::AnthropicApi,
+                ChatProvider::GeminiApi,
+            ],
             api_key_hint: "",
+            api_conn: None,
             draft: "",
             font_size: 13,
             reveal: None,

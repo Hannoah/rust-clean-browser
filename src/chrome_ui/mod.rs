@@ -4,7 +4,10 @@ mod sidebar;
 
 #[allow(unused_imports)]
 pub(crate) use pages::is_suspicious_host;
-pub use pages::{parse_query_param, render_bookmarks_page, render_error_page, render_history_page, render_home_page};
+pub use pages::{
+    parse_query_param, render_bookmarks_page, render_error_page, render_history_page, render_home_page,
+    render_welcome_page,
+};
 pub use popups::{
     PaletteEntry, PaletteIcon, downloads_popup_height, estimate_popup_height, palette_popup_height,
     render_bookmark_popup_html, render_command_palette_list_html, render_command_palette_shell_html,
@@ -543,6 +546,8 @@ pub struct ChromeRenderState<'a> {
     pub sidebar_open: bool,
     /// Number of tabs currently running in JS WebView mode (separate OS processes).
     pub js_webview_count: usize,
+    /// Newer release tag (e.g. `"v0.5.5"`) when the updater found one; shows the install pill.
+    pub update_version: Option<&'a str>,
     pub motion: ChromeMotion,
 }
 
@@ -839,10 +844,18 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
         ("ib", "")
     };
     let ai_cls = if state.sidebar_open { "ai-btn on" } else { "ai-btn" };
+    let update_btn = if let Some(ver) = state.update_version {
+        format!(
+            r#"<div class="pill js" data-action="apply-update" title="새 버전 {ver} 설치 — 설치 파일 내려받아 실행">{dl_svg}<span>업데이트 {ver}</span></div><div class="vsep"></div>"#,
+            dl_svg = svg(Icon::Download, 12),
+        )
+    } else {
+        String::new()
+    };
 
     let _ = write!(
         h,
-        r#"<div class="status-cluster">
+        r#"{update_btn}<div class="status-cluster">
     <div class="{engine_cls}" data-action="toggle-js" title="렌더링 엔진 전환 (Clean / JS)">{engine_svg}<span>{engine_label}</span></div>
     <div class="seg-sep"></div>
     <div class="{shield_cls}"{shield_style} data-action="toggle-filter" title="{shield_title}">{shield_svg}<span>{shield_label}</span></div>
@@ -856,6 +869,7 @@ pub fn render_chrome_html(state: &ChromeRenderState<'_>) -> String {
   <div class="ib" data-action="nav:rust://bookmarks" title="북마크 관리자">{bm_svg}</div>
   <div class="{ai_cls}" data-action="toggle-sidebar" title="AI 어시스턴트 (Ctrl+Shift+I)">{ai_svg}<span class="hide-narrow">AI</span></div>
 </div>"#,
+        update_btn = update_btn,
         cpu_svg = svg(Icon::Cpu, 12),
         dl_svg = svg(Icon::Download, 14),
         find_svg = svg(Icon::Search, 14),
@@ -1097,6 +1111,7 @@ mod tests {
             downloads_unseen: 0,
             sidebar_open: false,
             js_webview_count: 0,
+            update_version: None,
             motion: Default::default(),
         });
         assert!(html.contains(r#"value="typed""#));
@@ -1105,6 +1120,41 @@ mod tests {
         assert!(html.contains("Clean"));
         assert!(html.contains("메모리 정리됨"));
         assert!(html.contains("<svg"));
+        assert!(!html.contains("apply-update"));
+    }
+
+    #[test]
+    fn update_pill_offers_one_click_install() {
+        let tab = Tab::new(1, "https://a.test/".into());
+        let tabs = vec![tab];
+        let bm = BookmarkStore::default();
+        let base = ChromeRenderState {
+            tabs: &tabs,
+            active_idx: 0,
+            bookmarks: &bm,
+            can_back: false,
+            can_forward: false,
+            working_set_mb: 10.0,
+            blocked_count: 0,
+            filter_enabled: true,
+            maximized: false,
+            dark_mode: false,
+            show_bookmarks_bar: false,
+            theme_pref: ThemePreference::System,
+            status_note: None,
+            url_override: None,
+            drop_target_folder: None,
+            detaching_tab_id: None,
+            downloads_in_progress: 0,
+            downloads_unseen: 0,
+            sidebar_open: false,
+            js_webview_count: 0,
+            update_version: Some("v9.9.9"),
+            motion: Default::default(),
+        };
+        let html = render_chrome_html(&base);
+        assert!(html.contains("apply-update"), "{html}");
+        assert!(html.contains("v9.9.9"), "{html}");
     }
 
     #[test]
@@ -1134,6 +1184,7 @@ mod tests {
             downloads_unseen: 0,
             sidebar_open: false,
             js_webview_count: 0,
+            update_version: None,
             motion: Default::default(),
         });
         assert!(html.contains(r#"class="fav-spin""#));
@@ -1178,6 +1229,17 @@ mod tests {
         let home = render_home_page(&bm, &hist, 38.0, 3, 2, 14, 1, true);
         assert!(home.contains("The Rust Programming Language"));
         assert!(home.contains("38 MB"));
+
+        // First-run welcome lists each detected browser with an import link.
+        let welcome = render_welcome_page(&["Chrome (Default)".to_string(), "Edge (Profile 1)".to_string()], true);
+        assert!(welcome.contains("rust://welcome?import=0"), "{welcome}");
+        assert!(welcome.contains("rust://welcome?import=1"), "{welcome}");
+        assert!(welcome.contains("rust://welcome?skip=1"), "{welcome}");
+        assert!(welcome.contains("Edge (Profile 1)"), "{welcome}");
+
+        // Labels are escaped, never raw HTML.
+        let evil = render_welcome_page(&["<img src=x onerror=alert(1)>".to_string()], false);
+        assert!(!evil.contains("<img src=x"), "{evil}");
 
         let hist_html = render_history_page(&hist, "rust://history");
         assert!(hist_html.contains("The Rust Programming Language"));
@@ -1274,6 +1336,7 @@ mod tests {
             downloads_unseen: 1,
             sidebar_open: false,
             js_webview_count: 0,
+            update_version: None,
             motion: Default::default(),
         });
         assert!(chrome_html.contains("open-downloads"));
@@ -1373,7 +1436,15 @@ mod tests {
             active_model_label: "Claude Sonnet",
             control_model_id: "haiku",
             effort: "high",
-            api_key_hint: "",
+            providers: &[
+                crate::chat::ChatProvider::Agy,
+                crate::chat::ChatProvider::Claude,
+                crate::chat::ChatProvider::OpenAiApi,
+                crate::chat::ChatProvider::AnthropicApi,
+                crate::chat::ChatProvider::GeminiApi,
+            ],
+            api_key_hint: "••••••1234",
+            api_conn: None,
             custom_presets: &[crate::chat::AgentPreset {
                 title: "표 수집".into(),
                 prompt: "표 추출".into(),
@@ -1453,7 +1524,9 @@ mod tests {
             active_model_label: "Claude Sonnet",
             control_model_id: "haiku",
             effort: "",
+            providers: &[crate::chat::ChatProvider::Claude],
             api_key_hint: "",
+            api_conn: None,
             custom_presets: &[],
             model_options: &model_options,
             agy_models_loading: false,
@@ -1500,7 +1573,9 @@ mod tests {
             active_model_label: "",
             control_model_id: "",
             effort: "",
+            providers: &[crate::chat::ChatProvider::Claude],
             api_key_hint: "",
+            api_conn: None,
             custom_presets: &[],
             model_options: &[],
             agy_models_loading: false,
@@ -1634,6 +1709,7 @@ mod motion_tests {
             downloads_unseen: 0,
             sidebar_open: false,
             js_webview_count: 0,
+            update_version: None,
             motion: ChromeMotion {
                 fresh_tabs: vec![(2, 40)],
                 progress_done_ms: Some(100),
@@ -1651,16 +1727,18 @@ mod motion_tests {
     #[test]
     fn api_key_masked_hint_renders_without_secret() {
         let model_options = crate::chat::preset_models(crate::chat::ChatProvider::OpenAiApi, &[]);
-        let render = |has_api_key: bool, api_key_hint: &str| {
+        let render = |has_api_key: bool, api_key_hint: &str, api_conn: Option<(bool, &str)>| {
             render_sidebar_html(&SidebarRenderState {
                 provider: crate::chat::ChatProvider::OpenAiApi,
                 avail: crate::chat::CliAvailability::default(),
+                providers: &[crate::chat::ChatProvider::OpenAiApi],
                 picker_open: SidebarPicker::None,
                 active_model_id: "gpt-4o-mini",
                 active_model_label: "GPT-4o mini",
                 control_model_id: "",
                 effort: "",
                 api_key_hint,
+                api_conn,
                 custom_presets: &[],
                 model_options: &model_options,
                 agy_models_loading: false,
@@ -1689,14 +1767,76 @@ mod motion_tests {
             })
         };
         // Saved key: masked tail proves it is stored; the secret itself never renders.
-        let (saved_html, _) = render(true, "******9Ab3");
+        let (saved_html, _) = render(true, "******9Ab3", None);
         assert!(saved_html.contains("9Ab3"), "{saved_html}");
         assert!(saved_html.contains("placeholder="), "{saved_html}");
         assert!(saved_html.contains("chat-clear-key"), "{saved_html}");
         assert!(!saved_html.contains("sk-secret-value-9Ab3"), "{saved_html}");
         // No key: the input invites entry instead of showing a stored state.
-        let (empty_html, _) = render(false, "");
+        let (empty_html, _) = render(false, "", None);
         assert!(empty_html.contains("sk-..."), "{empty_html}");
         assert!(!empty_html.contains("chat-clear-key"), "{empty_html}");
+        // Connection test result shows next to the test button.
+        let (ok_html, _) = render(true, "******9Ab3", Some((true, "ok-12ms")));
+        assert!(ok_html.contains("chat-test-connection"), "{ok_html}");
+        assert!(ok_html.contains("ok-12ms"), "{ok_html}");
+        let (fail_html, _) = render(true, "******9Ab3", Some((false, "fail-401")));
+        assert!(fail_html.contains("chat-test-connection"), "{fail_html}");
+        assert!(fail_html.contains("fail-401"), "{fail_html}");
+    }
+
+    #[test]
+    fn page_pill_is_disabled_on_internal_pages() {
+        let model_options = crate::chat::preset_models(crate::chat::ChatProvider::OpenAiApi, &[]);
+        let render = |url: &str, include_page: bool| {
+            render_sidebar_html(&SidebarRenderState {
+                provider: crate::chat::ChatProvider::OpenAiApi,
+                avail: crate::chat::CliAvailability::default(),
+                providers: &[crate::chat::ChatProvider::OpenAiApi],
+                picker_open: SidebarPicker::None,
+                active_model_id: "gpt-4o-mini",
+                active_model_label: "GPT-4o mini",
+                control_model_id: "",
+                effort: "",
+                api_key_hint: "",
+                api_conn: None,
+                custom_presets: &[],
+                model_options: &model_options,
+                agy_models_loading: false,
+                messages: &[],
+                is_loading: false,
+                can_retry: false,
+                include_page,
+                agent_control: false,
+                agent_status: None,
+                agent_log: &[],
+                sidebar_wide: false,
+                show_settings: false,
+                active_title: "t",
+                active_url: url,
+                api_endpoint: "",
+                api_model: "",
+                has_api_key: false,
+                draft: "",
+                font_size: 13,
+                reveal: None,
+                show_history: false,
+                history: &[],
+                session_id: None,
+                agent_confirm: None,
+                motion: Default::default(),
+            })
+        };
+        // Internal pages have no page text: no action, so the pill can never
+        // look stuck or flip the saved preference on a stray click.
+        let (internal_html, _) = render("rust://home", true);
+        assert!(!internal_html.contains("chat-toggle-page"), "{internal_html}");
+        // Normal pages toggle between on and off.
+        let (on_html, _) = render("https://e.test", true);
+        assert!(on_html.contains("cpill ctx on"), "{on_html}");
+        assert!(on_html.contains("chat-toggle-page"), "{on_html}");
+        let (off_html, _) = render("https://e.test", false);
+        assert!(!off_html.contains("cpill ctx on"), "{off_html}");
+        assert!(off_html.contains("chat-toggle-page"), "{off_html}");
     }
 }

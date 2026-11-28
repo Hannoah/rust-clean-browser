@@ -95,61 +95,6 @@ pub(super) fn extract_sse_delta(provider: ChatProvider, data: &str) -> Option<St
     }
 }
 
-/// Reads an SSE response chunk by chunk (`Response::chunk` needs no extra stream
-/// combinator deps), forwarding text deltas through `stream_cb` as they arrive so
-/// the UI paints while the model is still generating. Returns the assembled reply.
-async fn stream_sse_reply(
-    provider: ChatProvider,
-    mut resp: reqwest::Response,
-    cancel: &AtomicBool,
-    stream_cb: &Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
-) -> Result<String, String> {
-    let mut line_buf: Vec<u8> = Vec::with_capacity(4096);
-    let mut full = String::new();
-    let mut done = false;
-    while !done {
-        if cancel.load(Ordering::Acquire) {
-            return Err("요청이 중지되었습니다.".to_string());
-        }
-        match resp.chunk().await.map_err(|e| format!("응답 읽기 실패: {e}"))? {
-            Some(bytes) => {
-                for &b in bytes.iter() {
-                    if b == b'\n' {
-                        let line = String::from_utf8_lossy(&line_buf);
-                        let line = line.trim();
-                        if let Some(payload) = line.strip_prefix("data:") {
-                            let payload = payload.trim();
-                            if payload == "[DONE]" {
-                                done = true;
-                                break;
-                            }
-                            if let Some(delta) = extract_sse_delta(provider, payload)
-                                && !delta.is_empty()
-                            {
-                                full.push_str(&delta);
-                                if let Some(cb) = stream_cb {
-                                    cb(delta);
-                                }
-                            }
-                        }
-                        line_buf.clear();
-                    } else if b != b'\r' {
-                        line_buf.push(b);
-                        if line_buf.len() > 256 * 1024 {
-                            return Err("API 스트리밍 한 줄이 너무 깁니다.".to_string());
-                        }
-                    }
-                }
-            }
-            None => break,
-        }
-    }
-    match full.trim().to_string().as_str() {
-        "" => Err("API 응답에서 텍스트를 추출하지 못했습니다.".to_string()),
-        text => Ok(text.to_string()),
-    }
-}
-
 pub(super) async fn run_api_chat(
     config: &ChatConfig,
     history: &[ChatMessage],
@@ -206,16 +151,270 @@ pub(super) async fn run_api_chat(
         SYSTEM_PROMPT.to_string()
     };
 
-    let (target_url, body_bytes, builder) = match config.provider {
-        ChatProvider::OpenAiApi => {
-            let mut msgs = vec![json!({ "role": "system", "content": &system_prompt })];
-            for m in turns {
-                let role = if m.role == ChatRole::User { "user" } else { "assistant" };
-                let txt: String = neutralize_untrusted(&m.text).chars().take(max_turn_chars).collect();
-                msgs.push(json!({ "role": role, "content": txt }));
+    let build_request = |streamed: bool| -> Result<(String, Vec<u8>, reqwest::RequestBuilder), String> {
+        match config.provider {
+            ChatProvider::OpenAiApi => {
+                let mut msgs = vec![json!({ "role": "system", "content": &system_prompt })];
+                for m in &turns {
+                    let role = if m.role == ChatRole::User { "user" } else { "assistant" };
+                    let txt: String = neutralize_untrusted(&m.text).chars().take(max_turn_chars).collect();
+                    msgs.push(json!({ "role": role, "content": txt }));
+                }
+                msgs.push(json!({ "role": "user", "content": final_user.clone() }));
+                let payload = json!({ "model": model.clone(), "messages": msgs.clone(), "stream": streamed });
+                let bytes = serde_json::to_vec(&payload).map_err(|e| format!("JSON 직렬화 실패: {e}"))?;
+                let mut req = client.post(&endpoint).header("Content-Type", "application/json");
+                if !api_key.is_empty() {
+                    req = req.header("Authorization", format!("Bearer {api_key}"));
+                }
+                Ok((endpoint.clone(), bytes, req))
             }
-            msgs.push(json!({ "role": "user", "content": final_user }));
-            let payload = json!({ "model": model, "messages": msgs, "stream": true });
+            ChatProvider::AnthropicApi => {
+                let mut msgs = Vec::new();
+                for m in &turns {
+                    let role = if m.role == ChatRole::User { "user" } else { "assistant" };
+                    let txt: String = neutralize_untrusted(&m.text).chars().take(max_turn_chars).collect();
+                    msgs.push(json!({ "role": role, "content": txt }));
+                }
+                msgs.push(json!({ "role": "user", "content": final_user.clone() }));
+                let payload = json!({
+                    "model": model.clone(),
+                    "max_tokens": if agent.is_some() { 768 } else { 2048 },
+                    "stream": streamed,
+                    "system": [{
+                        "type": "text",
+                        "text": &system_prompt,
+                        "cache_control": { "type": "ephemeral" }
+                    }],
+                    "messages": msgs
+                });
+                let bytes = serde_json::to_vec(&payload).map_err(|e| format!("JSON 직렬화 실패: {e}"))?;
+                let req = client
+                    .post(&endpoint)
+                    .header("Content-Type", "application/json")
+                    .header("x-api-key", &api_key)
+                    .header("anthropic-version", "2023-06-01");
+                Ok((endpoint.clone(), bytes, req))
+            }
+            ChatProvider::GeminiApi => {
+                let full_url = gemini_url(&endpoint, &model, streamed)?;
+                let _ = validate_api_endpoint_url(&full_url, &api_key)?;
+                let mut contents = Vec::new();
+                for m in &turns {
+                    let role = if m.role == ChatRole::User { "user" } else { "model" };
+                    let txt: String = m.text.chars().take(max_turn_chars).collect();
+                    contents.push(json!({ "role": role, "parts": [{ "text": txt }] }));
+                }
+                contents.push(json!({ "role": "user", "parts": [{ "text": final_user.clone() }] }));
+                let payload = json!({
+                    "system_instruction": { "parts": [{ "text": &system_prompt }] },
+                    "contents": contents
+                });
+                let bytes = serde_json::to_vec(&payload).map_err(|e| format!("JSON 직렬화 실패: {e}"))?;
+                let req = client
+                    .post(&full_url)
+                    .header("Content-Type", "application/json")
+                    .header("x-goog-api-key", &api_key);
+                Ok((full_url.clone(), bytes, req))
+            }
+            _ => Err("잘못된 API 제공자입니다.".to_string()),
+        }
+    };
+
+    // Some servers answer a streaming request with an empty 200 instead of SSE
+    // or JSON. Retry once as plain JSON so such endpoints still work.
+    let mut streamed = true;
+    let (status, raw_body, full, got_delta) = loop {
+        let (target_url, body_bytes, builder) = build_request(streamed)?;
+        let resp = builder
+            .body(body_bytes)
+            .send()
+            .await
+            .map_err(|e| format!("API 연결 실패 ({target_url}): {e}"))?;
+        if cancel.load(Ordering::Acquire) {
+            return Err("요청이 중지되었습니다.".to_string());
+        }
+        let (status, raw_body, full, got_delta) =
+            read_response_body(config.provider, resp, cancel, stream_cb.as_deref()).await?;
+        if status.is_success() && raw_body.iter().all(|b| b.is_ascii_whitespace()) && streamed {
+            streamed = false;
+            continue;
+        }
+        break (status, raw_body, full, got_delta);
+    };
+    if !status.is_success() {
+        let preview: String = String::from_utf8_lossy(&raw_body).chars().take(360).collect();
+        return Err(format!("API 오류 HTTP {status}: {preview}"));
+    }
+    if got_delta {
+        return match full.trim().to_string().as_str() {
+            "" => Err("API 응답에서 텍스트를 추출하지 못했습니다.".to_string()),
+            text => Ok(text.to_string()),
+        };
+    }
+    let val: Value = serde_json::from_slice(&raw_body).map_err(|e| format!("JSON 파싱 실패: {e}"))?;
+
+    let reply = extract_buffered_reply(config.provider, &val);
+
+    match reply.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        Some(text) => Ok(text),
+        None => Err("API 응답에서 텍스트를 추출하지 못했습니다.".to_string()),
+    }
+}
+
+/// Incremental SSE framer: feed it one trimmed line at a time; it collects text
+/// deltas and forwards them through `emit`. Works for label-correct streams and
+/// mislabeled ones alike, since framing is sniffed from `data:` lines.
+pub(super) struct SseStream {
+    provider: ChatProvider,
+    full: String,
+    got_delta: bool,
+    done: bool,
+}
+
+impl SseStream {
+    pub(super) fn new(provider: ChatProvider) -> Self {
+        Self {
+            provider,
+            full: String::new(),
+            got_delta: false,
+            done: false,
+        }
+    }
+
+    /// Feeds one line; returns `true` once the `data: [DONE]` terminator arrived.
+    pub(super) fn push_line(&mut self, line: &str, emit: Option<&(dyn Fn(String) + Send + Sync)>) -> bool {
+        if self.done {
+            return true;
+        }
+        if let Some(payload) = line.strip_prefix("data:") {
+            let payload = payload.trim();
+            if payload == "[DONE]" {
+                self.done = true;
+                return true;
+            }
+            if let Some(delta) = extract_sse_delta(self.provider, payload)
+                && !delta.is_empty()
+            {
+                self.full.push_str(&delta);
+                self.got_delta = true;
+                if let Some(emit) = emit {
+                    emit(delta);
+                }
+            }
+        }
+        false
+    }
+
+    pub(super) fn finish(self) -> (String, bool) {
+        (self.full, self.got_delta)
+    }
+}
+
+/// Reads the whole body chunk by chunk, framing SSE lines as they arrive (live
+/// deltas via `emit`) while buffering everything for the JSON fallback and for
+/// error previews. A trailing line without `\n` is flushed at the end.
+async fn read_response_body(
+    provider: ChatProvider,
+    mut resp: reqwest::Response,
+    cancel: &AtomicBool,
+    emit: Option<&(dyn Fn(String) + Send + Sync)>,
+) -> Result<(reqwest::StatusCode, Vec<u8>, String, bool), String> {
+    let status = resp.status();
+    let mut sse = SseStream::new(provider);
+    let mut line_buf: Vec<u8> = Vec::with_capacity(4096);
+    let mut raw_body: Vec<u8> = Vec::new();
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            return Err("요청이 중지되었습니다.".to_string());
+        }
+        match resp.chunk().await.map_err(|e| format!("응답 읽기 실패: {e}"))? {
+            Some(bytes) => {
+                raw_body.extend_from_slice(&bytes);
+                for &b in bytes.iter() {
+                    if b == b'\n' {
+                        let line = String::from_utf8_lossy(&line_buf);
+                        sse.push_line(line.trim(), emit);
+                        line_buf.clear();
+                    } else if b != b'\r' {
+                        line_buf.push(b);
+                        if line_buf.len() > 256 * 1024 {
+                            return Err("API 응답 한 줄이 너무 깁니다.".to_string());
+                        }
+                    }
+                }
+            }
+            None => break,
+        }
+    }
+    if !line_buf.is_empty() {
+        let line = String::from_utf8_lossy(&line_buf);
+        sse.push_line(line.trim(), emit);
+    }
+    let (full, got_delta) = sse.finish();
+    Ok((status, raw_body, full, got_delta))
+}
+
+/// Builds a Gemini `generateContent` URL (`streaming` selects the SSE variant).
+pub(super) fn gemini_url(endpoint: &str, model: &str, streaming: bool) -> Result<String, String> {
+    let base = endpoint.trim_end_matches('/');
+    let (plain, stream) = if let Some(prefix) = base.strip_suffix(":generateContent") {
+        (
+            format!("{prefix}:generateContent"),
+            format!("{prefix}:streamGenerateContent"),
+        )
+    } else {
+        (
+            format!("{base}/{model}:generateContent"),
+            format!("{base}/{model}:streamGenerateContent"),
+        )
+    };
+    let chosen = if streaming { stream } else { plain };
+    if streaming {
+        // `alt=sse` makes the streaming response SSE-framed (`data: {...}` per line).
+        Ok(format!(
+            "{chosen}{}alt=sse",
+            if chosen.contains('?') { "&" } else { "?" }
+        ))
+    } else {
+        Ok(chosen)
+    }
+}
+
+/// Sends a minimal 1-token request to verify the endpoint, key, and model all
+/// work end to end. Returns a short human summary (`"연결됨 · 320ms · gpt-4o"`).
+pub async fn test_api_connection(config: &ChatConfig, cancel: &AtomicBool) -> Result<String, String> {
+    use std::time::Instant;
+
+    let provider = config.provider;
+    if provider.is_cli() {
+        return Err("CLI 에이전트는 연결 테스트가 필요 없습니다.".to_string());
+    }
+    if !matches!(
+        provider,
+        ChatProvider::OpenAiApi | ChatProvider::AnthropicApi | ChatProvider::GeminiApi
+    ) {
+        return Err("잘못된 API 제공자입니다.".to_string());
+    }
+    let model = config.selected_model(provider);
+    if !is_valid_model_id(&model) {
+        return Err("모델 ID를 입력하세요.".to_string());
+    }
+    let api_key = config.effective_api_key().to_string();
+    let endpoint = config.effective_endpoint().to_string();
+    let (parsed, _is_local) = validate_api_endpoint_url(&endpoint, &api_key)?;
+    if api_key.is_empty() && !is_loopback_endpoint(&parsed) {
+        return Err("API 키를 입력하세요.".to_string());
+    }
+    let client = api_http_client()?;
+
+    let (target_url, body_bytes, req) = match provider {
+        ChatProvider::OpenAiApi => {
+            let payload = serde_json::json!({
+                "model": model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 1,
+            });
             let bytes = serde_json::to_vec(&payload).map_err(|e| format!("JSON 직렬화 실패: {e}"))?;
             let mut req = client.post(&endpoint).header("Content-Type", "application/json");
             if !api_key.is_empty() {
@@ -224,23 +423,10 @@ pub(super) async fn run_api_chat(
             (endpoint, bytes, req)
         }
         ChatProvider::AnthropicApi => {
-            let mut msgs = Vec::new();
-            for m in turns {
-                let role = if m.role == ChatRole::User { "user" } else { "assistant" };
-                let txt: String = neutralize_untrusted(&m.text).chars().take(max_turn_chars).collect();
-                msgs.push(json!({ "role": role, "content": txt }));
-            }
-            msgs.push(json!({ "role": "user", "content": final_user }));
-            let payload = json!({
+            let payload = serde_json::json!({
                 "model": model,
-                "max_tokens": if agent.is_some() { 768 } else { 2048 },
-                "stream": true,
-                "system": [{
-                    "type": "text",
-                    "text": &system_prompt,
-                    "cache_control": { "type": "ephemeral" }
-                }],
-                "messages": msgs
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "ping"}],
             });
             let bytes = serde_json::to_vec(&payload).map_err(|e| format!("JSON 직렬화 실패: {e}"))?;
             let req = client
@@ -251,28 +437,11 @@ pub(super) async fn run_api_chat(
             (endpoint, bytes, req)
         }
         ChatProvider::GeminiApi => {
-            let base = endpoint.trim_end_matches('/');
-            let stream_url = if let Some(prefix) = base.strip_suffix(":generateContent") {
-                format!("{prefix}:streamGenerateContent")
-            } else {
-                format!("{base}/{model}:streamGenerateContent")
-            };
-            // `alt=sse` makes the streaming response SSE-framed (`data: {...}` per line).
-            let full_url = format!(
-                "{stream_url}{}alt=sse",
-                if stream_url.contains('?') { "&" } else { "?" }
-            );
+            let full_url = gemini_url(&endpoint, &model, false)?;
             let _ = validate_api_endpoint_url(&full_url, &api_key)?;
-            let mut contents = Vec::new();
-            for m in turns {
-                let role = if m.role == ChatRole::User { "user" } else { "model" };
-                let txt: String = m.text.chars().take(max_turn_chars).collect();
-                contents.push(json!({ "role": role, "parts": [{ "text": txt }] }));
-            }
-            contents.push(json!({ "role": "user", "parts": [{ "text": final_user }] }));
-            let payload = json!({
-                "system_instruction": { "parts": [{ "text": &system_prompt }] },
-                "contents": contents
+            let payload = serde_json::json!({
+                "contents": [{"role": "user", "parts": [{"text": "ping"}]}],
+                "generationConfig": {"maxOutputTokens": 1},
             });
             let bytes = serde_json::to_vec(&payload).map_err(|e| format!("JSON 직렬화 실패: {e}"))?;
             let req = client
@@ -283,36 +452,31 @@ pub(super) async fn run_api_chat(
         }
         _ => return Err("잘못된 API 제공자입니다.".to_string()),
     };
+    let _ = target_url;
 
-    let resp = builder
-        .body(body_bytes)
-        .send()
+    let started = Instant::now();
+    let resp = tokio::time::timeout(Duration::from_secs(20), req.body(body_bytes).send())
         .await
-        .map_err(|e| format!("API 연결 실패 ({target_url}): {e}"))?;
+        .map_err(|_| "연결 시간 초과 (20초)".to_string())?
+        .map_err(|e| format!("API 연결 실패: {e}"))?;
     if cancel.load(Ordering::Acquire) {
         return Err("요청이 중지되었습니다.".to_string());
     }
     let status = resp.status();
-    // Stream (`text/event-stream`) when the caller wants live deltas and the server
-    // honors `stream: true`; otherwise fall back to the buffered full-JSON read.
-    let wants_stream = stream_cb.is_some();
-    let is_sse = resp
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|ct| ct.contains("text/event-stream"));
-    if wants_stream && is_sse {
-        return stream_sse_reply(config.provider, resp, cancel, &stream_cb).await;
-    }
-    let _ = stream_cb;
     let resp_bytes = resp.bytes().await.map_err(|e| format!("응답 읽기 실패: {e}"))?;
     if !status.is_success() {
-        let preview: String = String::from_utf8_lossy(&resp_bytes).chars().take(360).collect();
-        return Err(format!("API 오류 HTTP {status}: {preview}"));
+        let preview: String = String::from_utf8_lossy(&resp_bytes).chars().take(200).collect();
+        return Err(format!("연결 실패 HTTP {status}: {preview}"));
     }
     let val: Value = serde_json::from_slice(&resp_bytes).map_err(|e| format!("JSON 파싱 실패: {e}"))?;
+    if extract_buffered_reply(provider, &val).is_none_or(|s| s.trim().is_empty()) {
+        return Err("응답은 왔으나 텍스트가 비어 있습니다.".to_string());
+    }
+    Ok(format!("연결됨 · {}ms · {model}", started.elapsed().as_millis()))
+}
 
-    let reply = match config.provider {
+fn extract_buffered_reply(provider: ChatProvider, val: &Value) -> Option<String> {
+    match provider {
         ChatProvider::OpenAiApi => val
             .pointer("/choices/0/message/content")
             .and_then(|v| v.as_str())
@@ -334,10 +498,5 @@ pub(super) async fn run_api_chat(
                     .join("\n")
             }),
         _ => None,
-    };
-
-    match reply.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
-        Some(text) => Ok(text),
-        None => Err("API 응답에서 텍스트를 추출하지 못했습니다.".to_string()),
     }
 }

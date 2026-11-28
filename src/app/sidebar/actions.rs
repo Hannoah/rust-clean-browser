@@ -104,6 +104,10 @@ impl BrowserApp {
             self.rebuild_sidebar_now(false);
             return;
         }
+        if let Some(mid) = action.strip_prefix("chat-custom-model-del:") {
+            self.delete_custom_model(mid);
+            return;
+        }
         if let Some(idx_str) = action.strip_prefix("chat-preset-del:") {
             if let Ok(idx) = idx_str.parse::<usize>()
                 && idx < self.chat_config.custom_presets.len()
@@ -259,6 +263,7 @@ impl BrowserApp {
             }
             "chat-save-settings" => self.save_sidebar_settings(),
             "chat-preset-add" => self.add_sidebar_preset(),
+            "chat-custom-model-add" => self.add_custom_model(),
             "chat-clear-key" => {
                 self.chat_config.set_api_key(String::new());
                 let note = if self.chat_config.save() {
@@ -331,6 +336,10 @@ impl BrowserApp {
         });
         self.rebuild_chrome();
         self.rebuild_sidebar_now(false);
+        // Saving API settings immediately proves the endpoint/key/model end to end.
+        if saved && !self.chat_config.provider.is_cli() {
+            self.test_api_connection();
+        }
     }
 
     pub(in crate::app) fn add_sidebar_preset(&mut self) {
@@ -355,6 +364,32 @@ impl BrowserApp {
         self.chat_config.custom_presets.push(AgentPreset { title, prompt });
         self.chat_config.save();
         self.set_status_note("제어 프리셋 추가됨");
+        self.last_sidebar_html.clear();
+        self.rebuild_chrome();
+        self.rebuild_sidebar_now(false);
+    }
+
+    pub(in crate::app) fn add_custom_model(&mut self) {
+        let id = self
+            .read_sidebar_input("chat-custom-model")
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if self.chat_config.add_custom_model(self.chat_config.provider, id) {
+            self.chat_config.save();
+            self.set_status_note("모델 추가됨 · 모델 선택에서 고르세요");
+        } else {
+            self.set_status_note("추가할 수 없는 모델 ID입니다 (형식·중복·최대 20개 확인)");
+        }
+        self.last_sidebar_html.clear();
+        self.rebuild_chrome();
+        self.rebuild_sidebar_now(false);
+    }
+
+    pub(in crate::app) fn delete_custom_model(&mut self, id: &str) {
+        if self.chat_config.remove_custom_model(self.chat_config.provider, id) {
+            self.chat_config.save();
+            self.set_status_note("모델 삭제됨");
+        }
         self.last_sidebar_html.clear();
         self.rebuild_chrome();
         self.rebuild_sidebar_now(false);

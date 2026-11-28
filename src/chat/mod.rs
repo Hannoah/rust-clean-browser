@@ -12,7 +12,7 @@ mod storage;
 pub use agent::{
     AgentAction, build_agent_action_js, build_agent_extract_js, build_agent_text_check_js, parse_agent_response,
 };
-pub use api::is_loopback_endpoint;
+pub use api::{is_loopback_endpoint, test_api_connection};
 pub use cli::{
     fetch_agy_models, reset_agy_worker, reset_all_cli_workers, reset_claude_worker, shutdown_cli_workers,
     warm_agy_worker, warm_claude_worker,
@@ -635,6 +635,66 @@ mod tests {
     }
 
     #[test]
+    fn usable_providers_need_cli_binary_or_api_key() {
+        let avail_none = CliAvailability::default();
+        let avail_all = CliAvailability {
+            agy: true,
+            claude: true,
+            gemini: true,
+            codex: true,
+        };
+        let cfg = ChatConfig::default();
+        // Nothing installed, no keys: only the active provider shows.
+        assert!(cfg.is_usable(ChatProvider::Agy, ChatProvider::Agy, avail_none));
+        assert!(!cfg.is_usable(ChatProvider::Claude, ChatProvider::Agy, avail_none));
+        assert!(!cfg.is_usable(ChatProvider::OpenAiApi, ChatProvider::Agy, avail_none));
+        // Installed CLIs show even when inactive.
+        assert!(cfg.is_usable(ChatProvider::Claude, ChatProvider::Agy, avail_all));
+        assert!(cfg.is_usable(ChatProvider::Codex, ChatProvider::Agy, avail_all));
+
+        // API with a saved key shows; without one it hides (remote endpoint).
+        let mut keyed = ChatConfig {
+            provider: ChatProvider::OpenAiApi,
+            ..ChatConfig::default()
+        };
+        keyed.set_api_key("sk-test".into());
+        assert!(keyed.is_usable(ChatProvider::OpenAiApi, ChatProvider::Agy, avail_none));
+        assert!(!keyed.is_usable(ChatProvider::AnthropicApi, ChatProvider::Agy, avail_none));
+
+        // Loopback endpoints (keyless local LLMs like Ollama) count as usable.
+        let mut local = ChatConfig {
+            provider: ChatProvider::OpenAiApi,
+            ..ChatConfig::default()
+        };
+        local.set_api_endpoint("http://localhost:11434/v1/chat/completions".into());
+        assert!(local.is_usable(ChatProvider::OpenAiApi, ChatProvider::GeminiApi, avail_none));
+    }
+
+    #[test]
+    fn custom_models_stack_per_endpoint() {
+        let mut cfg = ChatConfig {
+            provider: ChatProvider::OpenAiApi,
+            ..ChatConfig::default()
+        };
+        assert!(cfg.custom_models_for(ChatProvider::OpenAiApi).is_empty());
+        assert!(cfg.add_custom_model(ChatProvider::OpenAiApi, "inkling-2-mini".into()));
+        assert!(cfg.add_custom_model(ChatProvider::OpenAiApi, "gpt-4o".into()));
+        assert!(!cfg.add_custom_model(ChatProvider::OpenAiApi, "gpt-4o".into()));
+        assert!(!cfg.add_custom_model(ChatProvider::OpenAiApi, "bad model id".into()));
+        assert!(!cfg.add_custom_model(ChatProvider::Claude, "sonnet".into()));
+        assert_eq!(
+            cfg.custom_models_for(ChatProvider::OpenAiApi),
+            vec!["inkling-2-mini".to_string(), "gpt-4o".to_string()]
+        );
+        // Removing the selected model falls back to the provider default.
+        cfg.set_selected_model(ChatProvider::OpenAiApi, "gpt-4o".into());
+        assert!(cfg.remove_custom_model(ChatProvider::OpenAiApi, "gpt-4o"));
+        assert_eq!(cfg.selected_model(ChatProvider::OpenAiApi), "gpt-4o-mini");
+        assert!(!cfg.remove_custom_model(ChatProvider::OpenAiApi, "gpt-4o"));
+        assert!(!cfg.remove_custom_model(ChatProvider::AnthropicApi, "x"));
+    }
+
+    #[test]
     fn effort_override_and_auto_default() {
         assert!(is_valid_effort("low") && is_valid_effort("medium") && is_valid_effort("high"));
         assert!(!is_valid_effort("") && !is_valid_effort("ultra") && !is_valid_effort(" low "));
@@ -704,6 +764,53 @@ mod tests {
             Some("Hi there".to_string())
         );
         assert_eq!(super::api::extract_sse_delta(ChatProvider::GeminiApi, "not json"), None);
+    }
+
+    #[test]
+    fn sse_framer_assembles_deltas_and_stops_at_done() {
+        use super::api::SseStream;
+
+        let mut sse = SseStream::new(ChatProvider::OpenAiApi);
+        let emitted = std::sync::Mutex::new(Vec::new());
+        let emit = |d: String| emitted.lock().unwrap().push(d);
+        // Non-SSE lines (event names, comments, blanks) are ignored.
+        assert!(!sse.push_line(": keep-alive", Some(&emit)));
+        assert!(!sse.push_line("event: message", Some(&emit)));
+        assert!(!sse.push_line("", Some(&emit)));
+        assert!(!sse.push_line(r#"data: {"choices":[{"delta":{"content":"Hello "}}]}"#, Some(&emit)));
+        // A pretty-printed JSON line that merely mentions data is not a frame.
+        assert!(!sse.push_line(r#"  "data": "nope","#, Some(&emit)));
+        assert!(!sse.push_line(r#"data: {"choices":[{"delta":{}}]}"#, Some(&emit)));
+        assert!(!sse.push_line(r#"data: {"choices":[{"delta":{"content":"world"}}]}"#, Some(&emit)));
+        // Terminator stops the stream; lines after it are dropped.
+        assert!(sse.push_line("data: [DONE]", Some(&emit)));
+        assert!(sse.push_line(r#"data: {"choices":[{"delta":{"content":"late"}}]}"#, Some(&emit)));
+        let (full, got_delta) = sse.finish();
+        assert!(got_delta);
+        assert_eq!(full, "Hello world");
+        assert_eq!(
+            *emitted.lock().unwrap(),
+            vec!["Hello ".to_string(), "world".to_string()]
+        );
+    }
+
+    #[test]
+    fn gemini_urls_cover_plain_and_streaming_forms() {
+        use super::api::gemini_url;
+
+        assert_eq!(
+            gemini_url("https://example.com/v1beta/models", "m", false).as_deref(),
+            Ok("https://example.com/v1beta/models/m:generateContent")
+        );
+        assert_eq!(
+            gemini_url("https://example.com/v1beta/models", "m", true).as_deref(),
+            Ok("https://example.com/v1beta/models/m:streamGenerateContent?alt=sse")
+        );
+        // An explicit non-stream URL upgrades to the streaming endpoint.
+        assert_eq!(
+            gemini_url("https://example.com/x:generateContent", "m", true).as_deref(),
+            Ok("https://example.com/x:streamGenerateContent?alt=sse")
+        );
     }
 
     #[test]

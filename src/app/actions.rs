@@ -62,6 +62,147 @@ impl BrowserApp {
         });
     }
 
+    /// Checks GitHub Releases for a newer build (`manual` toasts every outcome,
+    /// automatic checks only announce an actual update). Throttled to once a day.
+    pub(super) fn maybe_check_for_updates(&mut self, manual: bool) {
+        if self.update_busy || self.update_info.is_some() {
+            return;
+        }
+        let now = crate::update::now_secs();
+        if !manual && !crate::update::should_check(self.prefs.update_last_check, now) {
+            return;
+        }
+        self.update_busy = true;
+        if manual {
+            self.set_status_note("업데이트 확인 중…");
+            self.rebuild_chrome();
+        }
+        let bus = self.bus.clone();
+        tokio::spawn(async move {
+            let outcome = crate::update::fetch_latest(env!("CARGO_PKG_VERSION")).await;
+            bus.send(AppEvent::UpdateCheckDone { manual, outcome });
+        });
+    }
+
+    pub(super) fn on_update_check_done(
+        &mut self,
+        manual: bool,
+        outcome: Result<Option<crate::update::UpdateInfo>, String>,
+    ) {
+        self.update_busy = false;
+        self.prefs.update_last_check = crate::update::now_secs();
+        self.prefs.save();
+        match outcome {
+            Ok(Some(info)) => {
+                if self.prefs.update_skipped == info.version {
+                    return;
+                }
+                self.update_info = Some(info.clone());
+                self.set_status_note(&format!("새 버전 {} 나옴 · 상단 업데이트 버튼으로 설치", info.version));
+                self.rebuild_chrome();
+            }
+            Ok(None) => {
+                if manual {
+                    self.set_status_note("최신 버전입니다");
+                    self.rebuild_chrome();
+                }
+            }
+            Err(e) => {
+                if manual {
+                    let short: String = e.chars().take(120).collect();
+                    self.set_status_note(&short);
+                    self.rebuild_chrome();
+                }
+            }
+        }
+    }
+
+    /// Downloads the pending Setup exe, then hands it to the OS installer.
+    pub(super) fn apply_update(&mut self) {
+        let Some(info) = self.update_info.clone() else {
+            self.set_status_note("설치할 업데이트가 없습니다");
+            return self.rebuild_chrome();
+        };
+        if self.update_busy {
+            return;
+        }
+        self.update_busy = true;
+        self.set_status_note("업데이트 다운로드 중…");
+        self.rebuild_chrome();
+        let bus = self.bus.clone();
+        tokio::spawn(async move {
+            let result = match crate::update::download_setup(&info).await {
+                Ok(path) => Ok(path.to_string_lossy().into_owned()),
+                Err(e) => Err(e),
+            };
+            bus.send(AppEvent::UpdateDownloadDone(result));
+        });
+    }
+
+    pub(super) fn on_update_download_done(&mut self, result: Result<String, String>) {
+        self.update_busy = false;
+        match result {
+            Ok(path) => match crate::update::launch_installer(std::path::Path::new(&path)) {
+                Ok(()) => self.set_status_note("설치 프로그램을 실행했습니다"),
+                Err(e) => self.set_status_note(&e),
+            },
+            Err(e) => self.set_status_note(&e),
+        }
+        self.rebuild_chrome();
+    }
+
+    /// Runs a minimal 1-token request against the active API provider to prove the
+    /// endpoint, key, and model work end to end. The result shows in the settings
+    /// card; it never touches CLI binaries.
+    pub(super) fn test_api_connection(&mut self) {
+        if self.chat_config.provider.is_cli() {
+            return;
+        }
+        if self.api_test_busy {
+            return;
+        }
+        self.api_test_busy = true;
+        self.set_status_note("연결 테스트 중…");
+        self.rebuild_chrome();
+        self.last_sidebar_html.clear();
+        self.rebuild_sidebar_now(false);
+        let config = self.chat_config.clone();
+        let bus = self.bus.clone();
+        tokio::spawn(async move {
+            let flag = std::sync::atomic::AtomicBool::new(false);
+            let result = crate::chat::test_api_connection(&config, &flag).await;
+            let (ok, detail) = match result {
+                Ok(summary) => (true, summary),
+                Err(e) => (false, e),
+            };
+            bus.send(AppEvent::ApiTestDone {
+                provider: config.provider.id().to_string(),
+                ok,
+                detail,
+            });
+        });
+    }
+
+    pub(super) fn on_api_test_done(&mut self, provider: String, ok: bool, detail: String) {
+        self.api_test_busy = false;
+        self.api_conn = Some((provider, ok, detail.clone()));
+        let short: String = detail.chars().take(120).collect();
+        self.set_status_note(&short);
+        self.rebuild_chrome();
+        self.last_sidebar_html.clear();
+        self.rebuild_sidebar_now(false);
+    }
+
+    /// Hides the pending update until its version is superseded by a newer one.
+    pub(super) fn skip_update(&mut self) {
+        if let Some(info) = self.update_info.take() {
+            self.prefs.update_skipped = info.version;
+            self.prefs.save();
+            self.set_status_note("이 버전 건너뛰기");
+        }
+        self.rebuild_chrome();
+    }
+
     /// Copy the active page's citation (`ieee`/`apa`/`slide`/`mla`) to the clipboard.
     fn copy_citation(&mut self, style: &str) {
         self.ensure_active_valid();
@@ -132,6 +273,10 @@ impl BrowserApp {
                     self.rebuild_chrome();
                 }
                 "translate" => self.toggle_translate(),
+                "apply-update" => self.apply_update(),
+                "check-updates" => self.maybe_check_for_updates(true),
+                "skip-update" => self.skip_update(),
+                "chat-test-connection" => self.test_api_connection(),
                 "toggle-js" => self.toggle_js_mode(),
                 "toggle-reader" => self.toggle_reader_mode(),
                 "toggle-filter" => {
@@ -649,6 +794,9 @@ impl BrowserApp {
                     provider_label,
                     delta,
                 } => self.on_chat_stream_chunk(req_id, provider_label, delta),
+                AppEvent::UpdateCheckDone { manual, outcome } => self.on_update_check_done(manual, outcome),
+                AppEvent::UpdateDownloadDone(result) => self.on_update_download_done(result),
+                AppEvent::ApiTestDone { provider, ok, detail } => self.on_api_test_done(provider, ok, detail),
                 AppEvent::AgentStepReady { req_id } => self.on_agent_step_ready(req_id),
                 AppEvent::AgentLoadSettled { req_id, wait_gen } => self.on_agent_load_settled(req_id, wait_gen),
                 AppEvent::AgentWaitCheck {

@@ -29,6 +29,9 @@ pub struct ChatConfig {
     /// Claude CLI agents read it; other providers ignore it.
     #[serde(default)]
     pub effort_levels: BTreeMap<String, String>,
+    /// User-registered model IDs per API provider id (several models, one endpoint).
+    #[serde(default)]
+    pub custom_models: BTreeMap<String, Vec<String>>,
     pub custom_presets: Vec<AgentPreset>,
 }
 
@@ -46,6 +49,7 @@ impl Default for ChatConfig {
             provider_models: BTreeMap::new(),
             control_models: BTreeMap::new(),
             effort_levels: BTreeMap::new(),
+            custom_models: BTreeMap::new(),
             custom_presets: Vec::new(),
         }
     }
@@ -221,6 +225,45 @@ impl ChatConfig {
         }
     }
 
+    /// User-registered model IDs for `provider` (API endpoints only).
+    pub fn custom_models_for(&self, provider: ChatProvider) -> Vec<String> {
+        self.custom_models.get(provider.id()).cloned().unwrap_or_default()
+    }
+
+    /// Registers another model ID on the same endpoint. Returns `false` for
+    /// invalid IDs, duplicates, and lists already holding 20 entries.
+    pub fn add_custom_model(&mut self, provider: ChatProvider, id: String) -> bool {
+        if provider.is_cli() || !is_valid_model_id(id.trim()) {
+            return false;
+        }
+        let list = self.custom_models.entry(provider.id().to_string()).or_default();
+        let trimmed = id.trim().to_string();
+        if list.iter().any(|m| m == &trimmed) || list.len() >= 20 {
+            return false;
+        }
+        list.push(trimmed);
+        true
+    }
+
+    /// Drops a user-registered model ID; a selected model that is removed falls
+    /// back to the provider default.
+    pub fn remove_custom_model(&mut self, provider: ChatProvider, id: &str) -> bool {
+        let trimmed = id.trim();
+        let removed = self
+            .custom_models
+            .get_mut(provider.id())
+            .map(|list| {
+                let before = list.len();
+                list.retain(|m| m != trimmed);
+                list.len() != before
+            })
+            .unwrap_or(false);
+        if removed && self.selected_model(provider) == trimmed {
+            self.set_selected_model(provider, String::new());
+        }
+        removed
+    }
+
     pub fn set_control_model(&mut self, provider: ChatProvider, model: String) {
         let trimmed = model.trim().to_string();
         if trimmed.is_empty() {
@@ -245,6 +288,46 @@ impl ChatConfig {
         } else if is_valid_effort(&trimmed) {
             self.effort_levels.insert(provider.id().to_string(), trimmed);
         }
+    }
+
+    /// Whether `provider` is selectable right now: CLI agents need their login
+    /// binary on PATH, API providers need a saved key (or a loopback endpoint
+    /// for keyless local LLMs like Ollama). The active provider always counts
+    /// as usable so the current choice never vanishes from the list.
+    pub fn is_usable(&self, provider: ChatProvider, active: ChatProvider, avail: CliAvailability) -> bool {
+        if provider == active {
+            return true;
+        }
+        if provider.is_cli() {
+            return avail.is_available(provider);
+        }
+        if self.has_key_for(provider) {
+            return true;
+        }
+        url::Url::parse(self.endpoint_for(provider)).is_ok_and(|u| super::is_loopback_endpoint(&u))
+    }
+
+    fn has_key_for(&self, provider: ChatProvider) -> bool {
+        if self.api_keys.get(provider.id()).is_some_and(|k| !k.trim().is_empty()) {
+            return true;
+        }
+        self.api_keys.is_empty() && !self.api_key.trim().is_empty()
+    }
+
+    fn endpoint_for(&self, provider: ChatProvider) -> &str {
+        if let Some(ep) = self.api_endpoints.get(provider.id()) {
+            let trimmed = ep.trim();
+            if !trimmed.is_empty() {
+                return trimmed;
+            }
+        }
+        if self.api_endpoints.is_empty() {
+            let trimmed = self.api_endpoint.trim();
+            if !trimmed.is_empty() {
+                return trimmed;
+            }
+        }
+        provider.default_endpoint()
     }
 
     /// Effective `--effort` flag: the stored override, or auto (`low` in agent-control
