@@ -104,6 +104,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surf
   height: 46px; padding: 0 8px 0 14px;
   border-bottom: 1px solid var(--divider);
   background: var(--surface); flex-shrink: 0;
+  /* Own stacking layer: Blitz hit-tests don't clip to scroll containers, so without this the
+     scrolled-away messages/settings content above the list swallowed header clicks. */
+  position: relative; z-index: 2;
 }
 .sb-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--text); letter-spacing: -0.015em; min-width: 0; }
 .sb-title-ico {
@@ -392,6 +395,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surf
   margin: 0 12px 6px; border-radius: 14px;
   border: 1px solid var(--border-strong); background: var(--surface);
   box-shadow: var(--shadow-md); flex-shrink: 0; overflow: hidden;
+  position: relative; z-index: 2; /* above the message list for hit-testing, like .sb-hdr */
 }
 .sheet-hdr {
   display: flex; align-items: center; justify-content: space-between;
@@ -425,7 +429,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--surf
 .sheet-ftr:hover { background: var(--hover); color: var(--text); }
 
 /* ── Composer ── */
-.sb-comp { padding: 6px 12px 10px; background: var(--surface); flex-shrink: 0; }
+.sb-comp { padding: 6px 12px 10px; background: var(--surface); flex-shrink: 0; position: relative; z-index: 2; }
 .composer {
   display: flex; flex-direction: column; gap: 8px;
   padding: 10px 10px 9px 14px; border-radius: 18px;
