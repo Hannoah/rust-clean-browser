@@ -4,6 +4,7 @@
 mod actions;
 mod agent;
 mod live;
+mod tools;
 
 pub(in crate::app) use live::LiveActivity;
 
@@ -78,6 +79,8 @@ pub(in crate::app) struct AgentRun {
     pub awaiting_text: Option<AgentTextWait>,
     pub load_wait_seq: u64,
     pub extracted_data: Option<String>,
+    /// PNG (base64) from the `screenshot` tool, sent with the next round only.
+    pub screenshot: Option<String>,
     /// Hosts the user approved during this run.
     pub trusted_hosts: Vec<String>,
     pub awaiting_confirm: Option<PendingConfirm>,

@@ -619,6 +619,7 @@ impl BrowserApp {
                 awaiting_text: None,
                 load_wait_seq: 0,
                 extracted_data: None,
+                screenshot: None,
                 trusted_hosts,
                 awaiting_confirm: None,
             });
@@ -760,13 +761,15 @@ impl BrowserApp {
         let history = self.chat_messages[..history_len].to_vec();
         let agent_ctx = self
             .agent_run
-            .as_ref()
+            .as_mut()
             .filter(|r| r.req_id == req_id)
             .map(|r| AgentContext {
                 step: r.step,
                 max_steps: r.max_steps,
                 action_log: r.action_log.clone(),
                 notes: r.notes.clone(),
+                // A screenshot is shown to the model once, on the round right after it was taken.
+                image_png_b64: r.screenshot.take(),
             });
         let model_id = if agent_ctx.is_some() {
             config.effective_control_model(config.provider)

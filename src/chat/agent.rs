@@ -58,6 +58,43 @@ pub enum AgentAction {
     Done {
         summary: String,
     },
+    // ── Data tools: their result text is handed to the next round ([EXTRACTED DATA]) ──
+    /// Find text on the page, scroll to the first hit, return count + snippets.
+    FindInPage {
+        text: String,
+    },
+    /// Read another tab's text without switching to it.
+    ReadTab {
+        tab: usize,
+    },
+    /// Show a page of the open PDF and return its text.
+    PdfPage {
+        page: u32,
+    },
+    /// Search the whole open PDF; jump to the first hit.
+    PdfSearch {
+        text: String,
+    },
+    /// Fill several fields at once (never submits).
+    FillForm {
+        fields: Vec<(usize, String)>,
+    },
+    BookmarksSearch {
+        query: String,
+    },
+    HistorySearch {
+        query: String,
+    },
+    /// Citation for the current page: `apa` | `ieee` | `mla` | `slide`.
+    Cite {
+        style: String,
+    },
+    /// Wait until the page stops loading resources.
+    WaitForNetworkIdle {
+        timeout_ms: u64,
+    },
+    /// Capture the visible page as an image for the next round (vision-capable providers).
+    Screenshot,
 }
 
 impl AgentAction {
@@ -80,6 +117,16 @@ impl AgentAction {
             Self::Reload => "reload",
             Self::Wait { .. } | Self::WaitFor { .. } => "wait",
             Self::Done { .. } => "done",
+            Self::FindInPage { .. } => "find_in_page",
+            Self::ReadTab { .. } => "read_tab",
+            Self::PdfPage { .. } => "pdf_page",
+            Self::PdfSearch { .. } => "pdf_search",
+            Self::FillForm { .. } => "fill_form",
+            Self::BookmarksSearch { .. } => "bookmarks_search",
+            Self::HistorySearch { .. } => "history_search",
+            Self::Cite { .. } => "cite",
+            Self::WaitForNetworkIdle { .. } => "wait_for_network_idle",
+            Self::Screenshot => "screenshot",
         }
     }
 
@@ -125,6 +172,16 @@ impl AgentAction {
                 format!("\"{}\" 표시 대기", text.chars().take(24).collect::<String>())
             }
             Self::Done { .. } => "작업 완료".to_string(),
+            Self::FindInPage { text } => format!("\"{}\" 찾기", text.chars().take(24).collect::<String>()),
+            Self::ReadTab { tab } => format!("탭 [{tab}] 읽기"),
+            Self::PdfPage { page } => format!("PDF {page}쪽 읽기"),
+            Self::PdfSearch { text } => format!("PDF에서 \"{}\" 검색", text.chars().take(24).collect::<String>()),
+            Self::FillForm { fields } => format!("입력란 {}개 채우기", fields.len()),
+            Self::BookmarksSearch { query } => format!("북마크 검색: {}", query.chars().take(24).collect::<String>()),
+            Self::HistorySearch { query } => format!("방문 기록 검색: {}", query.chars().take(24).collect::<String>()),
+            Self::Cite { style } => format!("출처 인용문 ({style})"),
+            Self::WaitForNetworkIdle { .. } => "로딩 완료 대기".to_string(),
+            Self::Screenshot => "화면 캡처".to_string(),
         }
     }
 }
@@ -694,6 +751,66 @@ pub(super) fn parse_action_value(val: &Value) -> Option<AgentAction> {
                     .clamp(300, 8000),
             })
         }
+        "find_in_page" | "find" => {
+            let text = val
+                .get("text")
+                .or_else(|| val.get("query"))?
+                .as_str()?
+                .trim()
+                .to_string();
+            (!text.is_empty()).then_some(AgentAction::FindInPage { text })
+        }
+        "read_tab" => Some(AgentAction::ReadTab {
+            tab: val.get("tab")?.as_u64()? as usize,
+        }),
+        "pdf_page" => Some(AgentAction::PdfPage {
+            page: val.get("page")?.as_u64()?.clamp(1, 100_000) as u32,
+        }),
+        "pdf_search" => {
+            let text = val
+                .get("text")
+                .or_else(|| val.get("query"))?
+                .as_str()?
+                .trim()
+                .to_string();
+            (!text.is_empty()).then_some(AgentAction::PdfSearch { text })
+        }
+        "fill_form" => {
+            let fields: Vec<(usize, String)> = val
+                .get("fields")?
+                .as_array()?
+                .iter()
+                .filter_map(|f| {
+                    let value = f.get("value").or_else(|| f.get("text"))?;
+                    let value = value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string());
+                    Some((parse_target_id(f)?, value))
+                })
+                .take(30)
+                .collect();
+            (!fields.is_empty()).then_some(AgentAction::FillForm { fields })
+        }
+        "bookmarks_search" | "bookmark_search" => Some(AgentAction::BookmarksSearch {
+            query: val.get("query")?.as_str()?.trim().to_string(),
+        }),
+        "history_search" => Some(AgentAction::HistorySearch {
+            query: val.get("query")?.as_str()?.trim().to_string(),
+        }),
+        "cite" => Some(AgentAction::Cite {
+            style: val
+                .get("style")
+                .and_then(|v| v.as_str())
+                .unwrap_or("apa")
+                .trim()
+                .to_ascii_lowercase(),
+        }),
+        "wait_for_network_idle" | "wait_idle" => Some(AgentAction::WaitForNetworkIdle {
+            timeout_ms: val
+                .get("timeout_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(6000)
+                .clamp(500, 15_000),
+        }),
+        "screenshot" => Some(AgentAction::Screenshot),
         "done" => Some(AgentAction::Done {
             summary: val
                 .get("summary")

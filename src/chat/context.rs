@@ -157,6 +157,8 @@ pub struct AgentContext {
     pub max_steps: usize,
     pub action_log: Vec<String>,
     pub notes: Vec<String>,
+    /// PNG (base64) from the agent's `screenshot` tool, attached to this round's user turn.
+    pub image_png_b64: Option<String>,
 }
 
 pub const AGENT_SNAPSHOT_JS: &str = r#"(function(){try{

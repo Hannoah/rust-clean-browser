@@ -11,6 +11,7 @@ Output rule (STRICT):\n\
 - For the final step, add `\"done\":true,\"summary\":\"한국어 요약\"` (or `{\"action\":\"done\",\"summary\":\"한국어 요약\"}`).\n\
 Batch up to 6 actions: `{\"actions\":[...],\"done\":true,\"summary\":\"...\"}` or single `{\"action\":\"click\",\"target\":ID}`.\n\
 Actions: click{target} | click_text{text} | hover{target} | type{target,text,clear,submit} | select{target,value} | press{key} | scroll{direction,amount,target?} | navigate{url} | back | forward | reload | wait{ms} | wait_for{text,timeout_ms} | open_tab{url} | switch_tab{tab} | close_tab{tab} | extract{kind:\"tables|links|text|all\",copy} | done{summary}.\n\
+Data tools (result arrives next round as [EXTRACTED DATA]; prefer them over scrolling/switching): find_in_page{text} jumps to text and returns snippets | read_tab{tab} reads another tab without switching | pdf_page{page} / pdf_search{text} for the open PDF | fill_form{fields:[{target,value}]} fills many fields (never submits) | bookmarks_search{query} | history_search{query} | cite{style:\"apa|ieee|mla|slide\"} | wait_for_network_idle{timeout_ms} | screenshot (visible page as an image; use only when text/tables are not enough).\n\
 Optional top-level `\"note\":\"...\"` persists facts across tabs. Never repeat Previous actions. Stop on login/captcha with `done`.";
 
 pub(super) fn format_agent_state_block(agent: &AgentContext) -> String {

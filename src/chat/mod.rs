@@ -9,6 +9,7 @@ mod context;
 mod markdown;
 mod prompt;
 mod storage;
+mod tools;
 
 pub use activity::{ActivityStep, Progress, ProgressCb, apply_step};
 pub use agent::{
@@ -25,6 +26,7 @@ pub use context::{
 };
 pub use markdown::render_markdown_to_html;
 pub use storage::{AgentPreset, ChatConfig, ChatHistory, ChatMessage, ChatRole, ChatSession};
+pub use tools::{fill_form_js, find_in_page_js, network_idle_js, pdf_page_js, pdf_search_js};
 
 use serde::{Deserialize, Serialize};
 use std::process::Command;
@@ -471,6 +473,28 @@ pub fn compact_prompt(history: &[ChatMessage]) -> String {
     out
 }
 
+/// Inverse of `crate::screenshot::base64` (standard alphabet, padded).
+pub(crate) fn decode_base64(s: &str) -> Option<Vec<u8>> {
+    let val = |c: u8| match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    let bytes = s.trim_end_matches('=').as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() * 3 / 4);
+    for chunk in bytes.chunks(4) {
+        let mut n = 0u32;
+        for (i, &c) in chunk.iter().enumerate() {
+            n |= u32::from(val(c)?) << (18 - 6 * i);
+        }
+        out.extend_from_slice(&n.to_be_bytes()[1..chunk.len()]);
+    }
+    Some(out)
+}
+
 pub fn display_model_label(provider: ChatProvider, model_id: &str, agy_models: &[ModelOption]) -> String {
     let trimmed = model_id.trim();
     if trimmed.is_empty() {
@@ -564,9 +588,12 @@ pub async fn run_chat(
             config.selected_model(provider)
         };
         let effort = config.effective_effort(provider, agent.is_some());
-        tokio::task::spawn_blocking(move || run_cli_agent(provider, &model, &effort, &prompt, &cancel))
-            .await
-            .map_err(|e| format!("에이전트 실행 오류: {e}"))?
+        let image = agent.as_ref().and_then(|a| a.image_png_b64.clone());
+        tokio::task::spawn_blocking(move || {
+            run_cli_agent(provider, &model, &effort, &prompt, image.as_deref(), &cancel)
+        })
+        .await
+        .map_err(|e| format!("에이전트 실행 오류: {e}"))?
     } else {
         let _ = progress; // API replies stream text; the app marks "응답 작성 중" on the first chunk.
         run_api_chat(
@@ -996,6 +1023,7 @@ mod tests {
             max_steps: 10,
             action_log: vec!["OK: 요소 [1] 클릭".into()],
             notes: vec!["board=12".into()],
+            image_png_b64: None,
         };
         let page = PageContext {
             title: "Board".into(),

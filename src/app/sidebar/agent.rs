@@ -643,7 +643,7 @@ impl BrowserApp {
             }
         }
         if !confirmed
-            && let AgentAction::SwitchTab { tab } = &action
+            && let AgentAction::SwitchTab { tab } | AgentAction::ReadTab { tab } = &action
             && let Some(target_tab) = self.tabs.get(*tab)
             && let Some(host) = url::Url::parse(&target_tab.url)
                 .ok()
@@ -910,6 +910,7 @@ impl BrowserApp {
                 };
                 self.poll_agent_text_wait(req_id, wait_gen);
             }
+            _ if self.execute_agent_tool(req_id, &action, desc.clone()) => {}
             _ => {
                 let Some(js) = build_agent_action_js(&action) else {
                     self.on_agent_action_done(req_id, false, "지원되지 않는 액션".to_string(), 0);

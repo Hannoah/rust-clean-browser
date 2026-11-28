@@ -223,6 +223,19 @@ pub enum AppEvent {
     },
     /// Once a second while `req_id` runs: refresh the "생각 중 (Ns)…" line.
     ChatLiveTick(u64),
+    /// An agent data tool's page script is still working (`{pending:true}`): poll again.
+    AgentToolPending {
+        req_id: u64,
+        js: String,
+        desc: String,
+        deadline: std::time::Instant,
+    },
+    AgentToolRerun {
+        req_id: u64,
+        js: String,
+        desc: String,
+        deadline: std::time::Instant,
+    },
     /// Model listing from the active API endpoint (`Err` = could not list; presets are shown).
     ApiModelsLoaded {
         provider: crate::chat::ChatProvider,

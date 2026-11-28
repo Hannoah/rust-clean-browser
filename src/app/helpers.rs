@@ -62,6 +62,15 @@ pub(super) fn focus_main_window(win: &dyn winit::window::Window, activate: bool)
     }
 }
 
+/// Raw Win32 handle of a winit window (for Win32 calls such as the agent's screenshot).
+pub(super) fn window_hwnd(win: &dyn winit::window::Window) -> Option<isize> {
+    use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match win.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+        _ => None,
+    }
+}
+
 /// Captures pointer input onto the main window (so sidebar sash dragging keeps tracking even if
 /// the cursor crosses over a child WebView2 HWND or outside the window).
 pub(super) fn capture_mouse(win: &dyn winit::window::Window) {
