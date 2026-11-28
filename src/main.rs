@@ -15,6 +15,7 @@ mod net;
 mod page_cache;
 mod pdfjs;
 mod prefs;
+mod screenshot;
 mod single;
 mod tabs;
 mod translate;

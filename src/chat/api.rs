@@ -149,6 +149,7 @@ pub(super) async fn run_api_chat(
     } else {
         user_turn
     };
+    let image = agent.and_then(|a| a.image_png_b64.as_deref());
     let system_prompt = if let Some(ctx) = agent {
         format!("{SYSTEM_PROMPT}\n\n{}", format_agent_instructions(ctx))
     } else if let Some(s) = summary {
@@ -169,7 +170,13 @@ pub(super) async fn run_api_chat(
                     let txt: String = neutralize_untrusted(&m.text).chars().take(max_turn_chars).collect();
                     msgs.push(json!({ "role": role, "content": txt }));
                 }
-                msgs.push(json!({ "role": "user", "content": final_user.clone() }));
+                msgs.push(match image {
+                    Some(b64) => json!({ "role": "user", "content": [
+                        { "type": "text", "text": final_user.clone() },
+                        { "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{b64}") } },
+                    ]}),
+                    None => json!({ "role": "user", "content": final_user.clone() }),
+                });
                 let payload = json!({ "model": model.clone(), "messages": msgs.clone(), "stream": streamed });
                 let bytes = serde_json::to_vec(&payload).map_err(|e| format!("JSON 직렬화 실패: {e}"))?;
                 let mut req = client.post(&endpoint).header("Content-Type", "application/json");
@@ -185,7 +192,13 @@ pub(super) async fn run_api_chat(
                     let txt: String = neutralize_untrusted(&m.text).chars().take(max_turn_chars).collect();
                     msgs.push(json!({ "role": role, "content": txt }));
                 }
-                msgs.push(json!({ "role": "user", "content": final_user.clone() }));
+                msgs.push(match image {
+                    Some(b64) => json!({ "role": "user", "content": [
+                        { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": b64 } },
+                        { "type": "text", "text": final_user.clone() },
+                    ]}),
+                    None => json!({ "role": "user", "content": final_user.clone() }),
+                });
                 let payload = json!({
                     "model": model.clone(),
                     "max_tokens": if agent.is_some() { 768 } else { 2048 },
@@ -214,7 +227,11 @@ pub(super) async fn run_api_chat(
                     let txt: String = m.text.chars().take(max_turn_chars).collect();
                     contents.push(json!({ "role": role, "parts": [{ "text": txt }] }));
                 }
-                contents.push(json!({ "role": "user", "parts": [{ "text": final_user.clone() }] }));
+                let mut parts = vec![json!({ "text": final_user.clone() })];
+                if let Some(b64) = image {
+                    parts.push(json!({ "inline_data": { "mime_type": "image/png", "data": b64 } }));
+                }
+                contents.push(json!({ "role": "user", "parts": parts }));
                 let payload = json!({
                     "system_instruction": { "parts": [{ "text": &system_prompt }] },
                     "contents": contents

@@ -826,6 +826,22 @@ impl BrowserApp {
                 AppEvent::ChatCompactDone(result) => self.on_chat_compact_done(result),
                 AppEvent::ChatProgress { req_id, progress } => self.on_chat_progress(req_id, progress),
                 AppEvent::ChatLiveTick(req_id) => self.on_chat_live_tick(req_id),
+                AppEvent::AgentToolPending {
+                    req_id,
+                    js,
+                    desc,
+                    deadline,
+                } => self.on_agent_tool_pending(req_id, js, desc, deadline),
+                AppEvent::AgentToolRerun {
+                    req_id,
+                    js,
+                    desc,
+                    deadline,
+                } => {
+                    if self.chat_inflight.as_ref().is_some_and(|(id, _, _)| *id == req_id) {
+                        self.run_agent_data_js(req_id, js, desc, deadline);
+                    }
+                }
                 AppEvent::ApiModelsLoaded { provider, result } => self.on_api_models_loaded(provider, result),
                 AppEvent::ChatRevealTick(reveal_gen) => self.on_chat_reveal_tick(reveal_gen),
                 AppEvent::ChatScriptTimeout { req_id, script_seq } => self.on_chat_script_timeout(req_id, script_seq),
