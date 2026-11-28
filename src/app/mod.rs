@@ -136,6 +136,12 @@ pub enum AppEvent {
         page_url: String,
         links: Vec<favicon::Link>,
     },
+    /// A file dropped on a JS-mode page that the page did not take (`CHAT_DROP_SCRIPT`).
+    ChatDroppedFile {
+        tab_id: u64,
+        name: String,
+        b64: String,
+    },
     /// A JS-mode page started/stopped using camera, mic or audible media (`MEDIA_SCRIPT`).
     WebViewMedia {
         tab_id: u64,

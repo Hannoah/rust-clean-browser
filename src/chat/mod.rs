@@ -20,7 +20,7 @@ pub use agent::{
 pub use api::{fetch_api_models, is_loopback_endpoint, test_api_connection};
 pub use attach::{
     AttachKind, Attachment, MAX_IMAGES, embed as embed_attachments, from_rgba as attachment_from_rgba,
-    load_file as load_attachment, split_display as split_attachments,
+    load_bytes as attachment_from_bytes, load_file as load_attachment, split_display as split_attachments,
 };
 pub use cli::{
     fetch_agy_models, reset_agy_worker, reset_all_cli_workers, reset_claude_worker, shutdown_cli_workers,
