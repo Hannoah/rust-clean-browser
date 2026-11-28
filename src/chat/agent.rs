@@ -611,7 +611,7 @@ pub(super) fn find_closing_fence(s: &str) -> Option<usize> {
             i += 1;
             continue;
         }
-        if s[i..].starts_with("```") {
+        if bytes[i..].starts_with(b"```") {
             return Some(i);
         }
         i += 1;
@@ -619,47 +619,64 @@ pub(super) fn find_closing_fence(s: &str) -> Option<usize> {
     None
 }
 
+/// Collects every ```browser-action block, fenced on its own line or inline
+/// (`` ```browser-action {...}``` ``), plus a bare JSON plan left after them.
+/// Models often split one step into back-to-back blocks (action, then `done`);
+/// they are merged in order so none of them leaks into the chat as raw JSON.
 pub fn parse_agent_response(reply: &str) -> (String, Option<AgentPlan>) {
-    let mut best_span: Option<(usize, usize, AgentPlan)> = None;
-    let mut offset = 0usize;
-    while let Some(rel_start) = reply[offset..].find("```") {
-        let fence_start = offset + rel_start;
-        let after_ticks = &reply[fence_start + 3..];
-        let Some(nl_rel) = after_ticks.find('\n') else {
+    const OPEN: &str = "```browser-action";
+    let mut plan: Option<AgentPlan> = None;
+    let mut text: Vec<&str> = Vec::new();
+    let mut rest = reply;
+    while let Some(start) = rest.to_ascii_lowercase().find(OPEN) {
+        let body_start = start + OPEN.len();
+        let Some(end_rel) = find_closing_fence(&rest[body_start..]) else {
             break;
         };
-        let lang = after_ticks[..nl_rel].trim().to_ascii_lowercase();
-        let body_start = fence_start + 3 + nl_rel + 1;
-        let Some(end_rel) = find_closing_fence(&reply[body_start..]) else {
-            break;
-        };
-        let body = reply[body_start..body_start + end_rel].trim();
-        let fence_end = body_start + end_rel + 3;
-        if lang == "browser-action"
-            && let Some(plan) = parse_action_plan_json(body)
-        {
-            best_span = Some((fence_start, fence_end, plan));
-            break;
+        let body = rest[body_start..body_start + end_rel].trim();
+        let block_end = body_start + end_rel + 3;
+        match parse_action_plan_json(body) {
+            Some(p) => {
+                text.push(&rest[..start]);
+                merge_plan(&mut plan, p);
+            }
+            None => text.push(&rest[..block_end]),
         }
-        offset = fence_end;
+        rest = &rest[block_end..];
     }
+    match parse_action_plan_json(rest.trim()) {
+        Some(p) => merge_plan(&mut plan, p),
+        None => text.push(rest),
+    }
+    let cleaned = text
+        .iter()
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    match plan {
+        Some(p) => (cleaned, Some(p)),
+        None => (reply.to_string(), None),
+    }
+}
 
-    if let Some((start, end, plan)) = best_span {
-        let before = reply[..start].trim_end();
-        let after = reply[end..].trim_start();
-        let cleaned = match (before.is_empty(), after.is_empty()) {
-            (true, true) => String::new(),
-            (false, true) => before.to_string(),
-            (true, false) => after.to_string(),
-            (false, false) => format!("{before}\n\n{after}"),
-        };
-        return (cleaned, Some(plan));
+fn merge_plan(acc: &mut Option<AgentPlan>, next: AgentPlan) {
+    let Some(a) = acc else {
+        *acc = Some(next);
+        return;
+    };
+    if a.finish_after {
+        return; // already finished; later blocks are noise
     }
-
-    if let Some(plan) = parse_action_plan_json(reply.trim()) {
-        return (String::new(), Some(plan));
+    let room = 6usize.saturating_sub(a.actions.len());
+    a.actions.extend(next.actions.into_iter().take(room));
+    a.finish_after = next.finish_after;
+    if !next.summary.is_empty() {
+        a.summary = next.summary;
     }
-    (reply.to_string(), None)
+    if !next.note.is_empty() {
+        a.note = next.note;
+    }
 }
 
 pub(super) fn parse_action_plan_json(raw: &str) -> Option<AgentPlan> {

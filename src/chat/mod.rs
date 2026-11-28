@@ -1047,6 +1047,29 @@ mod tests {
     }
 
     #[test]
+    fn merges_inline_and_back_to_back_action_blocks() {
+        // Real replies that leaked raw JSON into the chat (no newline after the fence).
+        let two = "```browser-action {\"action\":\"click\",\"target\":18}``````browser-action {\"action\":\"done\",\"summary\":\"결론\"}```";
+        let (clean, plan) = parse_agent_response(two);
+        let plan = plan.expect("plan");
+        assert_eq!(clean, "");
+        assert_eq!(plan.actions, vec![AgentAction::Click { target: 18 }]);
+        assert!(plan.finish_after);
+        assert_eq!(plan.summary, "결론");
+
+        let trailing = "```browser-action {\"action\":\"extract\",\"kind\":\"text\"}```{\"action\":\"done\",\"summary\":\"겹쳐 보여도 역할이 달라요\"}";
+        let (clean, plan) = parse_agent_response(trailing);
+        let plan = plan.expect("plan");
+        assert_eq!(clean, "");
+        assert_eq!(plan.actions.len(), 1);
+        assert!(plan.finish_after);
+
+        // Unclosed fence followed by Korean must not panic on a char boundary.
+        let (_, plan) = parse_agent_response("```browser-action {\"a\": 1} 한국어 끝");
+        assert!(plan.is_none());
+    }
+
+    #[test]
     fn parses_agent_action_blocks() {
         let reply = "검색창에 입력하겠습니다.\n```browser-action\n{\"action\":\"type\",\"target\":3,\"text\":\"rust browser\",\"submit\":true}\n```";
         let (clean, plan) = parse_agent_response(reply);
