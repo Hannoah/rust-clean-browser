@@ -345,6 +345,13 @@ impl BrowserApp {
 
     pub(super) fn toggle_sidebar(&mut self) {
         self.sidebar_open = !self.sidebar_open;
+        self.ensure_active_valid();
+        let tab_id = self.tabs[self.active_tab].id;
+        if self.sidebar_open {
+            self.sidebar_tabs.insert(tab_id);
+        } else {
+            self.sidebar_tabs.remove(&tab_id);
+        }
         if self.sidebar_open {
             self.sidebar_opened_at = Some(Instant::now());
             self.chat_cli_avail = crate::chat::CliAvailability::detect();
@@ -456,7 +463,22 @@ impl BrowserApp {
         true
     }
 
+    /// The AI sidebar is per tab: opening or closing it in one tab leaves the others as they
+    /// were. Runs on every chrome/sidebar rebuild, so any change of active tab picks it up.
+    pub(in crate::app) fn sync_sidebar_to_active_tab(&mut self) {
+        self.ensure_active_valid();
+        let active = self.tabs[self.active_tab].id;
+        // A control-mode run that moved to another tab keeps its sidebar on screen.
+        if self.sidebar_open && self.agent_run.as_ref().is_some_and(|r| r.target_tab_id == active) {
+            self.sidebar_tabs.insert(active);
+        }
+        if self.sidebar_tabs.contains(&active) != self.sidebar_open {
+            self.toggle_sidebar();
+        }
+    }
+
     fn rebuild_sidebar_inner(&mut self, scroll_to_bottom: bool, defer_if_composing: bool) {
+        self.sync_sidebar_to_active_tab();
         if !self.sidebar_open {
             return;
         }

@@ -480,7 +480,9 @@ pub struct BrowserApp {
     /// Requested initial surface size (logical px) when launched via tab tear-off (`--size`).
     initial_size: Option<LogicalSize<f64>>,
 
+    /// Shown for the active tab only; `sidebar_tabs` remembers which tabs have it open.
     sidebar_open: bool,
+    sidebar_tabs: std::collections::HashSet<u64>,
     sidebar_doc: Option<HtmlDocument>,
     last_sidebar_html: String,
     sidebar_drag: bool,
@@ -690,6 +692,7 @@ impl BrowserApp {
             initial_position: launch.position.map(|(x, y)| PhysicalPosition::new(x, y)),
             initial_size: launch.size.map(|(w, h)| LogicalSize::new(w as f64, h as f64)),
             sidebar_open: false,
+            sidebar_tabs: std::collections::HashSet::new(),
             sidebar_doc: None,
             last_sidebar_html: String::new(),
             sidebar_drag: false,
@@ -1107,6 +1110,7 @@ impl BrowserApp {
     }
 
     fn rebuild_chrome(&mut self) {
+        self.sync_sidebar_to_active_tab();
         // Icons for open tabs and the bookmark bar (deduplicated per host, fetched once).
         // Skip tabs that are currently loading so `apply_html_to_tab` / `WebViewIcons` can use
         // the page's real `<link rel=icon>` without triggering a duplicate page fetch.
