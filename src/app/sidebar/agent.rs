@@ -500,6 +500,8 @@ impl BrowserApp {
     }
 
     pub(super) fn finish_agent_run(&mut self, override_summary: Option<String>) {
+        // Last chance to re-home onto the tab the run moved to, before `agent_run` is gone.
+        self.sync_chat_to_active_tab();
         let Some(run) = self.agent_run.take() else {
             self.chat_inflight = None;
             return;
